@@ -1,0 +1,42 @@
+name: Reusable — SQL Template Literal Safety Gate
+
+on:
+  workflow_call:
+
+jobs:
+  sql-safety-gate:
+    runs-on: ubuntu-latest
+    name: SQL stray-semicolon check
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for stray semicolons in SQL template literals
+        run: |
+          python3 - <<'PYEOF'
+          import re, glob, sys
+
+          errors = []
+          files = glob.glob('src/**/*.sql.ts', recursive=True)
+          for path in files:
+              try:
+                  content = open(path, encoding='utf-8', errors='replace').read()
+              except Exception as e:
+                  print(f'Warning: could not read {path}: {e}')
+                  continue
+              stripped = re.sub(r'--[^\n]*', '', content)
+              for m in re.finditer(r';\s*\n[ \t]+(AND|OR|GROUP BY|ORDER BY|HAVING|LIMIT)', stripped):
+                  line_no = stripped[:m.start()].count('\n') + 1
+                  errors.append(f'{path}:{line_no}: stray ; before SQL continuation ({m.group(1).strip()})')
+
+          if errors:
+              print('ERROR: SQL template literal safety gate FAILED')
+              print('Stray semicolons found inside pool.query() template literals.')
+              print('These cause MySQL error 1064 at runtime (tsc/CI cannot detect them):')
+              for e in errors:
+                  print(f'  {e}')
+              print()
+              print('Fix: remove the trailing semicolon from the WHERE condition line.')
+              print('See: TypeScript_Backend_Coding_Rules.md §SQL Template Literal Discipline')
+              sys.exit(1)
+
+          print(f'SQL template literal safety gate passed — {len(files)} .sql.ts files scanned, 0 issues.')
+          PYEOF
