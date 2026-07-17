@@ -1,0 +1,26 @@
+name: Reusable — Dart String Interpolation Safety Gate
+
+on:
+  workflow_call:
+
+jobs:
+  dart-safety-gate:
+    runs-on: ubuntu-latest
+    name: Dart escaped interpolation check
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for escaped string interpolation
+        run: |
+          HITS=$(grep -rn '\\${' lib/ --include="*.dart" 2>/dev/null || true)
+          if [ -n "$HITS" ]; then
+            echo "ERROR: Dart interpolation safety gate FAILED"
+            echo "Escaped string interpolation found in Dart files."
+            echo "\\${variable} produces literal text on screen, not the variable value:"
+            echo ""
+            echo "$HITS"
+            echo ""
+            echo "Fix: remove the backslash. Use ${var} not \\${var}."
+            echo "See: Flutter_Coding_Rules.md §Dart String Interpolation Discipline"
+            exit 1
+          fi
+          echo "Dart interpolation safety gate passed."
