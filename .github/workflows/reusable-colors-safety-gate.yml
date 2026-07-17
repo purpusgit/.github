@@ -11,7 +11,7 @@ on:
 
 jobs:
   colours-gate:
-    name: "No hardcoded Colors.* additions (Rule 85)"
+    name: "No hardcoded Colors.* additions (Rule 24)"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,20 +27,21 @@ jobs:
           FAILED=0
           BASE_REF="${{ inputs.base_ref || 'cwb' }}"
 
-          # Files changed in this PR (dart only)
-          CHANGED=$(git diff "origin/${BASE_REF}...HEAD" --name-only -- '*.dart' 2>/dev/null)
+          # lib/ Dart files changed in this PR (diff-only; excludes test/ to avoid false positives)
+          CHANGED=$(git diff "origin/${BASE_REF}...HEAD" --name-only -- '*.dart' 2>/dev/null | grep '^lib/')
 
           if [ -z "$CHANGED" ]; then
-            echo "No Dart files changed. Gate passed."
+            echo "No lib/ Dart files changed. Gate passed."
             exit 0
           fi
 
-          for FILE in $CHANGED; do
+          while IFS= read -r FILE; do
             # Skip deleted files
             [ -f "$FILE" ] || continue
 
             # Skip colour/theme definition files — these legitimately use Colors.*
-            if echo "$FILE" | grep -qiE '(theme/|/colors?\.|/palette\.|orbit_colors\.|_theme\.dart$|colors\.dart$)'; then
+            # Pattern covers: theme/ directories, filenames with color/colour/palette, orbit_colors.dart
+            if echo "$FILE" | grep -qiE '(theme/|/colors?[_.]/|orbit_colors\.|_theme\.dart$|colors?\.dart$|colours?\.dart$)' ||                echo "$(basename "$FILE")" | grep -qiE '^(colors?|colours?|palette|.*_theme)\.dart$'; then
               echo "Skipping colour/theme file: $FILE"
               continue
             fi
@@ -48,8 +49,10 @@ jobs:
             # Added lines only — lines starting with + but not the +++ file header
             ADDED=$(git diff "origin/${BASE_REF}...HEAD" -- "$FILE" 2>/dev/null | grep '^+' | grep -v '^+++')
 
-            # Block any Colors.* except Colors.transparent; allow // intentional: escape hatch
-            COLOR_HITS=$(echo "$ADDED" | grep -E 'Colors\.[a-zA-Z]' | grep -v 'Colors\.transparent' | grep -v '// intentional:')
+            # Block any Colors.* except Colors.transparent
+            # Uses perl negative lookahead so same-line  Colors.green + Colors.transparent  is correctly flagged
+            # (the old grep -v 'Colors.transparent' approach would have silently passed the whole line)
+            COLOR_HITS=$(echo "$ADDED" | grep -v '// intentional:' | perl -ne 'print if /Colors\.(?!transparent\b)[a-zA-Z]/')
 
             if [ -n "$COLOR_HITS" ]; then
               echo ""
@@ -74,11 +77,12 @@ jobs:
               echo "$OPACITY_HITS" | head -5
               FAILED=1
             fi
-          done
+
+          done <<< "$CHANGED"
 
           if [ $FAILED -eq 1 ]; then
             echo ""
-            echo "Gate: Flutter Colours Safety (Belongity Rule 85)"
+            echo "Gate: Flutter Colours Safety (Rule 24)"
             echo "See: Dark_Mode_Architecture.md and Cross_Flavor_Shared_Widgets_Rules.md"
             exit 1
           fi
