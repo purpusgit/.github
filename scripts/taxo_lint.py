@@ -2,7 +2,7 @@
 """taxo_lint.py — Taxonomy CI/lint gate.
 
 Prevents the recurring "stale-type / wrong-column / stale-FK-ref" bug class in
-taxonomy-touching code and data. Two independent modes:
+taxonomy-touching code and data. Three independent modes:
 
   --data              Validate live taxo.* data (needs a DB connection).
                       Primary gate: every onboarding_question FK:<Type> ref must
@@ -15,13 +15,23 @@ taxonomy-touching code and data. Two independent modes:
                             in the real taxo.master schema allowlist
                             (parent_id / parent_idfr / joining_label et al.).
 
+  --code-db <dir>     Same static scan as --code PLUS a live-DB check (needs a
+                      DB connection). Closes the last gap G1 cannot: a
+                      *lowercase-but-nonexistent* taxo type (e.g. type =
+                      'wrong_type_here') passes G1's PascalCase test yet points
+                      at nothing. G3 extracts every lowercase `type = '<...>'`
+                      literal on a taxo.master query and asserts each one still
+                      exists in live taxo.master (SELECT COUNT(*) > 0). G1/G2
+                      run unchanged alongside it.
+
 Exit code is 0 when clean, non-zero when any check fails, so it drops straight
 into a CI step. Failures print as a clean table with file:line or ref detail.
 
-DB credentials for --data come from (in order):
+DB credentials for --data / --code-db come from (in order):
   1. --db-json <path> + --db-env <name>   (bc_mysql_envs.json style file)
   2. env vars TAXO_DB_HOST / TAXO_DB_PORT / TAXO_DB_USER / TAXO_DB_PASSWORD
-     (CI wires these from repo/org secrets — see reusable-taxo-lint.yml).
+     (CI wires these from repo/org secrets — see reusable-taxo-lint.yml and
+     taxo-data-lint-nightly.yml).
 
 Author note (Rule 39 overlap check): grepped the Rule 13 script index + the
 service repos — no existing script performs the onboarding FK:<Type> ->
@@ -150,6 +160,11 @@ def run_data(args):
 
 _PASCAL_TYPE = re.compile(r"type\s*=\s*'([A-Z][A-Za-z0-9]*_[A-Za-z0-9_]*)'")
 
+# Lowercase snake_case type literal on a taxo.master query. G1 (PascalCase)
+# cannot see these — a valid-LOOKING but non-existent lowercase type slips the
+# static scan entirely. G3 (--code-db) resolves each one against the live DB.
+_LOWER_TYPE = re.compile(r"type\s*=\s*'([a-z][a-z0-9_]*)'")
+
 # Keywords that can immediately follow `taxo.master` but are NOT a table alias.
 _SQL_NON_ALIAS = {
     "as", "on", "where", "join", "left", "right", "inner", "outer", "cross",
@@ -250,8 +265,16 @@ def _bad_col_is_taxo_ref(prefix, aliases, has_other):
     return quals[-1] in aliases     # <taxo_alias>.parent_id
 
 
-def run_code(args):
-    root = args.dir
+def _scan_files(root):
+    """Static scan of *.sql.ts (and versioned *.sql.vN.ts) under `root`.
+
+    Returns (files, g1_hits, g2_hits, lower_hits) where:
+      files       = sorted list of scanned paths
+      g1_hits     = [(path, line, pascal_type)]      Rule 59 violations
+      g2_hits     = sorted [(path, line, bad_col)]   wrong taxo.master columns
+      lower_hits  = [(path, line, lowercase_type)]   candidates for the G3
+                    live-DB existence check (used only by --code-db)
+    """
     # Match both plain (foo.sql.ts) and versioned (foo.sql.v1.ts / foo.sql.v2.ts)
     # SQL template files. Versioned files were previously skipped by the bare
     # *.sql.ts glob (Rule 86 CI-gate fix).
@@ -263,6 +286,7 @@ def run_code(args):
     })
     g1_hits = []
     g2_set = set()
+    lower_hits = []
     for path in files:
         try:
             raw = open(path, encoding="utf-8", errors="replace").read()
@@ -276,11 +300,14 @@ def run_code(args):
         windows = _taxo_master_line_windows(lines)
 
         # G1: PascalCase type literal (unchanged — critic-verified precise).
+        # G3 candidates: lowercase type literal (scoped to the same windows).
         for i, ln in enumerate(lines):
             if i not in windows:
                 continue
             for m in _PASCAL_TYPE.finditer(ln):
                 g1_hits.append((path, i + 1, m.group(1)))
+            for m in _LOWER_TYPE.finditer(ln):
+                lower_hits.append((path, i + 1, m.group(1)))
 
         # G2: bad column reference, scoped to actual taxo.master columns.
         for start, end, aliases, has_other in _taxo_master_blocks(lines):
@@ -293,14 +320,10 @@ def run_code(args):
                         continue
                     if _bad_col_is_taxo_ref(m.group(1), aliases, has_other):
                         g2_set.add((path, i + 1, m.group(2)))
-    g2_hits = sorted(g2_set)
+    return files, g1_hits, sorted(g2_set), lower_hits
 
-    print("=" * 72)
-    print("taxo_lint --code : *.sql.ts static scan")
-    print("=" * 72)
-    print(f"scanned .sql.ts files              : {len(files)}")
-    print(f"[G1] PascalCase taxo type literals : {len(g1_hits)}  (Rule 59)")
-    print(f"[G2] wrong taxo.master columns     : {len(g2_hits)}")
+
+def _print_g1_g2(g1_hits, g2_hits):
     if g1_hits:
         print("\n-- G1 violations (use snake_case lowercase types) --")
         for path, ln, val in g1_hits:
@@ -309,7 +332,63 @@ def run_code(args):
         print("\n-- G2 violations (column not in taxo.master schema) --")
         for path, ln, col in g2_hits:
             print(f"  {path}:{ln}: '{col}' is not a taxo.master column")
+
+
+def run_code(args):
+    files, g1_hits, g2_hits, _ = _scan_files(args.dir)
+
+    print("=" * 72)
+    print("taxo_lint --code : *.sql.ts static scan")
+    print("=" * 72)
+    print(f"scanned .sql.ts files              : {len(files)}")
+    print(f"[G1] PascalCase taxo type literals : {len(g1_hits)}  (Rule 59)")
+    print(f"[G2] wrong taxo.master columns     : {len(g2_hits)}")
+    _print_g1_g2(g1_hits, g2_hits)
     failed = bool(g1_hits) or bool(g2_hits)
+    print()
+    if failed:
+        print("RESULT: FAIL — taxonomy code references are stale. Fix before merge.")
+        return 1
+    print("RESULT: PASS — no stale taxo type literals or column references.")
+    return 0
+
+
+def run_code_db(args):
+    """--code-db : the --code static scan (G1 + G2) PLUS a live-DB existence
+    check (G3) of every lowercase type literal found on a taxo.master query.
+    G1/G2 behave exactly as in --code; G3 is the only DB-dependent addition."""
+    import pymysql
+    files, g1_hits, g2_hits, lower_hits = _scan_files(args.dir)
+
+    creds = _load_db_creds(args)
+    conn = pymysql.connect(connect_timeout=20, **creds)
+    cur = conn.cursor()
+    distinct = sorted({t for _, _, t in lower_hits})
+    missing = set()
+    for t in distinct:
+        cur.execute(
+            "SELECT COUNT(*) FROM taxo.master WHERE type = %s AND is_deleted = 0",
+            (t,),
+        )
+        if cur.fetchone()[0] == 0:
+            missing.add(t)
+    conn.close()
+    g3_hits = [(p, ln, t) for (p, ln, t) in lower_hits if t in missing]
+
+    print("=" * 72)
+    print("taxo_lint --code-db : *.sql.ts static scan + live-DB type existence")
+    print("=" * 72)
+    print(f"scanned .sql.ts files                   : {len(files)}")
+    print(f"[G1] PascalCase taxo type literals      : {len(g1_hits)}  (Rule 59)")
+    print(f"[G2] wrong taxo.master columns          : {len(g2_hits)}")
+    print(f"[G3] lowercase types checked (live DB)  : {len(distinct)}")
+    print(f"[G3] lowercase types absent from master : {len(missing)}")
+    _print_g1_g2(g1_hits, g2_hits)
+    if g3_hits:
+        print("\n-- G3 violations (lowercase type not found in live taxo.master) --")
+        for path, ln, t in g3_hits:
+            print(f"  {path}:{ln}: type = '{t}'  ->  no such type in taxo.master")
+    failed = bool(g1_hits) or bool(g2_hits) or bool(g3_hits)
     print()
     if failed:
         print("RESULT: FAIL — taxonomy code references are stale. Fix before merge.")
@@ -326,6 +405,10 @@ def main():
                      help="Validate live taxo.* data (needs DB).")
     sub.add_argument("--code", metavar="DIR",
                      help="Static scan of *.sql.ts under DIR (no DB).")
+    sub.add_argument("--code-db", metavar="DIR",
+                     help="Static scan of *.sql.ts under DIR PLUS a live-DB "
+                          "existence check (G3) of every lowercase type literal. "
+                          "Needs DB creds.")
     ap.add_argument("--db-json", help="Path to bc_mysql_envs.json style creds file.")
     ap.add_argument("--db-env", default="sandbox", help="Env key inside --db-json.")
     ap.add_argument("--assert-type", action="append", default=[],
@@ -335,6 +418,9 @@ def main():
     if args.code:
         args.dir = args.code
         sys.exit(run_code(args))
+    if args.code_db:
+        args.dir = args.code_db
+        sys.exit(run_code_db(args))
     sys.exit(run_data(args))
 
 
