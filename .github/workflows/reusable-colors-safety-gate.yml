@@ -1,0 +1,86 @@
+name: Reusable — Flutter Colours Safety Gate
+
+on:
+  workflow_call:
+    inputs:
+      base_ref:
+        description: 'Base branch to diff against'
+        required: false
+        type: string
+        default: 'cwb'
+
+jobs:
+  colours-gate:
+    name: "No hardcoded Colors.* additions (Rule 85)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base branch
+        run: git fetch origin ${{ inputs.base_ref || 'cwb' }}
+
+      - name: Check for hardcoded colour additions
+        run: |
+          set +e
+          FAILED=0
+          BASE_REF="${{ inputs.base_ref || 'cwb' }}"
+
+          # Files changed in this PR (dart only)
+          CHANGED=$(git diff "origin/${BASE_REF}...HEAD" --name-only -- '*.dart' 2>/dev/null)
+
+          if [ -z "$CHANGED" ]; then
+            echo "No Dart files changed. Gate passed."
+            exit 0
+          fi
+
+          for FILE in $CHANGED; do
+            # Skip deleted files
+            [ -f "$FILE" ] || continue
+
+            # Skip colour/theme definition files — these legitimately use Colors.*
+            if echo "$FILE" | grep -qiE '(theme/|/colors?\.|/palette\.|orbit_colors\.|_theme\.dart$|colors\.dart$)'; then
+              echo "Skipping colour/theme file: $FILE"
+              continue
+            fi
+
+            # Added lines only — lines starting with + but not the +++ file header
+            ADDED=$(git diff "origin/${BASE_REF}...HEAD" -- "$FILE" 2>/dev/null | grep '^+' | grep -v '^+++')
+
+            # Block any Colors.* except Colors.transparent; allow // intentional: escape hatch
+            COLOR_HITS=$(echo "$ADDED" | grep -E 'Colors\.[a-zA-Z]' | grep -v 'Colors\.transparent' | grep -v '// intentional:')
+
+            if [ -n "$COLOR_HITS" ]; then
+              echo ""
+              echo "::error file=$FILE::Hardcoded Colors.* added — use semantic colour tokens instead."
+              echo "  Fix options:"
+              echo "    Success / verified / approved -> Theme.of(context).extension<OrbitColors>()!.statusPositive"
+              echo "    Error / danger               -> colorScheme.error"
+              echo "    Primary brand                -> colorScheme.primary"
+              echo "    WhatsApp brand               -> Theme.of(context).extension<OrbitColors>()!.brandWhatsapp"
+              echo "    Suppress (last resort)       -> add '// intentional: <reason>' on the same line"
+              echo ""
+              echo "$COLOR_HITS" | head -10
+              FAILED=1
+            fi
+
+            # Block deprecated .withOpacity(); use .withValues(alpha:) — Flutter 3.27+
+            OPACITY_HITS=$(echo "$ADDED" | grep '\.withOpacity(' | grep -v '// intentional:')
+
+            if [ -n "$OPACITY_HITS" ]; then
+              echo ""
+              echo "::error file=$FILE::Deprecated .withOpacity() added — use .withValues(alpha: x) instead (Flutter 3.27+)."
+              echo "$OPACITY_HITS" | head -5
+              FAILED=1
+            fi
+          done
+
+          if [ $FAILED -eq 1 ]; then
+            echo ""
+            echo "Gate: Flutter Colours Safety (Belongity Rule 85)"
+            echo "See: Dark_Mode_Architecture.md and Cross_Flavor_Shared_Widgets_Rules.md"
+            exit 1
+          fi
+
+          echo "Flutter colours safety gate passed."
