@@ -1,0 +1,47 @@
+name: Nightly — Taxonomy Data Lint (FK:<Type> staleness)
+
+# Runs the DB-backed taxo_lint --data check on a schedule so the
+# onboarding_question FK:<Type> -> taxo.master leaf-coverage assertion and the
+# taxo.master type-existence checks run WITHOUT a per-PR DB dependency. If any
+# onboarding FK ref goes stale again (its target taxo.master type loses all
+# active leaves), this job fails and GitHub alerts the repo watchers.
+#
+# The checker lives in this same repo (scripts/taxo_lint.py), so no cross-repo
+# fetch/token is needed — we just check out self and run it.
+#
+# Required ORG secrets (Settings -> Secrets and variables -> Actions -> org):
+#   TAXO_DB_HOST      sandbox MySQL host
+#   TAXO_DB_PORT      sandbox MySQL port (defaults to 3306 if unset)
+#   TAXO_DB_USER      sandbox MySQL user (read-only is sufficient)
+#   TAXO_DB_PASSWORD  sandbox MySQL password
+# These are the same names the reusable workflow (reusable-taxo-lint.yml) reads.
+
+on:
+  schedule:
+    # 02:17 UTC daily. Off-peak; avoids the top-of-hour scheduler backlog.
+    - cron: "17 2 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  data-lint:
+    runs-on: ubuntu-latest
+    name: Taxonomy data validation (FK:<Type> refs)
+    steps:
+      - name: Checkout this repo (for scripts/taxo_lint.py)
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install driver
+        run: pip install pymysql
+      - name: Run taxonomy data gate (--data)
+        env:
+          TAXO_DB_HOST: ${{ secrets.TAXO_DB_HOST }}
+          TAXO_DB_PORT: ${{ secrets.TAXO_DB_PORT }}
+          TAXO_DB_USER: ${{ secrets.TAXO_DB_USER }}
+          TAXO_DB_PASSWORD: ${{ secrets.TAXO_DB_PASSWORD }}
+        run: python scripts/taxo_lint.py --data
