@@ -15,7 +15,13 @@ jobs:
           import re, glob, sys
 
           errors = []
-          files = glob.glob('src/**/*.sql.ts', recursive=True)
+          # Match both plain (foo.sql.ts) and versioned (foo.sql.v1.ts /
+          # foo.sql.v2.ts) SQL template files. Versioned files were previously
+          # skipped by the bare *.sql.ts glob (Rule 86 CI-gate fix).
+          files = sorted(set(
+              glob.glob('src/**/*.sql.ts', recursive=True)
+              + glob.glob('src/**/*.sql.v[0-9]*.ts', recursive=True)
+          ))
           for path in files:
               try:
                   content = open(path, encoding='utf-8', errors='replace').read()
