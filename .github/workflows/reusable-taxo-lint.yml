@@ -1,0 +1,88 @@
+name: Reusable — Taxonomy Lint Gate (stale-type / wrong-column / stale-FK-ref)
+
+# Prevents the recurring taxonomy bug class:
+#   * PascalCase taxo.master type literals   (Rule 59 — lowercase snake_case only)
+#   * taxo.master queries using a column that is not in the real schema
+#     (parent_id / parent_idfr / joining_label ...)
+#   * onboarding_question FK:<Type> refs pointing at a taxo.master type that
+#     no longer has active leaves (the FK:<Type> gate)
+#
+# Canonical checker: purpusgit/.github :: scripts/taxo_lint.py
+# Mirrors reusable-sql-safety-gate.yml conventions in this repo.
+
+on:
+  workflow_call:
+    inputs:
+      code_dir:
+        description: "Directory under the caller repo to scan for *.sql.ts"
+        default: "src"
+        type: string
+      run_data:
+        description: "Run the DB-backed --data validation job (needs DB secrets)."
+        default: false
+        type: boolean
+    secrets:
+      TAXO_GATE_TOKEN:
+        description: >-
+          Token with READ access to purpusgit/.github (where taxo_lint.py lives).
+          A fine-grained PAT or GitHub App token stored as an org secret. Falls
+          back to the caller's GITHUB_TOKEN, which only works if purpusgit/.github
+          is readable by org-repo tokens.
+        required: false
+      TAXO_DB_HOST:
+        required: false
+      TAXO_DB_PORT:
+        required: false
+      TAXO_DB_USER:
+        required: false
+      TAXO_DB_PASSWORD:
+        required: false
+
+jobs:
+  code-lint:
+    runs-on: ubuntu-latest
+    name: Taxonomy code scan (*.sql.ts)
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@v4
+        with:
+          path: caller
+      - name: Fetch taxo_lint.py from purpusgit/.github
+        uses: actions/checkout@v4
+        with:
+          repository: purpusgit/.github
+          ref: main
+          path: gate
+          token: ${{ secrets.TAXO_GATE_TOKEN || github.token }}
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run taxonomy code gate (--code, no DB)
+        run: python gate/scripts/taxo_lint.py --code "caller/${{ inputs.code_dir }}"
+
+  data-lint:
+    if: ${{ inputs.run_data }}
+    runs-on: ubuntu-latest
+    name: Taxonomy data validation (FK:<Type> refs)
+    steps:
+      - name: Fetch taxo_lint.py from purpusgit/.github
+        uses: actions/checkout@v4
+        with:
+          repository: purpusgit/.github
+          ref: main
+          path: gate
+          token: ${{ secrets.TAXO_GATE_TOKEN || github.token }}
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install driver
+        run: pip install pymysql
+      - name: Run taxonomy data gate (--data)
+        env:
+          TAXO_DB_HOST: ${{ secrets.TAXO_DB_HOST }}
+          TAXO_DB_PORT: ${{ secrets.TAXO_DB_PORT }}
+          TAXO_DB_USER: ${{ secrets.TAXO_DB_USER }}
+          TAXO_DB_PASSWORD: ${{ secrets.TAXO_DB_PASSWORD }}
+        run: python gate/scripts/taxo_lint.py --data
