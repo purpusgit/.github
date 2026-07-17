@@ -183,7 +183,15 @@ def _taxo_master_line_windows(lines):
 
 def run_code(args):
     root = args.dir
-    files = sorted(glob.glob(os.path.join(root, "**", "*.sql.ts"), recursive=True))
+    # Match both plain (foo.sql.ts) and versioned (foo.sql.v1.ts / foo.sql.v2.ts)
+    # SQL template files. Versioned files were previously skipped by the bare
+    # *.sql.ts glob (Rule 86 CI-gate fix).
+    patterns = ("*.sql.ts", "*.sql.v[0-9]*.ts")
+    files = sorted({
+        f
+        for pat in patterns
+        for f in glob.glob(os.path.join(root, "**", pat), recursive=True)
+    })
     g1_hits, g2_hits = [], []
     for path in files:
         try:
