@@ -149,7 +149,30 @@ def run_data(args):
 # per-statement using a sliding window around each `taxo.master` mention.
 
 _PASCAL_TYPE = re.compile(r"type\s*=\s*'([A-Z][A-Za-z0-9]*_[A-Za-z0-9_]*)'")
-_COL_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+# Keywords that can immediately follow `taxo.master` but are NOT a table alias.
+_SQL_NON_ALIAS = {
+    "as", "on", "where", "join", "left", "right", "inner", "outer", "cross",
+    "full", "group", "order", "limit", "offset", "set", "using", "and", "or",
+    "union", "having", "select", "from", "natural", "for", "into", "values",
+    "lock", "straight_join",
+}
+
+# `taxo.master`, optionally followed by `AS <alias>` or a bare `<alias>`.
+_TAXO_MASTER_ALIAS = re.compile(
+    r"\btaxo\.master\b(?:\s+(?:as\s+)?([A-Za-z_]\w*))?", re.IGNORECASE)
+# A table reference introduced by FROM / JOIN.
+_TABLE_REF = re.compile(r"\b(?:from|join)\s+([A-Za-z_$][\w.$]*)", re.IGNORECASE)
+# A known-bad column with its (possibly dotted, possibly empty) qualifier path:
+#   sub_org.parent_id     -> prefix "sub_org.",     col "parent_id"
+#   taxo.master.parent_id -> prefix "taxo.master.", col "parent_id"
+#   parent_id             -> prefix "",             col "parent_id"
+# The lookbehind stops the match starting mid-identifier (org_parent_id) or
+# mid-path. Longer bad names first so parent_idfr wins over parent_id.
+_BAD_COL = re.compile(
+    r"(?<![\w.$])((?:[A-Za-z_$]\w*\s*\.\s*)*)"
+    r"(" + "|".join(sorted(KNOWN_BAD_COLUMNS, key=len, reverse=True)) + r")\b"
+)
 
 
 def _strip_line_comments(text):
@@ -163,22 +186,68 @@ def _strip_line_comments(text):
 
 
 def _taxo_master_line_windows(lines):
-    """Return the set of 0-based line indices that are within a taxo.master
-    statement window (the mention line plus the following ~40 lines up to the
-    next statement terminator `;` or a blank-heavy break)."""
+    """Return the set of 0-based line indices within a taxo.master statement
+    window (the mention line plus the following ~40 lines up to the next
+    statement terminator `;` or a backtick break). Used by G1."""
     idx = set()
     for i, ln in enumerate(lines):
         if re.search(r"\btaxo\.master\b", ln):
             idx.add(i)
-            # extend forward until a line with a bare `;` ending a statement
             for j in range(i + 1, min(i + 45, len(lines))):
                 idx.add(j)
                 if lines[j].rstrip().endswith(";") or lines[j].strip() == "`":
                     break
-            # also extend backward a few lines (SELECT cols precede FROM)
             for j in range(max(0, i - 30), i):
                 idx.add(j)
     return idx
+
+
+def _taxo_master_blocks(lines):
+    """Per-statement blocks around each taxo.master mention:
+    (start, end, taxo_aliases, has_other_tables).
+
+    `taxo_aliases` = aliases bound to taxo.master in the block (e.g. `m` from
+    `taxo.master AS m`). `has_other_tables` = True when the block's FROM/JOIN
+    clauses reference any table other than `taxo.master`. G2 uses these to flag
+    a bad column ONLY when it is an actual taxo.master column reference — not a
+    same-window `parent_id` that belongs to a different table."""
+    blocks = []
+    for i, ln in enumerate(lines):
+        if not re.search(r"\btaxo\.master\b", ln):
+            continue
+        start = max(0, i - 30)
+        end = i
+        for j in range(i + 1, min(i + 45, len(lines))):
+            end = j
+            if lines[j].rstrip().endswith(";") or lines[j].strip() == "`":
+                break
+        text = "\n".join(lines[start:end + 1])
+        aliases = set()
+        for m in _TAXO_MASTER_ALIAS.finditer(text):
+            a = m.group(1)
+            if a and a.lower() not in _SQL_NON_ALIAS:
+                aliases.add(a)
+        has_other = False
+        for m in _TABLE_REF.finditer(text):
+            if m.group(1).lower() != "taxo.master":
+                has_other = True
+                break
+        blocks.append((start, end, aliases, has_other))
+    return blocks
+
+
+def _bad_col_is_taxo_ref(prefix, aliases, has_other):
+    """True when a matched bad column is an actual taxo.master column reference
+    (a real G2 violation)."""
+    quals = [q.strip() for q in prefix.split(".") if q.strip()]
+    if not quals:
+        # Bare column: belongs to taxo.master only when taxo.master is the sole
+        # table in the statement (no other FROM/JOIN).
+        return not has_other
+    low = [q.lower() for q in quals]
+    if low[-2:] == ["taxo", "master"]:
+        return True                 # taxo.master.parent_id
+    return quals[-1] in aliases     # <taxo_alias>.parent_id
 
 
 def run_code(args):
@@ -192,7 +261,8 @@ def run_code(args):
         for pat in patterns
         for f in glob.glob(os.path.join(root, "**", pat), recursive=True)
     })
-    g1_hits, g2_hits = [], []
+    g1_hits = []
+    g2_set = set()
     for path in files:
         try:
             raw = open(path, encoding="utf-8", errors="replace").read()
@@ -205,17 +275,25 @@ def run_code(args):
             continue  # file never touches taxo.master — out of scope
         windows = _taxo_master_line_windows(lines)
 
+        # G1: PascalCase type literal (unchanged — critic-verified precise).
         for i, ln in enumerate(lines):
             if i not in windows:
                 continue
-            # G1: PascalCase type literal
             for m in _PASCAL_TYPE.finditer(ln):
                 g1_hits.append((path, i + 1, m.group(1)))
-            # G2: bad column reference near taxo.master
-            for tok_m in _COL_TOKEN.finditer(ln):
-                tok = tok_m.group(0)
-                if tok in KNOWN_BAD_COLUMNS:
-                    g2_hits.append((path, i + 1, tok))
+
+        # G2: bad column reference, scoped to actual taxo.master columns.
+        for start, end, aliases, has_other in _taxo_master_blocks(lines):
+            for i in range(start, end + 1):
+                ln = lines[i]
+                for m in _BAD_COL.finditer(ln):
+                    # An `AS <bad>` OUTPUT alias is not a taxo.master column
+                    # reference (e.g. `SELECT value AS joining_label`).
+                    if re.search(r"\bas\s*$", ln[:m.start()], re.IGNORECASE):
+                        continue
+                    if _bad_col_is_taxo_ref(m.group(1), aliases, has_other):
+                        g2_set.add((path, i + 1, m.group(2)))
+    g2_hits = sorted(g2_set)
 
     print("=" * 72)
     print("taxo_lint --code : *.sql.ts static scan")
