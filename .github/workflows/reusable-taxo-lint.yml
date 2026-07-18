@@ -21,6 +21,13 @@ on:
         description: "Run the DB-backed --data validation job (needs DB secrets)."
         default: false
         type: boolean
+      advisory:
+        description: >-
+          When true, a --code lint failure reports red on the step but the job
+          (and therefore the check) concludes success — non-blocking. Set false
+          once the pre-existing taxo violations are cleared to make the gate hard.
+        default: false
+        type: boolean
     secrets:
       TAXO_GATE_TOKEN:
         description: >-
@@ -59,6 +66,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Run taxonomy code gate (--code, no DB)
+        continue-on-error: ${{ inputs.advisory }}
         run: python gate/scripts/taxo_lint.py --code "caller/${{ inputs.code_dir }}"
 
   data-lint:
