@@ -58,10 +58,10 @@ jobs:
               echo ""
               echo "::error file=$FILE::Hardcoded Colors.* added — use semantic colour tokens instead."
               echo "  Fix options:"
-              echo "    Success / verified / approved -> Theme.of(context).extension<OrbitColors>()!.statusPositive"
+              echo "    Success / verified / approved -> (Theme.of(context).extension<OrbitColors>())?.statusPositive ?? colorScheme.primary"
               echo "    Error / danger               -> colorScheme.error"
               echo "    Primary brand                -> colorScheme.primary"
-              echo "    WhatsApp brand               -> Theme.of(context).extension<OrbitColors>()!.brandWhatsapp"
+              echo "    WhatsApp brand               -> (Theme.of(context).extension<OrbitColors>())?.brandWhatsapp ?? colorScheme.secondary"
               echo "    Suppress (last resort)       -> add '// intentional: <reason>' on the same line"
               echo ""
               echo "$COLOR_HITS" | head -10
@@ -75,6 +75,20 @@ jobs:
               echo ""
               echo "::error file=$FILE::Deprecated .withOpacity() added — use .withValues(alpha: x) instead (Flutter 3.27+)."
               echo "$OPACITY_HITS" | head -5
+              FAILED=1
+            fi
+
+
+            # Block non-null extension<X>()! assertions — crashes if host theme doesn't provide the extension
+            # (Dark_Mode_Architecture.md §17)
+            EXTENSION_BANG=$(echo "$ADDED" | grep 'extension<' | grep ')!' | grep -v '// intentional:')
+
+            if [ -n "$EXTENSION_BANG" ]; then
+              echo ""
+              echo "::error file=$FILE::Non-null extension<X>()! added — use nullable pattern: extension<X>()?.field ?? colorScheme.fallback (Dark_Mode_Architecture.md §17)."
+              echo "  Fix: final oc = Theme.of(context).extension<OrbitColors>();"
+              echo "       final color = oc?.statusPositive ?? colorScheme.primary;"
+              echo "$EXTENSION_BANG" | head -5
               FAILED=1
             fi
 
