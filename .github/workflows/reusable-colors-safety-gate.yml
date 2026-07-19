@@ -50,9 +50,9 @@ jobs:
             ADDED=$(git diff "origin/${BASE_REF}...HEAD" -- "$FILE" 2>/dev/null | grep '^+' | grep -v '^+++')
 
             # Block any Colors.* except Colors.transparent
-            # Uses perl negative lookahead so same-line  Colors.green + Colors.transparent  is correctly flagged
-            # (the old grep -v 'Colors.transparent' approach would have silently passed the whole line)
-            COLOR_HITS=$(echo "$ADDED" | grep -v '// intentional:' | perl -ne 'print if /Colors\.(?!transparent\b)[a-zA-Z]/')
+            # Uses perl negative lookbehind (?<![a-zA-Z]) to avoid false-positives like gradientColors.map
+            # and negative lookahead (?!transparent) so Colors.transparent is permitted on the same line
+            COLOR_HITS=$(echo "$ADDED" | grep -v '// intentional:' | perl -ne 'print if /(?<![a-zA-Z])Colors\.(?!transparent\b)[a-zA-Z]/')
 
             if [ -n "$COLOR_HITS" ]; then
               echo ""
