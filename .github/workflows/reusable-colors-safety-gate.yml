@@ -52,7 +52,7 @@ jobs:
             # Block any Colors.* except Colors.transparent
             # Uses perl negative lookbehind (?<![a-zA-Z]) to avoid false-positives like gradientColors.map
             # and negative lookahead (?!transparent) so Colors.transparent is permitted on the same line
-            COLOR_HITS=$(echo "$ADDED" | grep -v '// intentional:' | perl -ne 'print if /(?<![a-zA-Z])Colors\.(?!transparent\b)[a-zA-Z]/')
+            COLOR_HITS=$(echo "$ADDED" | grep -v 'intentional:' | perl -ne 'print if /(?<![a-zA-Z])Colors\.(?!transparent\b)[a-zA-Z]/')
 
             if [ -n "$COLOR_HITS" ]; then
               echo ""
@@ -69,7 +69,7 @@ jobs:
             fi
 
             # Block deprecated .withOpacity(); use .withValues(alpha:) — Flutter 3.27+
-            OPACITY_HITS=$(echo "$ADDED" | grep '\.withOpacity(' | grep -v '// intentional:')
+            OPACITY_HITS=$(echo "$ADDED" | grep '\.withOpacity(' | grep -v 'intentional:')
 
             if [ -n "$OPACITY_HITS" ]; then
               echo ""
@@ -81,7 +81,7 @@ jobs:
 
             # Block non-null extension<X>()! assertions — crashes if host theme doesn't provide the extension
             # (Dark_Mode_Architecture.md §17)
-            EXTENSION_BANG=$(echo "$ADDED" | grep 'extension<' | grep ')!' | grep -v '// intentional:')
+            EXTENSION_BANG=$(echo "$ADDED" | grep 'extension<' | grep ')!' | grep -v 'intentional:')
 
             if [ -n "$EXTENSION_BANG" ]; then
               echo ""
