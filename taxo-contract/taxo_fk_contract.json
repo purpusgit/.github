@@ -1,0 +1,271 @@
+{
+  "version": "1.0",
+  "generated": "2026-07-20",
+  "sources": [
+    "03 Database Architecture/Legacy_Column_Flutter_Keep_Map.md",
+    "03 Database Architecture/Belongity_Taxonomy_Migration_Wiki.md",
+    "02a Belongity_Domain_Taxonomy_Entity_Html_Guides/Part25d_Legacy_Master_Registry_wiki.html",
+    "03 Database Architecture/MySql Migration Scripts/bc_entity_constants.py",
+    "CoWork Projects/Founders Future Prompts/Taxo_FK_Contract_Build_Spec.md v2 (founder-approved starter table)",
+    "live taxo.master @ sandbox (existence-check + drift re-check only, 2026-07-20)"
+  ],
+  "columns": {
+    "influencer_domain_idfr": {
+      "entity_table": "meta.influencers",
+      "taxo_type": "infl_domain",
+      "hierarchy_level": "domain",
+      "concept": "influencer field of activity (domain level)",
+      "source": "Taxo_FK_Contract_Build_Spec.md §Starter entries (founder-approved 2026-07-17); KeepMap L83/117; Belongity_Taxonomy_Migration_Wiki.md",
+      "data_status": "ok"
+    },
+    "influencer_category_idfr": {
+      "entity_table": "meta.influencers",
+      "taxo_type": "infl_domain",
+      "hierarchy_level": "category",
+      "concept": "influencer field of activity (category level)",
+      "source": "Taxo_FK_Contract_Build_Spec.md §Starter entries (founder-approved 2026-07-17); KeepMap L83/117; Belongity_Taxonomy_Migration_Wiki.md",
+      "data_status": "null_pre_launch"
+    },
+    "influencer_sub_domain_idfr": {
+      "entity_table": "meta.influencers",
+      "taxo_type": "infl_domain",
+      "hierarchy_level": "leaf",
+      "concept": "influencer field of activity (sub-domain/leaf level)",
+      "source": "Taxo_FK_Contract_Build_Spec.md §Starter entries (founder-approved 2026-07-17); KeepMap L83/117; Belongity_Taxonomy_Migration_Wiki.md",
+      "data_status": "null_pre_launch"
+    },
+    "infl_type_idfr": {
+      "entity_table": "meta.influencers",
+      "taxo_type": "infl_type",
+      "hierarchy_level": "leaf",
+      "concept": "influencer type",
+      "source": "Taxo_FK_Contract_Build_Spec.md §Starter entries (founder-approved 2026-07-17); KeepMap L83/117; Belongity_Taxonomy_Migration_Wiki.md",
+      "data_status": "ok"
+    },
+    "org_department_idfr": {
+      "entity_table": "org_n.org_member_department",
+      "taxo_type": "o_department",
+      "hierarchy_level": "leaf",
+      "concept": "organization department",
+      "source": "Taxo_FK_Contract_Build_Spec.md §Starter entries (founder-approved 2026-07-17); KeepMap L83/117; Belongity_Taxonomy_Migration_Wiki.md",
+      "data_status": "ok"
+    },
+    "o_project_type_idfr": {
+      "entity_table": "taxonomy dropdown / admin-endpoint (no single entity column — param-keyed lookup)",
+      "taxo_type": "o_project_type",
+      "hierarchy_level": "leaf",
+      "concept": "organization project type",
+      "source": "Taxo_FK_Contract_Build_Spec.md §Starter entries (founder-approved 2026-07-17); KeepMap L83/117; Belongity_Taxonomy_Migration_Wiki.md",
+      "data_status": "ok"
+    },
+    "o_user_type_idfr": {
+      "entity_table": "taxonomy dropdown / admin-endpoint (no single entity column — param-keyed lookup)",
+      "taxo_type": "o_user_type",
+      "hierarchy_level": "leaf",
+      "concept": "organization user type",
+      "source": "Taxo_FK_Contract_Build_Spec.md §Starter entries (founder-approved 2026-07-17); KeepMap L83/117; Belongity_Taxonomy_Migration_Wiki.md",
+      "data_status": "ok"
+    },
+    "o_user_tag_idfr": {
+      "entity_table": "taxonomy dropdown / admin-endpoint (no single entity column — param-keyed lookup)",
+      "taxo_type": "o_user_tag",
+      "hierarchy_level": "leaf",
+      "concept": "organization user tag",
+      "source": "Taxo_FK_Contract_Build_Spec.md §Starter entries (founder-approved 2026-07-17); KeepMap L83/117; Belongity_Taxonomy_Migration_Wiki.md",
+      "data_status": "ok"
+    },
+    "o_management_level_idfr": {
+      "entity_table": "taxonomy dropdown / admin-endpoint (no single entity column — param-keyed lookup)",
+      "taxo_type": "o_management_level",
+      "hierarchy_level": "leaf",
+      "concept": "organization management level",
+      "source": "Taxo_FK_Contract_Build_Spec.md §Starter entries (founder-approved 2026-07-17); KeepMap L83/117; Belongity_Taxonomy_Migration_Wiki.md",
+      "data_status": "ok"
+    },
+    "location_country_idfr": {
+      "entity_table": "taxonomy dropdown / admin-endpoint (no single entity column — param-keyed lookup)",
+      "taxo_type": "location_country",
+      "hierarchy_level": "leaf",
+      "concept": "country (location taxonomy)",
+      "source": "Taxo_FK_Contract_Build_Spec.md §Starter entries (founder-approved 2026-07-17); KeepMap L83/117; Belongity_Taxonomy_Migration_Wiki.md",
+      "data_status": "ok"
+    },
+    "infl_title_idfr": {
+      "entity_table": "meta.influencers",
+      "taxo_type": "infl_title",
+      "hierarchy_level": "leaf",
+      "concept": "influencer title",
+      "source": "Taxo_FK_Contract_Build_Spec.md §Starter entries (founder-approved 2026-07-17); KeepMap L83/117; Belongity_Taxonomy_Migration_Wiki.md",
+      "data_status": "ok"
+    },
+    "o_task_type_idfr": {
+      "entity_table": "taxonomy dropdown / admin-endpoint (no single entity column — param-keyed lookup)",
+      "taxo_type": "o_task_type",
+      "hierarchy_level": "domain",
+      "concept": "organization task type (domain level)",
+      "source": "Taxo_FK_Contract_Build_Spec.md §Starter entries (founder-approved 2026-07-17); KeepMap L83/117; Belongity_Taxonomy_Migration_Wiki.md",
+      "data_status": "ok"
+    },
+    "o_task_sub_type_idfr": {
+      "entity_table": "taxonomy dropdown / admin-endpoint (no single entity column — param-keyed lookup)",
+      "taxo_type": "o_task_type",
+      "hierarchy_level": "category",
+      "concept": "organization task sub-type (category level)",
+      "source": "Taxo_FK_Contract_Build_Spec.md §Starter entries (founder-approved 2026-07-17); KeepMap L83/117; Belongity_Taxonomy_Migration_Wiki.md",
+      "data_status": "ok"
+    },
+    "social_topic_idfr": {
+      "entity_table": "org_n.org_social_topic",
+      "taxo_type": "social_topic_master",
+      "hierarchy_level": "domain",
+      "concept": "social topic (domain level)",
+      "source": "Taxo_FK_Contract_Build_Spec.md §Starter entries (founder-approved 2026-07-17); KeepMap L83/117; Belongity_Taxonomy_Migration_Wiki.md",
+      "data_status": "ok"
+    },
+    "social_sub_topic_idfr": {
+      "entity_table": "org_n.org_social_sub_topic",
+      "taxo_type": "social_topic_master",
+      "hierarchy_level": "leaf",
+      "concept": "social sub-topic (leaf level)",
+      "source": "Taxo_FK_Contract_Build_Spec.md §Starter entries (founder-approved 2026-07-17); KeepMap L83/117; Belongity_Taxonomy_Migration_Wiki.md",
+      "data_status": "ok"
+    },
+    "o_broadcast_section_idfr": {
+      "entity_table": "taxonomy dropdown / admin-endpoint (no single entity column — param-keyed lookup)",
+      "taxo_type": "o_broadcast_section",
+      "hierarchy_level": "domain",
+      "concept": "org broadcast section (domain level)",
+      "source": "Taxo_FK_Contract_Build_Spec.md §Starter entries (founder-approved 2026-07-17); KeepMap L83/117; Belongity_Taxonomy_Migration_Wiki.md",
+      "data_status": "ok"
+    },
+    "o_broadcast_sub_section_idfr": {
+      "entity_table": "taxonomy dropdown / admin-endpoint (no single entity column — param-keyed lookup)",
+      "taxo_type": "o_broadcast_section",
+      "hierarchy_level": "leaf",
+      "concept": "org broadcast sub-section (leaf level)",
+      "source": "Taxo_FK_Contract_Build_Spec.md §Starter entries (founder-approved 2026-07-17); KeepMap L83/117; Belongity_Taxonomy_Migration_Wiki.md",
+      "data_status": "ok"
+    },
+    "prf_skill_category_idfr": {
+      "entity_table": "taxonomy dropdown / admin-endpoint (no single entity column — param-keyed lookup)",
+      "taxo_type": "prf_skill",
+      "hierarchy_level": "domain",
+      "concept": "profile skill category (domain level)",
+      "source": "Taxo_FK_Contract_Build_Spec.md §Starter entries (founder-approved 2026-07-17); KeepMap L83/117; Belongity_Taxonomy_Migration_Wiki.md",
+      "data_status": "ok"
+    },
+    "match_goals_p_idfr": {
+      "entity_table": "meta.organization | meta.influencers | meta.lineage | purpus_user.user",
+      "taxo_type": "match_goals",
+      "hierarchy_level": "leaf",
+      "concept": "primary match goal",
+      "source": "Taxo_FK_Contract_Build_Spec.md §Starter entries (founder-approved 2026-07-17); KeepMap L83/117; Belongity_Taxonomy_Migration_Wiki.md",
+      "data_status": "ok"
+    },
+    "match_mission_p_idfr": {
+      "entity_table": "meta.organization | meta.influencers | meta.lineage | purpus_user.user",
+      "taxo_type": "match_mission",
+      "hierarchy_level": "leaf",
+      "concept": "primary match mission",
+      "source": "Taxo_FK_Contract_Build_Spec.md §Starter entries (founder-approved 2026-07-17); KeepMap L83/117; Belongity_Taxonomy_Migration_Wiki.md",
+      "data_status": "ok"
+    },
+    "match_purpose_p_idfr": {
+      "entity_table": "meta.organization | meta.influencers | meta.lineage | purpus_user.user",
+      "taxo_type": "match_purpose",
+      "hierarchy_level": "leaf",
+      "concept": "primary match purpose",
+      "source": "Taxo_FK_Contract_Build_Spec.md §Starter entries (founder-approved 2026-07-17); KeepMap L83/117; Belongity_Taxonomy_Migration_Wiki.md",
+      "data_status": "ok"
+    },
+    "match_values_p_idfr": {
+      "entity_table": "meta.organization | meta.influencers | meta.lineage | purpus_user.user",
+      "taxo_type": "match_values",
+      "hierarchy_level": "leaf",
+      "concept": "primary match value",
+      "source": "Taxo_FK_Contract_Build_Spec.md §Starter entries (founder-approved 2026-07-17); KeepMap L83/117; Belongity_Taxonomy_Migration_Wiki.md",
+      "data_status": "ok"
+    }
+  },
+  "junctions": {
+    "meta.org_dimension_selections": {
+      "taxo_id_column": "taxo_id",
+      "dimension_column": "dimension",
+      "dimension_to_type_map": {
+        "match_beliefs": "match_beliefs",
+        "match_engagement_intent": "match_engagement_intent",
+        "match_goals": "match_goals",
+        "match_life_stage": "match_life_stage",
+        "match_mission": "match_mission",
+        "match_problems": "match_problems",
+        "match_purpose": "match_purpose",
+        "match_values": "match_values",
+        "match_vision": "match_vision",
+        "specialization": "o_specialization"
+      }
+    },
+    "purpus_user.user_dimension_selections": {
+      "taxo_id_column": "taxo_id",
+      "dimension_column": "dimension",
+      "dimension_to_type_map": {
+        "match_beliefs": "match_beliefs",
+        "match_engagement_intent": "match_engagement_intent",
+        "match_goals": "match_goals",
+        "match_life_stage": "match_life_stage",
+        "match_mission": "match_mission",
+        "match_problems": "match_problems",
+        "match_purpose": "match_purpose",
+        "match_values": "match_values",
+        "match_vision": "match_vision",
+        "profession": "id_profession",
+        "race_ethnicity": "id_race_ethnicity_s",
+        "worldview": "id_worldview_s"
+      }
+    },
+    "meta.influencer_dimension_selections": {
+      "taxo_id_column": "taxo_id",
+      "dimension_column": "dimension",
+      "dimension_to_type_map": {
+        "match_beliefs": "match_beliefs",
+        "match_engagement_intent": "match_engagement_intent",
+        "match_goals": "match_goals",
+        "match_life_stage": "match_life_stage",
+        "match_mission": "match_mission",
+        "match_problems": "match_problems",
+        "match_purpose": "match_purpose",
+        "match_values": "match_values",
+        "match_vision": "match_vision"
+      }
+    },
+    "meta.lineage_dimension_selections": {
+      "taxo_id_column": "taxo_id",
+      "dimension_column": "dimension",
+      "dimension_to_type_map": {
+        "match_beliefs": "match_beliefs",
+        "match_goals": "match_goals",
+        "match_mission": "match_mission",
+        "match_problems": "match_problems",
+        "match_purpose": "match_purpose",
+        "match_vision": "match_vision"
+      }
+    }
+  },
+  "endpoint_types": {
+    "o_job_title@leaf": {
+      "taxo_type": "o_job_title",
+      "levels": [
+        "leaf"
+      ],
+      "seen_at": [
+        "service_orbit_orgs member-title endpoint (live code authoritative, n=397; verified 2026-07-17)"
+      ]
+    }
+  },
+  "not_in_taxo_master": {
+    "onboarding_question": "lives in taxo.onboarding_question table (verified live) — NOT taxo.master",
+    "org_kyc_status": "lives in master.org_kyc_status (KEEP-As-Legacy per Part25d) — NOT taxo.master",
+    "user_category": "lives in org_n.org_user_category (per-tenant) / master.org_user_category (renamed 2026-07-17) — NOT taxo.master",
+    "user_category_option": "lives in org_n per-tenant / master.org_user_category_option — NOT taxo.master"
+  },
+  "needs_founder_decision": []
+}

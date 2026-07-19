@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Taxo FK Contract",
+  "type": "object",
+  "required": ["version", "generated", "sources", "columns", "endpoint_types", "not_in_taxo_master"],
+  "properties": {
+    "version":   { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "generated": { "type": "string", "format": "date" },
+    "sources":   { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+    "columns": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-z_][a-z0-9_]*$": {
+          "type": "object",
+          "required": ["entity_table", "taxo_type", "hierarchy_level", "concept", "source", "data_status"],
+          "properties": {
+            "entity_table":    { "type": "string" },
+            "taxo_type":       { "type": "string", "pattern": "^[a-z_][a-z0-9_]*$" },
+            "hierarchy_level": { "enum": ["realm", "domain", "category", "leaf", "any", "multi"] },
+            "levels":          { "type": "array", "items": { "enum": ["realm","domain","category","leaf"] } },
+            "concept":         { "type": "string" },
+            "source":          { "type": "string" },
+            "data_status":     { "type": "string", "pattern": "^(ok|corrupt:.+|null_pre_launch|drift_escalated:FD-[0-9]+)$" }
+          },
+          "if":   { "properties": { "hierarchy_level": { "const": "multi" } } },
+          "then": { "required": ["levels"] }
+        }
+      }
+    },
+    "junctions": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-z_]+\\.[a-z_]+$": {
+          "type": "object",
+          "required": ["taxo_id_column", "dimension_column", "dimension_to_type_map"],
+          "properties": {
+            "taxo_id_column":       { "type": "string" },
+            "dimension_column":     { "type": "string" },
+            "dimension_to_type_map": {
+              "type": "object",
+              "additionalProperties": { "type": "string", "pattern": "^[a-z_][a-z0-9_]*$" }
+            }
+          }
+        }
+      }
+    },
+    "endpoint_types": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-z0-9_]+@[a-z0-9_-]+$": {
+          "type": "object",
+          "required": ["taxo_type", "levels"],
+          "properties": {
+            "taxo_type": { "type": "string", "pattern": "^[a-z_][a-z0-9_]*$" },
+            "levels":    { "type": "array", "items": { "enum": ["realm","domain","category","leaf"] }, "minItems": 1 },
+            "seen_at":   { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "not_in_taxo_master": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "needs_founder_decision": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["column_or_concept", "conflict", "sources"],
+        "properties": {
+          "column_or_concept": { "type": "string" },
+          "conflict":          { "type": "string" },
+          "sources":           { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  }
+}
