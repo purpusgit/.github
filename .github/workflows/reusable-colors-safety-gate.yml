@@ -52,7 +52,9 @@ jobs:
             # Block any Colors.* except Colors.transparent
             # Uses perl negative lookbehind (?<![a-zA-Z]) to avoid false-positives like gradientColors.map
             # and negative lookahead (?!transparent) so Colors.transparent is permitted on the same line
-            COLOR_HITS=$(echo "$ADDED" | grep -v '// intentional:' | perl -ne 'print if /(?<![a-zA-Z])Colors\.(?!transparent\b)[a-zA-Z]/')
+            # Also exclude constructor default parameters (this.<param> = Colors.<X>)
+            # BuildContext is unavailable at class-scope defaults — colorScheme tokens cannot be used there.
+            COLOR_HITS=$(echo "$ADDED" | grep -v '// intentional:' | grep -vP '\bthis\.[a-zA-Z_][a-zA-Z0-9_]* = Colors\.' | perl -ne 'print if /(?<![a-zA-Z])Colors\.(?!transparent\b)[a-zA-Z]/')
 
             if [ -n "$COLOR_HITS" ]; then
               echo ""
