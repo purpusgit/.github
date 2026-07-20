@@ -8,7 +8,7 @@ Consumed by:    .github/workflows/reusable-host-pin-integrity.yml   (mode: check
 WHY THIS EXISTS
 ---------------
 main_org_orbit (default branch `cwb`) pins each internal `pkg_*` package to a
-hardcoded commit SHA under `dependency_overrides` in pubspec.yaml. Two real
+hardcoded commit SHA under `dependency_overrides` in pubspec.yaml. Three real
 failure classes have shipped:
 
   (a) STRIPPED KEY / ORPHAN COMMENT — a `pub upgrade` (or a bad merge) removes
@@ -17,25 +17,39 @@ failure classes have shipped:
       ships to every flavour. (Confirmed 2026-07-18 for new_social.)
   (b) SSH URL — an internal override uses `git@github.com:` instead of
       `https://github.com/`. CI must rewrite SSH->HTTPS with a token
-      (`insteadOf`) or `flutter pub get` cannot auth; HTTPS is the safer floor.
+      (`insteadOf`) or `flutter pub get` cannot auth. SSH + insteadOf is a
+      valid setup, so this is a WARN by default (raise to error to force
+      an https:// migration).
+  (c) LOCK vs MANIFEST DRIFT — the manifest override `ref:` is bumped to a new
+      SHA (e.g. cwb HEAD after a package PR merges) but `pubspec.lock`'s
+      `resolved-ref` for that package is many commits behind. `flutter pub get`
+      resolves from the LOCK, so the build ships the stale SHA and the merge is
+      INVISIBLE. This is the failure class that makes "merged PRs never land"
+      (FD reference_flutter_host_pin_discipline). HARD FAIL.
 
 MODE: check  (the GATE — reusable-host-pin-integrity.yml)
   FAILS (exit 1) on:
     (a) a SHA-pin comment names an internal package that has NO live `git:`
         override key under dependency_overrides (orphan / stripped-key), OR
-    (b) any internal `git:` override URL is SSH (severity configurable).
+    (b) any internal `git:` override URL is SSH (severity configurable; WARN by
+        default), OR
+    (c) an internal SHA-pinned override's manifest `ref:` != the matching
+        `pubspec.lock` `resolved-ref` (or the package is missing from the lock).
   WARNS (annotation, never fails) when an override `ref` SHA is behind the
   package's live branch HEAD (needs a read token; skipped without one).
 
 MODE: bump   (reusable-host-pin-autobump.yml)
   Rewrites the matching override `ref:` to a new 40-char SHA in place.
 
-Standard library only (urllib) — no pip install needed on the runner.
+Standard library only (urllib) — no pip install needed on the runner. The
+pubspec.lock parser is hand-rolled (line-based) so PyYAML is not required.
 
 Rule 39 / Rule 70A overlap check: grepped Rule 13 script index + `.github`
 scripts/ (only taxo_lint.py present) — no existing script parses host pubspec
 pin integrity or bumps override refs. New script justified; the two modes share
-ONE overrides-block parser (no duplicate parser — Rule 70A / Rule 39).
+ONE overrides-block parser (no duplicate parser — Rule 70A / Rule 39). The lock
+parser is a distinct concern (pubspec.lock, not pubspec.yaml) and has no
+existing implementation to reuse.
 """
 from __future__ import annotations
 
@@ -180,6 +194,88 @@ def _comment_blocks(comments):
     return blocks
 
 
+# -- pubspec.lock parser (line-based; stdlib only, no PyYAML) -----------------
+class LockPackage:
+    __slots__ = ("name", "source", "url", "ref", "resolved_ref", "repo")
+
+    def __init__(self, name):
+        self.name = name
+        self.source = None
+        self.url = None
+        self.ref = None            # branch/tag/sha requested in the lock
+        self.resolved_ref = None   # the actual 40-char SHA the build uses
+        self.repo = None           # purpusgit repo basename from description url
+
+
+def parse_lock(lines):
+    """Parse pubspec.lock and return list[LockPackage] for git-source entries.
+
+    pubspec.lock is YAML but the runner has stdlib only. Layout is fixed and
+    2-space-indented, so a line reader is reliable:
+
+        packages:
+          <name>:                  # 2 spaces
+            dependency: ...        # 4 spaces
+            description:           # 4 spaces
+              path: "."            # 6 spaces
+              ref: cwb             # 6 spaces
+              resolved-ref: "SHA"  # 6 spaces
+              url: "https://..."   # 6 spaces
+            source: git            # 4 spaces
+            version: "0.0.1"       # 4 spaces
+    """
+    start = None
+    for i, ln in enumerate(lines):
+        if re.match(r"^packages:\s*$", ln):
+            start = i
+            break
+    if start is None:
+        return []
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        if re.match(r"^[^#\s]", lines[i]):   # next col-0 key (sdks:) ends block
+            end = i
+            break
+
+    pkgs = []
+    cur = None
+    in_desc = False
+    for i in range(start + 1, end):
+        raw = lines[i]
+        if not raw.strip() or raw.strip().startswith("#"):
+            continue
+        m_pkg = re.match(r"^  ([A-Za-z0-9_]+):\s*$", raw)   # 2-space package name
+        if m_pkg:
+            cur = LockPackage(m_pkg.group(1))
+            pkgs.append(cur)
+            in_desc = False
+            continue
+        if cur is None:
+            continue
+        m4 = re.match(r"^    ([A-Za-z0-9_]+):\s*(.*)$", raw)  # 4-space package field
+        if m4:
+            key, val = m4.group(1), m4.group(2)
+            if key == "description":
+                in_desc = True
+            else:
+                in_desc = False
+                if key == "source":
+                    cur.source = val.strip().strip('"').strip("'")
+            continue
+        if in_desc:
+            m6 = re.match(r"^      ([A-Za-z0-9_-]+):\s*(.*)$", raw)  # 6-space desc field
+            if m6:
+                key, val = m6.group(1), m6.group(2).strip().strip('"').strip("'")
+                if key == "url":
+                    cur.url = val
+                    cur.repo = _repo_from_url(val)
+                elif key == "ref":
+                    cur.ref = val
+                elif key == "resolved-ref":
+                    cur.resolved_ref = val
+    return [p for p in pkgs if p.source == "git"]
+
+
 # -- GitHub API (stdlib) -----------------------------------------------------
 def _gh_get(url, token):
     req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
@@ -270,9 +366,10 @@ def run_check(args):
     for o in git_overrides:
         if o.url and o.url.startswith("git@github.com:"):
             msg = (
-                "Internal git override '%s' uses SSH URL '%s'. Use "
-                "https://github.com/purpusgit/%s.git so CI can auth via a token "
-                "rewrite (insteadOf). SSH deps fail pub get without an SSH key on the runner."
+                "Internal git override '%s' uses SSH URL '%s'. CI rewrites SSH->HTTPS "
+                "with a token (insteadOf); https://github.com/purpusgit/%s.git avoids the "
+                "dependency on that rewrite. (SSH + insteadOf is a valid setup — WARN by "
+                "default; raise --ssh-severity=error to force migration.)"
                 % (o.key, o.url, o.repo or "<repo>")
             )
             if ssh_is_error:
@@ -281,7 +378,52 @@ def run_check(args):
             else:
                 warn(msg, path, o.start_line)
 
-    # (c) behind-HEAD warn (advisory)
+    # (c) LOCK vs MANIFEST — the build resolves from pubspec.lock, so a stale
+    # resolved-ref makes a bumped/merged manifest ref INVISIBLE. For every
+    # internal purpusgit SHA-pinned override, the lock's resolved-ref MUST equal
+    # the manifest ref.
+    lock_path = args.lock or os.path.join(os.path.dirname(path) or ".", "pubspec.lock")
+    if os.path.exists(lock_path):
+        with open(lock_path, encoding="utf-8") as f:
+            lock_lines = f.readlines()
+        lock_pkgs = parse_lock(lock_lines)
+        lock_by_stem = {}
+        for lp in lock_pkgs:
+            lock_by_stem.setdefault(_norm(lp.name), lp)
+            if lp.repo:
+                lock_by_stem.setdefault(_norm(lp.repo), lp)
+        for o in git_overrides:
+            if not o.repo:
+                continue  # non-purpusgit git dep — out of scope for lock pin check
+            if not (o.ref and _SHA40.match(o.ref)):
+                continue  # branch-ref override is not a SHA pin — nothing to compare
+            lp = lock_by_stem.get(_norm(o.key)) or lock_by_stem.get(_norm(o.repo))
+            if lp is None:
+                err(
+                    "Lock/manifest drift for '%s': pubspec.yaml SHA-pins ref %s but the "
+                    "package has NO git entry in %s. The build resolves from the lock, so "
+                    "the pin is unverifiable / the lock is stale. Run lock-refresh "
+                    "(flutter pub get) and commit pubspec.lock."
+                    % (o.key, o.ref, os.path.basename(lock_path)),
+                    path, o.start_line,
+                )
+                failures += 1
+                continue
+            if lp.resolved_ref != o.ref:
+                err(
+                    "Lock/manifest pin mismatch for '%s': pubspec.yaml pins ref %s but "
+                    "pubspec.lock resolved-ref is %s. flutter pub get resolves from the "
+                    "LOCK, so this bump/merge is INVISIBLE to the build until the lock is "
+                    "refreshed. Run lock-refresh (flutter pub get) and commit pubspec.lock "
+                    "so resolved-ref == %s."
+                    % (o.key, o.ref, lp.resolved_ref or "<none>", o.ref),
+                    path, o.ref_line or o.start_line,
+                )
+                failures += 1
+    else:
+        print("::notice::No lock file at %s - skipping lock/manifest pin check." % lock_path)
+
+    # (d) behind-HEAD warn (advisory)
     token = os.environ.get("GH_READ_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if token:
         for o in git_overrides:
@@ -362,8 +504,10 @@ def main(argv=None):
 
     c = sub.add_parser("check", help="run the integrity gate")
     c.add_argument("pubspec", help="path to the host pubspec.yaml")
-    c.add_argument("--ssh-severity", choices=["error", "warn"], default="error",
-                   help="how to treat SSH git URLs (default: error)")
+    c.add_argument("--lock", default=None,
+                   help="path to pubspec.lock (default: pubspec.lock beside the pubspec)")
+    c.add_argument("--ssh-severity", choices=["error", "warn"], default="warn",
+                   help="how to treat SSH git URLs (default: warn — SSH + insteadOf is valid)")
     c.add_argument("--head-branch", default="cwb",
                    help="package branch to compare pins against (default: cwb)")
     c.add_argument("--internal-name", action="append",
