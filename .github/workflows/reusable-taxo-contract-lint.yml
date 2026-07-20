@@ -1,0 +1,54 @@
+# G4 — Taxo FK Contract Lint (reusable workflow)
+# Companion to taxo-contract/checker.py + taxo-contract/taxo_fk_contract.json.
+# Delivered under this name (NOT reusable-taxo-lint.yml) to avoid clobbering the
+# pre-existing, live reusable-taxo-lint.yml (scripts/taxo_lint.py syntactic gate).
+# See PR body / Taxo_FK_Contract_Build_Spec.md for the naming rationale.
+# Workflow body is per G4_Checker_Workflow_Spec.md §1.
+name: Taxo FK Contract Lint (G4)
+on:
+  workflow_call:
+    inputs:
+      repo-checkout-ref:
+        required: false
+        type: string
+        default: ${{ github.sha }}
+jobs:
+  taxo-lint:
+    name: taxo-lint / G4 wrong-concept / wrong-level check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.repo-checkout-ref }}
+
+      - name: Checkout .github (for contract + checker)
+        uses: actions/checkout@v4
+        with:
+          repository: purpusgit/.github
+          path: _org_github
+          ref: main
+          token: ${{ secrets.ORG_GITHUB_READ_TOKEN }}   # read-only org-scoped PAT
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install jsonschema
+        run: pip install jsonschema
+
+      - name: Validate contract against its schema
+        run: |
+          python3 _org_github/taxo-contract/checker.py \
+            --contract    _org_github/taxo-contract/taxo_fk_contract.json \
+            --schema      _org_github/taxo-contract/taxo_fk_contract.schema.json \
+            --validate-contract-only
+
+      - name: Run G4 checker
+        run: |
+          python3 _org_github/taxo-contract/checker.py \
+            --contract    _org_github/taxo-contract/taxo_fk_contract.json \
+            --schema      _org_github/taxo-contract/taxo_fk_contract.schema.json \
+            --repo-root   . \
+            --scan-globs  'src/api/**/*.sql.ts' 'src/api-admin/**/*.sql.ts' 'src/**/*.validator.ts'
