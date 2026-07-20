@@ -10,7 +10,11 @@ name: Reusable — Host Pin Integrity Gate (orphan-comment / SSH-URL / behind-HE
 #       flavour (confirmed 2026-07-18 for new_social).  -> HARD FAIL
 #   (b) SSH URL — an internal git: override uses git@github.com: instead of
 #       https://github.com/, which needs an insteadOf token rewrite to auth on
-#       the runner. HTTPS is the safer floor.  -> HARD FAIL (configurable)
+#       the runner. SSH + insteadOf is a valid setup, so this WARNS by default
+#       (raise ssh_severity=error to force an https:// migration).  -> WARN
+#   (c) LOCK vs MANIFEST DRIFT — the manifest override ref: is bumped to a new
+#       SHA but pubspec.lock resolved-ref is behind; the build resolves from the
+#       LOCK so the bump is invisible and merged package PRs never land. -> HARD FAIL
 # Advisory: WARNS (never fails) when an override ref SHA is behind the package's
 # live branch HEAD (needs a read token; skipped without one).
 #
@@ -36,10 +40,10 @@ on:
         type: string
       ssh_severity:
         description: >-
-          How to treat internal SSH git URLs: 'error' (hard fail, default) or
-          'warn'. Set 'warn' if the repo still relies on the CI insteadOf rewrite
-          and has not migrated pubspec.yaml overrides to https:// URLs.
-        default: "error"
+          How to treat internal SSH git URLs: 'warn' (default) or 'error'. SSH +
+          the CI insteadOf rewrite is a valid setup, so the floor is 'warn'. Set
+          'error' to force migration of pubspec.yaml overrides to https:// URLs.
+        default: "warn"
         type: string
       head_branch:
         description: "Package branch to compare pin SHAs against (behind-HEAD warn)."
