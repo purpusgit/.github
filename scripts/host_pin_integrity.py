@@ -382,6 +382,8 @@ def run_check(args):
     # resolved-ref makes a bumped/merged manifest ref INVISIBLE. For every
     # internal purpusgit SHA-pinned override, the lock's resolved-ref MUST equal
     # the manifest ref.
+    lock_by_stem = {}
+    lock_pkgs = []
     lock_path = args.lock or os.path.join(os.path.dirname(path) or ".", "pubspec.lock")
     if os.path.exists(lock_path):
         with open(lock_path, encoding="utf-8") as f:
@@ -445,6 +447,35 @@ def run_check(args):
                     "'%s' pin %s differs from %s@%s HEAD %s (ancestry undetermined)."
                     % (o.key, o.ref[:8], o.repo, args.head_branch, head[:8]),
                     path, o.ref_line,
+                )
+
+        # (e) LOCK-DRIVEN STALENESS — catches what (c) and (d) structurally cannot.
+        # Both of those iterate pubspec.yaml overrides, so they are blind to:
+        #   - internal deps declared under `dependencies:` instead of dependency_overrides
+        #   - TRANSITIVE internal deps the host never names at all
+        # Evidence 2026-07-21: `create_configure` appears ONLY in pubspec.lock (pulled in
+        # transitively by another package), tracked `ref: cwb`, frozen 18 commits behind
+        # HEAD - invisible to every existing check. A branch-tracked entry freezes exactly
+        # like a SHA pin, because pub get never re-resolves a branch ref and the build
+        # reads the LOCK either way. This is the check that makes staleness detectable
+        # regardless of whether we pin or track branches.
+        for lp in lock_pkgs:
+            if not lp.repo or not lp.resolved_ref:
+                continue
+            if lp.ref and _SHA40.match(lp.ref):
+                continue  # deliberately SHA-pinned - checks (c)/(d) own it
+            branch = lp.ref or args.head_branch
+            head = live_head(lp.repo, branch, token)
+            if not head or head == lp.resolved_ref:
+                continue
+            n = behind_by(lp.repo, lp.resolved_ref, head, token)
+            if n and n > 0:
+                warn(
+                    "'%s' tracks branch '%s' but pubspec.lock is frozen at %s, %d commit(s) "
+                    "behind %s@%s HEAD %s. The build resolves from the LOCK, so those %d "
+                    "merged commit(s) are INVISIBLE to every build. Refresh the lock."
+                    % (lp.name, branch, lp.resolved_ref[:8], n, lp.repo, branch, head[:8], n),
+                    os.path.basename(lock_path),
                 )
     else:
         print("::notice::No read token (GH_READ_TOKEN/GITHUB_TOKEN) - skipping behind-HEAD check.")
