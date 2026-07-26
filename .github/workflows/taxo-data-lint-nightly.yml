@@ -31,9 +31,9 @@ jobs:
     name: Taxonomy data validation (FK:<Type> refs)
     steps:
       - name: Checkout this repo (for scripts/taxo_lint.py)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5.1.0
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6.3.0
         with:
           python-version: "3.11"
       - name: Install driver
