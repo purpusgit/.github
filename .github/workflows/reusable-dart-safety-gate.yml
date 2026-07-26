@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     name: Dart escaped interpolation check
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5.1.0
       - name: Check for escaped string interpolation
         run: |
           HITS=$(grep -rn '\\${' lib/ --include="*.dart" 2>/dev/null || true)
