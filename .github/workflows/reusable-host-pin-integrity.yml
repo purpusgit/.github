@@ -71,12 +71,12 @@ jobs:
     name: host pin integrity (orphan / ssh / behind-HEAD)
     steps:
       - name: Checkout caller repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5.1.0
         with:
           path: caller
 
       - name: Fetch host_pin_integrity.py from purpusgit/.github
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5.1.0
         with:
           repository: purpusgit/.github
           ref: ${{ inputs.gate_ref }}
@@ -84,7 +84,7 @@ jobs:
           token: ${{ secrets.HOST_PIN_READ_TOKEN || github.token }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6.3.0
         with:
           python-version: "3.11"
 
