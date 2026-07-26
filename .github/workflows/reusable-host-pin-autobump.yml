@@ -70,14 +70,14 @@ jobs:
     name: bump host pin -> ${{ inputs.package }}
     steps:
       - name: Checkout host app (${{ inputs.host_repo }}@${{ inputs.host_branch }})
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5.1.0
         with:
           repository: purpusgit/${{ inputs.host_repo }}
           ref: ${{ inputs.host_branch }}
           token: ${{ secrets.GIT_PASSWORD }}
 
       - name: Fetch host_pin_integrity.py from purpusgit/.github
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5.1.0
         with:
           repository: purpusgit/.github
           ref: ${{ inputs.gate_ref }}
@@ -85,7 +85,7 @@ jobs:
           token: ${{ secrets.GIT_PASSWORD }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6.3.0
         with:
           python-version: "3.11"
 
