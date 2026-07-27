@@ -1,5 +1,9 @@
 name: Nightly — Taxonomy Data Lint (FK:<Type> staleness)
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # Runs the DB-backed taxo_lint --data check on a schedule so the
 # onboarding_question FK:<Type> -> taxo.master leaf-coverage assertion and the
 # taxo.master type-existence checks run WITHOUT a per-PR DB dependency. If any
