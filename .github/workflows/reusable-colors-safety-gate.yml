@@ -46,6 +46,25 @@ jobs:
               continue
             fi
 
+            # B5b — file-level `fixed-stage` opt-out, SCOPED TO THE HEX CHECK ONLY.
+            # Some surfaces are a deliberately fixed dark stage that does not follow
+            # the theme (chant session, PiP, calibration wizard, wake overlay, voice
+            # lock, welcome screen). Their hex literals have no light-token match BY
+            # DESIGN, so B5 forced them to be suppressed one line at a time — one repo
+            # reached 505 `// intentional:` stamps, 415 of which suppressed nothing.
+            #
+            # It must NOT skip the whole file. The first draft of this used `continue`,
+            # which ALSO disabled the `Colors.*`, `.withOpacity(` and `extension<X>()!`
+            # checks — and `extension<X>()!` is a null-assertion CRASH check with
+            # nothing to do with B5. One comment line would have opted a file out of a
+            # runtime-safety gate. A fixed stage is a statement about colour SOURCING,
+            # not a licence to crash.
+            FIXED_STAGE=0
+            if head -20 "$FILE" | grep -qE '^[[:space:]]*//[[:space:]]*fixed-stage:'; then
+              FIXED_STAGE=1
+              echo "fixed-stage (B5b): $FILE - hex skipped; Colors.*, withOpacity, extension<>()! still enforced"
+            fi
+
             # Added lines only — lines starting with + but not the +++ file header
             ADDED=$(git diff "origin/${BASE_REF}...HEAD" -- "$FILE" 2>/dev/null | grep '^+' | grep -v '^+++')
 
@@ -92,6 +111,27 @@ jobs:
               echo "       final color = oc?.statusPositive ?? colorScheme.primary;"
               echo "$EXTENSION_BANG" | head -5
               FAILED=1
+            fi
+
+
+            # B5 — hex literals at call sites. WARNING ONLY for now.
+            # B5 says call sites use tokens; hex is permitted only in the central
+            # theme files (already skipped above). Nothing has ever enforced this,
+            # which is how 583 call-site literals shipped in pkg_orbit_japa.
+            # Deliberately non-failing on introduction: flipping it to an error
+            # before every repo has its `fixed-stage` declarations in place would
+            # red-wall unrelated PRs. Promote to FAILED=1 once those have landed.
+            # {6,8} also matched 7 digits, which is not a valid Dart literal.
+            # Color.fromARGB(...) is the same defect in another spelling and was missed
+            # entirely - example/lib/main.dart already uses it.
+            HEX_HITS=""
+            if [ "$FIXED_STAGE" -eq 0 ]; then
+              HEX_HITS=$(echo "$ADDED" | grep -v 'intentional:' | grep -oP 'Color\(0x(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6})\)|Color\.fromARGB\(' | head -10)
+            fi
+            if [ -n "$HEX_HITS" ]; then
+              echo ""
+              echo "::warning file=$FILE::B5 — hex colour literal added at a call site. Use a semantic token, or declare the file '// fixed-stage: <why>' if this surface deliberately ignores the theme."
+              echo "$HEX_HITS"
             fi
 
           done <<< "$CHANGED"
