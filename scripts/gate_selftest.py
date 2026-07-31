@@ -40,6 +40,7 @@ FIXTURES = os.path.join(ROOT, "scripts", "gate-fixtures")
 # kind:
 #   'dir'    -> copy fixtures/<key>/{pass,fail} to a temp dir, run predicate there
 #   'colors' -> build a two-branch git repo at runtime (gate is diff-based)
+#   'dead'   -> 0 callers org-wide: no behavioural test, needs an existence decision
 #   None     -> external: syntax-check only, with `reason`
 BEHAVIOUR = {
     "reusable-dart-safety-gate.yml":            {"kind": "dir", "key": "dart"},
@@ -47,9 +48,9 @@ BEHAVIOUR = {
     "reusable-sql-typestring-safety-gate.yml":  {"kind": "dir", "key": "sql-typestring"},
     "reusable-colors-safety-gate.yml":          {"kind": "colors"},
     "reusable-taxo-lint.yml":        {"kind": None, "reason": "delegates to scripts/taxo_lint.py; --data needs live MySQL secrets"},
-    "reusable-taxo-contract-lint.yml": {"kind": None, "reason": "cross-repo checkout (ORG_GITHUB_READ_TOKEN) + jsonschema + checker.py"},
+    "reusable-taxo-contract-lint.yml": {"kind": "dead", "reason": "0 callers org-wide (2026-07-31); also needs cross-repo token. checker.py is offline-tested by taxo-contract/test_checker.py"},
     "taxo-data-lint-nightly.yml":    {"kind": None, "reason": "DB-backed scheduled job; needs TAXO_DB_* MySQL secrets"},
-    "reusable-host-pin-autobump.yml": {"kind": None, "reason": "rewrites host pubspec, needs host PAT, opens a real PR against main_org_orbit"},
+    "reusable-host-pin-autobump.yml": {"kind": "dead", "reason": "0 callers org-wide (2026-07-31); pkg_* push callers never wired. Also opens a real PR against main_org_orbit"},
 }
 
 FAILURES = []
@@ -191,6 +192,11 @@ def main():
         if beh is None:
             print(f"  ! no behaviour entry for {fn} — add one (new gate?)")
             fail(f"{fn}: unmapped gate; refusing to silently skip")
+        elif beh["kind"] == "dead":
+            # Distinct from SKIP-BEHAVIOURAL: not "we couldn't test it" but
+            # "nothing calls it". A gate nobody calls doesn't need a behavioural
+            # test — it needs a decision about whether it should exist.
+            print(f"  ⚰ DEAD-NO-CALLERS: {beh['reason']}")
         elif beh["kind"] is None:
             print(f"  ⤳ SKIP-BEHAVIOURAL: {beh['reason']}")
         elif beh["kind"] == "dir":

@@ -1,0 +1,8 @@
+{ "$schema":"https://json-schema.org/draft/2020-12/schema","type":"object",
+  "required":["version","generated","sources","columns","endpoint_types","not_in_taxo_master"],
+  "properties":{"version":{"type":"string","pattern":"^[0-9]+\\.[0-9]+$"},"generated":{"type":"string"},
+    "sources":{"type":"array","items":{"type":"string"},"minItems":1},
+    "columns":{"type":"object","patternProperties":{"^[a-z_][a-z0-9_]*$":{"type":"object",
+      "required":["entity_table","taxo_type","hierarchy_level","concept","source","data_status"],
+      "properties":{"hierarchy_level":{"enum":["realm","domain","category","leaf","any","multi"]}}}}},
+    "endpoint_types":{"type":"object"},"not_in_taxo_master":{"type":"object"}}}
