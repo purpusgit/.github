@@ -1,0 +1,39 @@
+name: Reusable — SQL taxo Type-String Safety Gate
+
+# Enforces TypeScript_Backend_Coding_Rules.md §SQL Template Literal Discipline #2:
+# taxo.master type strings are lowercase since Rule 59 (2026-05-16). A PascalCase
+# type like 'Org_Department' returns 0 rows silently — tsc exits 0, CI is green,
+# the endpoint returns NULL at runtime only. This is the ungated sibling of the
+# already-gated stray-semicolon bug (reusable-sql-safety-gate.yml).
+
+on:
+  workflow_call:
+
+jobs:
+  sql-typestring-gate:
+    runs-on: ubuntu-latest
+    name: SQL taxo.master type-string check (Rule 58/59)
+    steps:
+      - uses: actions/checkout@v5.1.0
+      - name: Check for PascalCase taxo.master type strings in SQL templates
+        run: |
+          set -uo pipefail
+          files=$( { find src -type f -name '*.sql.ts'; find src -type f -name '*.sql.v[0-9]*.ts'; } 2>/dev/null | sort -u )
+          FAIL=0
+          for f in $files; do
+            [ -f "$f" ] || continue
+            HITS=$(grep -nE "type[[:space:]]*=[[:space:]]*'[A-Z][A-Za-z0-9_]*'" "$f" | grep -v 'intentional:' || true)
+            if [ -n "$HITS" ]; then
+              echo "::error file=$f::PascalCase taxo.master type string — taxo.master types are lowercase since Rule 59; a PascalCase value returns 0 rows silently (tsc green, NULL at runtime). See TypeScript_Backend_Coding_Rules.md SQL Template Literal Discipline #2 (Rule 58/59)."
+              echo "$HITS" | sed "s|^|  $f:|"
+              FAIL=1
+            fi
+          done
+          if [ "$FAIL" -eq 1 ]; then
+            echo ""
+            echo "Fix: lowercase the type string, or verify the exact value against live taxo.master."
+            echo "Suppress a verified-correct hit with a '// intentional:' comment on the same line."
+            exit 1
+          fi
+          n=$(printf '%s\n' "$files" | grep -c . || true)
+          echo "SQL taxo type-string gate passed — ${n} .sql.ts files scanned, 0 issues."
