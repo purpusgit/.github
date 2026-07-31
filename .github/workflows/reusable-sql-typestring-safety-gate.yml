@@ -16,7 +16,7 @@ on:
   workflow_call:
     inputs:
       base_ref:
-        description: 'Base branch to diff against. Empty = the PR base, then cwb.'
+        description: 'Base branch to diff against. Empty = the PR base, then the repo default branch.'
         required: false
         type: string
         default: ''
@@ -40,7 +40,7 @@ jobs:
           PAT="type[[:space:]]*=[[:space:]]*'[A-Z][A-Za-z0-9_]*'"
           FAIL=0
           if [ "${{ inputs.full_scan }}" = "true" ]; then
-            # Audit mode — whole tree.
+            # Audit mode — whole tree. grep -n here numbers real file lines.
             files=$( { find src -type f -name '*.sql.ts'; find src -type f -name '*.sql.v[0-9]*.ts'; } 2>/dev/null | sort -u )
             for f in $files; do
               [ -f "$f" ] || continue
@@ -55,17 +55,26 @@ jobs:
             # PR mode — added lines only, against the PR base branch.
             BASE_REF="${{ inputs.base_ref }}"
             [ -z "$BASE_REF" ] && BASE_REF="${{ github.base_ref }}"
-            [ -z "$BASE_REF" ] && BASE_REF="cwb"
-            git fetch origin "$BASE_REF" 2>/dev/null || true
-            CHANGED=$(git diff "origin/${BASE_REF}...HEAD" --name-only -- '*.sql.ts' 2>/dev/null | sort -u)
+            [ -z "$BASE_REF" ] && BASE_REF="${{ github.event.repository.default_branch }}"
+            git fetch origin "$BASE_REF" --depth=1 2>/dev/null || true
+            # Never pass vacuously: if the base ref can't be resolved, RED — do not
+            # let a swallowed diff error print "gate passed" (silent-pass / vacuous-gate).
+            if ! git rev-parse --verify --quiet "origin/${BASE_REF}" >/dev/null; then
+              echo "::error::sql-typestring gate could not resolve base ref origin/${BASE_REF} — refusing to pass without diffing."
+              exit 1
+            fi
+            CHANGED=$(git diff "origin/${BASE_REF}...HEAD" --name-only -- '*.sql.ts' | sort -u)
             if [ -z "$CHANGED" ]; then
               echo "No changed *.sql.ts against origin/${BASE_REF}. Gate passed."
               exit 0
             fi
             while IFS= read -r f; do
               [ -f "$f" ] || continue
+              # Added lines only (git diff '+' lines, minus the +++ header). grep without
+              # -n here: the added-line stream has no file line numbers, so -n would
+              # mislabel. The ::error names the file; the printed line shows the offender.
               ADDED=$(git diff "origin/${BASE_REF}...HEAD" -- "$f" | grep '^+' | grep -v '^+++')
-              HITS=$(echo "$ADDED" | grep -nE "$PAT" | grep -v 'intentional:' || true)
+              HITS=$(echo "$ADDED" | grep -E "$PAT" | grep -v 'intentional:' || true)
               if [ -n "$HITS" ]; then
                 echo "::error file=$f::PascalCase taxo.master type string ADDED (Rule 58/59) — taxo.master types are lowercase; a PascalCase value returns 0 rows silently."
                 echo "$HITS"
