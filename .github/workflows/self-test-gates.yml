@@ -1,0 +1,37 @@
+name: Self-CI — Gate Predicate Fixture Suite
+
+# Task 5 of the Rules-to-Gates canonicalisation spec. Until now purpusgit/.github
+# had no CI on itself: seven (now eight) reusable gates, called `@main` by every
+# consumer repo, validated by nothing (PR #15 returned zero check runs). A gate
+# whose predicate silently breaks would fail open across the org. This workflow
+# runs scripts/gate_selftest.py, which extracts each gate's live `run:` predicate,
+# syntax-checks it, and runs the self-contained ones against pass/fail fixtures.
+# It goes RED if any predicate breaks or stops catching its violation.
+
+on:
+  push:
+    paths:
+      - '.github/workflows/**'
+      - 'scripts/**'
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - 'scripts/**'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  gate-selftest:
+    runs-on: ubuntu-latest
+    name: Exercise every reusable gate predicate
+    steps:
+      - uses: actions/checkout@v5.1.0
+      - uses: actions/setup-python@v6.3.0
+        with:
+          python-version: "3.11"
+      - name: Install PyYAML
+        run: pip install pyyaml
+      - name: Run gate self-test
+        run: python3 scripts/gate_selftest.py
