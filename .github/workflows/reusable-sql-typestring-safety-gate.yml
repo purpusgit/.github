@@ -11,6 +11,15 @@ name: Reusable — SQL taxo Type-String Safety Gate
 # colours gate's added-lines discipline).
 # Scheduled/audit mode (full_scan: true): scans the whole src tree and reports every
 # violation — for a nightly legacy-debt inventory, not per-PR blocking.
+#
+# ⚠️ GLOB INVARIANT — do not "helpfully" widen this. This gate has NO context-gating:
+# it greps `type = 'PascalCase'` in every scanned file, so its safety is ENTIRELY a
+# property of the glob being SQL-only file types (*.sql.ts, and *.sql if ever added).
+# Broadening the glob to *.ts (or any non-SQL type) without adding context-gating
+# recreates the spec-file false-positive class (proven: `const type = 'Fixture_Type'`
+# in a test file). Broader / inline-SQL-in-.ts surfaces are owned by
+# reusable-taxo-lint.yml, which IS taxo.master-context-gated. Keep the two gates,
+# two scopes; do not merge them here.
 
 on:
   workflow_call:
