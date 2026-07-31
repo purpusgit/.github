@@ -43,7 +43,7 @@ scan a broader set of files. See invariants.
 `scripts/gate_selftest.py` extracts each gate's live `run:` predicate, `bash -n`s it,
 and runs the self-contained gates against pass/fail fixtures with a canary that proves
 the fail-assertions can fail. Checker logic is guarded by offline tests
-(`taxo-contract/test_checker.py`; `test_taxo_lint.py` pending). Never prove red-detection
+(`taxo-contract/test_checker.py`, `scripts/test_taxo_lint.py`). Never prove red-detection
 by breaking a real gate on `main` — consumers resolve these workflows `@main`, so a
 deliberate break is an org-wide outage.
 
@@ -58,7 +58,7 @@ Broadly enforced: `dart-safety` (17 repos), `sql-safety` (17), `colours` (14).
 | `sql-typestring` | `service_inapp_chat` (#77), `service_auth` (#188), `service_orbit_orgs` (#1127) | Diff-only; safe to wire anywhere |
 | `taxo-lint` (advisory) | `service_orbit_orgs`, `service_auth` (#188) | `service_auth` verified via dispatch run 30667001320 |
 | `taxo-contract-lint` | **none** | Detector correct, unwired — dead |
-| `host-pin-autobump` | **none** | Dead |
+| `host-pin-autobump` | **none** | Dead / superseded (see Open items) |
 
 Genuine taxo `*.sql.ts` surface exists only in `service_auth` and `service_orbit_orgs`
 (and, once broadened, the migration/inline-SQL surfaces of `service_inapp_chat` and
@@ -107,15 +107,20 @@ Reviewers should push new taxo queries into `*.sql.ts`.
 
 ## Open items
 
-- **`taxo_lint.py` glob broadening (decisions 1 + 2a)** — prototyped and passing 15/15
-  fixtures (migrations `*.sql` with `backups`/`dumps` excluded; template-scoped inline
-  SQL in `.ts` with spec/test exclusions). Pending Fable line-review of the parser diff
-  before it touches the shared file.
+- **`taxo_lint.py` glob broadening (decisions 1 + 2a)** — **draft PR #17 open**,
+  self-CI green (13-check regression `scripts/test_taxo_lint.py` + fixtures). Awaiting
+  Fable's parser line-review before merge. Adds migrations `*.sql` (excl `backups`/
+  `dumps`) + template-scoped inline SQL in `.ts` (excl spec/test).
 - **Bug #3 (`taxo-contract-lint`)** — checker rule 2.2 is correct and block-scoped
   (commit `6a5637d2`) but the gate has **0 callers**. Wiring blocked until the
   annotation-mandate question and a pilot repo are settled.
-- **`host-pin-autobump`** — 0 callers; decide whether pkg pins are going stale or the
-  automation was parked.
+- **`host-pin-autobump`** — 0 callers, **parked / superseded** (verified 2026-07-31).
+  The live host-pin mechanism is `main_org_orbit/.github/workflows/roll-internal-deps.yaml`
+  (`flutter pub upgrade` of internal `cwb` packages → PR → gated by flutter-analyze +
+  barrel-safety), which its own header calls "the clean replacement for the retired
+  lock-refresh workflow". Pins are **not** going stale; the org moved from SHA-pin
+  bumping to native pub upgrade. `host-pin-autobump.yml` is dead code — candidate for
+  deletion from `.github`.
 - **`service_orbit_orgs` legacy count** — run its first `full_scan` to get the exact
   pre-existing PascalCase count (non-blocking).
 
