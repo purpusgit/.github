@@ -46,6 +46,20 @@ jobs:
               continue
             fi
 
+            # B5b — file-level `fixed-stage` opt-out.
+            # Some surfaces are a deliberately fixed dark stage that does not follow
+            # the theme at all (chant session, PiP, calibration wizard, wake overlay,
+            # voice lock). Their literals have no light-token match BY DESIGN. Without
+            # this, every one of them needs its own `// intentional:` line — which is
+            # how one repo ended up with 505 of them, 415 of which suppress nothing.
+            # Declare intent ONCE at the top of the file instead:
+            #     // fixed-stage: <why this surface ignores the theme>
+            # Must appear in the first 20 lines, so it is visible on open.
+            if head -20 "$FILE" | grep -qE '^\s*//\s*fixed-stage:'; then
+              echo "Skipping fixed-stage file (B5b): $FILE"
+              continue
+            fi
+
             # Added lines only — lines starting with + but not the +++ file header
             ADDED=$(git diff "origin/${BASE_REF}...HEAD" -- "$FILE" 2>/dev/null | grep '^+' | grep -v '^+++')
 
@@ -92,6 +106,21 @@ jobs:
               echo "       final color = oc?.statusPositive ?? colorScheme.primary;"
               echo "$EXTENSION_BANG" | head -5
               FAILED=1
+            fi
+
+
+            # B5 — hex literals at call sites. WARNING ONLY for now.
+            # B5 says call sites use tokens; hex is permitted only in the central
+            # theme files (already skipped above). Nothing has ever enforced this,
+            # which is how 583 call-site literals shipped in pkg_orbit_japa.
+            # Deliberately non-failing on introduction: flipping it to an error
+            # before every repo has its `fixed-stage` declarations in place would
+            # red-wall unrelated PRs. Promote to FAILED=1 once those have landed.
+            HEX_HITS=$(echo "$ADDED" | grep -v 'intentional:' | grep -v 'fixed-stage:' | grep -oP 'Color\(0x[0-9a-fA-F]{6,8}\)' | head -10)
+            if [ -n "$HEX_HITS" ]; then
+              echo ""
+              echo "::warning file=$FILE::B5 — hex colour literal added at a call site. Use a semantic token, or declare the file '// fixed-stage: <why>' if this surface deliberately ignores the theme."
+              echo "$HEX_HITS"
             fi
 
           done <<< "$CHANGED"
