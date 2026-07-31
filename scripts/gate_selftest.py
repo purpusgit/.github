@@ -40,12 +40,15 @@ FIXTURES = os.path.join(ROOT, "scripts", "gate-fixtures")
 # kind:
 #   'dir'    -> copy fixtures/<key>/{pass,fail} to a temp dir, run predicate there
 #   'colors' -> build a two-branch git repo at runtime (gate is diff-based)
+#   'diff'   -> build a two-branch git repo; add pass/fail line (diff-based gate)
 #   'dead'   -> 0 callers org-wide: no behavioural test, needs an existence decision
 #   None     -> external: syntax-check only, with `reason`
 BEHAVIOUR = {
     "reusable-dart-safety-gate.yml":            {"kind": "dir", "key": "dart"},
     "reusable-sql-safety-gate.yml":             {"kind": "dir", "key": "sql-semicolon"},
-    "reusable-sql-typestring-safety-gate.yml":  {"kind": "dir", "key": "sql-typestring"},
+    "reusable-sql-typestring-safety-gate.yml":  {"kind": "diff", "fpath": "src/x.sql.ts",
+        "base": "export const q = `SELECT id FROM taxo.master WHERE is_deleted = 0`;\n",
+        "pass": "  AND type = 'org_department'", "fail": "  AND type = 'Org_Department'"},
     "reusable-colors-safety-gate.yml":          {"kind": "colors"},
     "reusable-taxo-lint.yml":        {"kind": None, "reason": "delegates to scripts/taxo_lint.py; --data needs live MySQL secrets"},
     "reusable-taxo-contract-lint.yml": {"kind": "dead", "reason": "0 callers org-wide (2026-07-31); also needs cross-repo token. checker.py is offline-tested by taxo-contract/test_checker.py"},
@@ -118,22 +121,32 @@ def behavioural_dir(script, key, label):
             else:
                 ok(f"{label}: {case} fixture behaves ({'exit 0' if want_zero else 'non-zero'})")
 
-def build_colors_repo(tmp, violating_line):
-    """Two-branch git repo the diff-based colours gate needs. Base branch 'cwb'
-    is clean; the work branch adds `violating_line` to lib/w.dart. origin/cwb is
-    faked with update-ref (the gate's checkout/fetch are separate steps, not part
-    of the run: block we execute)."""
+def build_diff_repo(tmp, fpath, base_content, added_line):
+    """Two-branch git repo the diff-based gates need. Base branch 'cwb' holds
+    base_content at fpath; the work branch appends added_line. origin/cwb is faked
+    with update-ref (the gate's checkout/fetch are separate steps or `|| true`, not
+    part of the diff logic we execute)."""
     g = ["git", "-c", "user.email=t@t.co", "-c", "user.name=t"]
     def run(*a): subprocess.run(list(a), cwd=tmp, check=True, capture_output=True)
     run(*g, "init", "-q", "-b", "cwb")
-    os.makedirs(os.path.join(tmp, "lib"))
-    open(os.path.join(tmp, "lib", "w.dart"), "w").write("class W {}\n")
+    full = os.path.join(tmp, fpath)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    open(full, "w").write(base_content)
     run(*g, "add", "-A"); run(*g, "commit", "-qm", "base")
     run(*g, "update-ref", "refs/remotes/origin/cwb", "HEAD")
     run(*g, "checkout", "-qb", "work")
-    with open(os.path.join(tmp, "lib", "w.dart"), "a") as f:
-        f.write(violating_line + "\n")
+    with open(full, "a") as f:
+        f.write("\n" + added_line + "\n")
     run(*g, "add", "-A"); run(*g, "commit", "-qm", "work")
+
+def _assert_diff(script, label, case, want_zero, tmp):
+    code, out = run_predicate(script, tmp)
+    if want_zero and code != 0:
+        fail(f"{label}: PASS fixture unexpectedly RED (exit {code})\n{out}")
+    elif not want_zero and code == 0:
+        fail(f"{label}: FAIL fixture was NOT caught (exit 0) — gate is asleep\n{out}")
+    else:
+        ok(f"{label}: {case} fixture behaves ({'exit 0' if want_zero else 'non-zero'})")
 
 def behavioural_colors(script, label):
     for case, line, want_zero in (
@@ -141,14 +154,14 @@ def behavioural_colors(script, label):
         ("fail", "  final c = Colors.red;", False),
     ):
         with tempfile.TemporaryDirectory() as tmp:
-            build_colors_repo(tmp, line)
-            code, out = run_predicate(script, tmp)
-            if want_zero and code != 0:
-                fail(f"{label}: PASS fixture unexpectedly RED (exit {code})\n{out}")
-            elif not want_zero and code == 0:
-                fail(f"{label}: FAIL fixture was NOT caught (exit 0) — gate is asleep\n{out}")
-            else:
-                ok(f"{label}: {case} fixture behaves ({'exit 0' if want_zero else 'non-zero'})")
+            build_diff_repo(tmp, "lib/w.dart", "class W {}\n", line)
+            _assert_diff(script, label, case, want_zero, tmp)
+
+def behavioural_diff(script, spec, label):
+    for case, want_zero in (("pass", True), ("fail", False)):
+        with tempfile.TemporaryDirectory() as tmp:
+            build_diff_repo(tmp, spec["fpath"], spec["base"], spec[case])
+            _assert_diff(script, label, case, want_zero, tmp)
 
 def canary(dart_script):
     """Negative test of the test: weaken the dart predicate (strip its `exit 1`)
@@ -205,6 +218,8 @@ def main():
                 dart_script = runs[-1]
         elif beh["kind"] == "colors":
             behavioural_colors(runs[-1], fn)
+        elif beh["kind"] == "diff":
+            behavioural_diff(runs[-1], beh, fn)
         print()
 
     print("── canary (negative test of the test)")
