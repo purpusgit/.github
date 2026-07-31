@@ -8,35 +8,37 @@ taxonomy-touching code and data. Three independent modes:
                       Primary gate: every onboarding_question FK:<Type> ref must
                       point at a taxo.master type that still has >0 active leaves.
 
-  --code <dir>        Static regex scan of *.sql.ts files (no DB). Catches:
+  --code <dir>        Static regex scan (no DB). Catches:
                         G1  PascalCase type literals on taxo.master queries
                             (Rule 59 — new taxonomy names are snake_case only).
                         G2  taxo.master queries referencing a column that is not
                             in the real taxo.master schema allowlist
                             (parent_id / parent_idfr / joining_label et al.).
 
-  --code-db <dir>     Same static scan as --code PLUS a live-DB check (needs a
-                      DB connection). Closes the last gap G1 cannot: a
-                      *lowercase-but-nonexistent* taxo type (e.g. type =
-                      'wrong_type_here') passes G1's PascalCase test yet points
-                      at nothing. G3 extracts every lowercase `type = '<...>'`
-                      literal on a taxo.master query and asserts each one still
-                      exists in live taxo.master (SELECT COUNT(*) > 0). G1/G2
-                      run unchanged alongside it.
+  --code-db <dir>     Same static scan as --code PLUS a live-DB check (G3).
 
-Exit code is 0 when clean, non-zero when any check fails, so it drops straight
-into a CI step. Failures print as a clean table with file:line or ref detail.
+SCAN SCOPE (2026-07-31 broadening — Fable decisions 1 + 2a):
+  * `**/*.sql.ts`, `**/*.sql.v[0-9]*.ts`, and `**/*.sql` (migrations) and other
+    `**/*.ts` are all scanned. `backups/`, `dumps/`, `__tests__/`, `*.spec.ts`,
+    `*.test.ts` are excluded.
+  * `.sql` files (pure SQL): statement-window scan — the whole file is SQL, so a
+    taxo.master mention scopes the surrounding statement. 0 FP on migrations.
+  * `.ts` files (inline SQL in service/route/*.sql.ts): DEFAULT-DENY template
+    scoping — a type/column hit counts ONLY if it sits inside the same backtick
+    template literal that contains the `taxo.master` mention, with `${...}`
+    interpolations blanked. This structurally kills the false-positive class where
+    an unrelated TS `type = 'X_Y'` sits near a bare `'taxo.master'` string (e.g. a
+    test), rather than relying on a line-proximity window (the same defect family
+    as taxo-contract checker.py 2.2's _nearest_idfr, fixed 2026-07-31).
+    NOTE: SQL that is NOT inside a backtick template (single-quote concatenation)
+    is not scanned in .ts files — the org convention is that taxo SQL lives in
+    backtick template literals / *.sql.ts files.
+
+Exit code is 0 when clean, non-zero when any check fails.
 
 DB credentials for --data / --code-db come from (in order):
   1. --db-json <path> + --db-env <name>   (bc_mysql_envs.json style file)
   2. env vars TAXO_DB_HOST / TAXO_DB_PORT / TAXO_DB_USER / TAXO_DB_PASSWORD
-     (CI wires these from repo/org secrets — see reusable-taxo-lint.yml and
-     taxo-data-lint-nightly.yml).
-
-Author note (Rule 39 overlap check): grepped the Rule 13 script index + the
-service repos — no existing script performs the onboarding FK:<Type> ->
-taxo.master leaf-coverage assertion or the .sql.ts PascalCase/column scan.
-This is a new, single-purpose CI checker; it writes nothing to any DB.
 """
 import argparse
 import glob
@@ -45,25 +47,17 @@ import re
 import sys
 
 
-# ---------------------------------------------------------------------------
-# Real taxo.master columns. Anything else referenced in a taxo.master query is
-# a stale/wrong-column reference (the G2 bug class). Keep this list in sync with
-# `DESCRIBE taxo.master`.
-# ---------------------------------------------------------------------------
 TAXO_MASTER_COLUMNS = {
     "id", "identifier", "code", "short_name", "type", "value", "description",
     "hierarchy_level", "realm_idfr", "domain_idfr", "category_idfr",
     "display_order", "keywords", "phase", "source_file", "is_active",
     "is_deleted", "created_at", "updated_at", "glyph",
 }
-
-# Columns that are known-bad and must always be flagged when they appear against
-# taxo.master, even if a future edit to the allowlist slips.
 KNOWN_BAD_COLUMNS = {"parent_id", "parent_idfr", "joining_label"}
 
 
 # ===========================================================================
-# DATA MODE
+# DATA MODE  (unchanged)
 # ===========================================================================
 def _load_db_creds(args):
     if args.db_json:
@@ -86,14 +80,10 @@ def run_data(args):
     creds = _load_db_creds(args)
     conn = pymysql.connect(connect_timeout=20, **creds)
     cur = conn.cursor()
-    failures = []  # (question_id, ref, target_type, leaf_count)
-
-    # --- Check 1 (REQUIRED): onboarding FK:<Type> -> taxo.master leaf coverage
+    failures = []
     cur.execute(
         "SELECT id, answer_options_ref FROM taxo.onboarding_question "
-        "WHERE answer_options_ref LIKE 'FK:%' AND is_deleted = 0 "
-        "ORDER BY id"
-    )
+        "WHERE answer_options_ref LIKE 'FK:%' AND is_deleted = 0 ORDER BY id")
     fk_rows = cur.fetchall()
     stale_types = set()
     for qid, ref in fk_rows:
@@ -101,25 +91,19 @@ def run_data(args):
         cur.execute(
             "SELECT COUNT(*) FROM taxo.master WHERE type = %s "
             "AND hierarchy_level = 'leaf' AND is_active = 1 AND is_deleted = 0",
-            (target,),
-        )
+            (target,))
         n = cur.fetchone()[0]
         if n == 0:
             failures.append((qid, ref, target, 0))
             stale_types.add(target)
-
-    # --- Check 2 (OPTIONAL hook): assert given type strings have >0 leaves
     missing_types = []
     if args.assert_type:
         for t in args.assert_type:
-            cur.execute(
-                "SELECT COUNT(*) FROM taxo.master WHERE type = %s "
-                "AND is_active = 1 AND is_deleted = 0", (t,))
+            cur.execute("SELECT COUNT(*) FROM taxo.master WHERE type = %s "
+                        "AND is_active = 1 AND is_deleted = 0", (t,))
             if cur.fetchone()[0] == 0:
                 missing_types.append(t)
     conn.close()
-
-    # --- Report
     print("=" * 72)
     print("taxo_lint --data : taxo.* data validation")
     print("=" * 72)
@@ -138,12 +122,10 @@ def run_data(args):
         print(f"[Check 2] missing (0 rows)                     : {len(missing_types)}")
         for t in missing_types:
             print(f"          MISSING: {t}")
-
     failed = bool(failures) or bool(missing_types)
     print()
     if failed:
-        print("RESULT: FAIL — taxonomy data has stale references. "
-              "Repoint the FK refs (or add the taxo.master leaves) before merge.")
+        print("RESULT: FAIL — taxonomy data has stale references.")
         return 1
     print("RESULT: PASS — every FK ref resolves to a live taxo.master type.")
     return 0
@@ -152,46 +134,38 @@ def run_data(args):
 # ===========================================================================
 # CODE MODE
 # ===========================================================================
-# A taxo.master query "window": we consider a line taxo.master-relevant if the
-# file references taxo.master AND the line is within a SQL context. To keep the
-# scan simple and low-false-positive, G1/G2 fire on lines that mention
-# taxo.master directly OR appear in a file that queries taxo.master. We scope
-# per-statement using a sliding window around each `taxo.master` mention.
-
 _PASCAL_TYPE = re.compile(r"type\s*=\s*'([A-Z][A-Za-z0-9]*_[A-Za-z0-9_]*)'")
-
-# Lowercase snake_case type literal on a taxo.master query. G1 (PascalCase)
-# cannot see these — a valid-LOOKING but non-existent lowercase type slips the
-# static scan entirely. G3 (--code-db) resolves each one against the live DB.
 _LOWER_TYPE = re.compile(r"type\s*=\s*'([a-z][a-z0-9_]*)'")
-
-# Keywords that can immediately follow `taxo.master` but are NOT a table alias.
 _SQL_NON_ALIAS = {
     "as", "on", "where", "join", "left", "right", "inner", "outer", "cross",
     "full", "group", "order", "limit", "offset", "set", "using", "and", "or",
     "union", "having", "select", "from", "natural", "for", "into", "values",
     "lock", "straight_join",
 }
-
-# `taxo.master`, optionally followed by `AS <alias>` or a bare `<alias>`.
 _TAXO_MASTER_ALIAS = re.compile(
     r"\btaxo\.master\b(?:\s+(?:as\s+)?([A-Za-z_]\w*))?", re.IGNORECASE)
-# A table reference introduced by FROM / JOIN.
 _TABLE_REF = re.compile(r"\b(?:from|join)\s+([A-Za-z_$][\w.$]*)", re.IGNORECASE)
-# A known-bad column with its (possibly dotted, possibly empty) qualifier path:
-#   sub_org.parent_id     -> prefix "sub_org.",     col "parent_id"
-#   taxo.master.parent_id -> prefix "taxo.master.", col "parent_id"
-#   parent_id             -> prefix "",             col "parent_id"
-# The lookbehind stops the match starting mid-identifier (org_parent_id) or
-# mid-path. Longer bad names first so parent_idfr wins over parent_id.
 _BAD_COL = re.compile(
     r"(?<![\w.$])((?:[A-Za-z_$]\w*\s*\.\s*)*)"
-    r"(" + "|".join(sorted(KNOWN_BAD_COLUMNS, key=len, reverse=True)) + r")\b"
-)
+    r"(" + "|".join(sorted(KNOWN_BAD_COLUMNS, key=len, reverse=True)) + r")\b")
+_TAXO = re.compile(r"\btaxo\.master\b", re.IGNORECASE)
+
+GLOB_PATTERNS = ("*.sql.ts", "*.sql.v[0-9]*.ts", "*.sql", "*.ts")
+
+
+def _excluded(rel):
+    """Exclude mysqldumps/backups (volume + seeded literals) and test files
+    (a helper named fixtures.ts walks past filename rules, so exclude the whole
+    __tests__ tree too)."""
+    rel = rel.replace(os.sep, "/")
+    parts = rel.split("/")
+    if "backups" in parts or "dumps" in parts or "__tests__" in parts:
+        return True
+    base = parts[-1]
+    return base.endswith(".spec.ts") or base.endswith(".test.ts")
 
 
 def _strip_line_comments(text):
-    # Remove // and -- line comments so literals inside comments don't trip us.
     out = []
     for line in text.split("\n"):
         line = re.sub(r"--.*$", "", line)
@@ -200,13 +174,15 @@ def _strip_line_comments(text):
     return "\n".join(out)
 
 
+def _line_at(text, off):
+    return text.count("\n", 0, off) + 1
+
+
+# ---- .sql (whole-file SQL) : statement-window scan -------------------------
 def _taxo_master_line_windows(lines):
-    """Return the set of 0-based line indices within a taxo.master statement
-    window (the mention line plus the following ~40 lines up to the next
-    statement terminator `;` or a backtick break). Used by G1."""
     idx = set()
     for i, ln in enumerate(lines):
-        if re.search(r"\btaxo\.master\b", ln):
+        if _TAXO.search(ln):
             idx.add(i)
             for j in range(i + 1, min(i + 45, len(lines))):
                 idx.add(j)
@@ -218,17 +194,9 @@ def _taxo_master_line_windows(lines):
 
 
 def _taxo_master_blocks(lines):
-    """Per-statement blocks around each taxo.master mention:
-    (start, end, taxo_aliases, has_other_tables).
-
-    `taxo_aliases` = aliases bound to taxo.master in the block (e.g. `m` from
-    `taxo.master AS m`). `has_other_tables` = True when the block's FROM/JOIN
-    clauses reference any table other than `taxo.master`. G2 uses these to flag
-    a bad column ONLY when it is an actual taxo.master column reference — not a
-    same-window `parent_id` that belongs to a different table."""
     blocks = []
     for i, ln in enumerate(lines):
-        if not re.search(r"\btaxo\.master\b", ln):
+        if not _TAXO.search(ln):
             continue
         start = max(0, i - 30)
         end = i
@@ -237,56 +205,174 @@ def _taxo_master_blocks(lines):
             if lines[j].rstrip().endswith(";") or lines[j].strip() == "`":
                 break
         text = "\n".join(lines[start:end + 1])
-        aliases = set()
-        for m in _TAXO_MASTER_ALIAS.finditer(text):
-            a = m.group(1)
-            if a and a.lower() not in _SQL_NON_ALIAS:
-                aliases.add(a)
-        has_other = False
-        for m in _TABLE_REF.finditer(text):
-            if m.group(1).lower() != "taxo.master":
-                has_other = True
-                break
+        aliases = {m.group(1) for m in _TAXO_MASTER_ALIAS.finditer(text)
+                   if m.group(1) and m.group(1).lower() not in _SQL_NON_ALIAS}
+        has_other = any(m.group(1).lower() != "taxo.master"
+                        for m in _TABLE_REF.finditer(text))
         blocks.append((start, end, aliases, has_other))
     return blocks
 
 
 def _bad_col_is_taxo_ref(prefix, aliases, has_other):
-    """True when a matched bad column is an actual taxo.master column reference
-    (a real G2 violation)."""
     quals = [q.strip() for q in prefix.split(".") if q.strip()]
     if not quals:
-        # Bare column: belongs to taxo.master only when taxo.master is the sole
-        # table in the statement (no other FROM/JOIN).
         return not has_other
-    low = [q.lower() for q in quals]
-    if low[-2:] == ["taxo", "master"]:
-        return True                 # taxo.master.parent_id
-    return quals[-1] in aliases     # <taxo_alias>.parent_id
+    if [q.lower() for q in quals][-2:] == ["taxo", "master"]:
+        return True
+    return quals[-1] in aliases
+
+
+def _scan_sql_text(path, text, g1_hits, g2_set, lower_hits):
+    lines = text.split("\n")
+    windows = _taxo_master_line_windows(lines)
+    for i, ln in enumerate(lines):
+        if i not in windows:
+            continue
+        for m in _PASCAL_TYPE.finditer(ln):
+            g1_hits.append((path, i + 1, m.group(1)))
+        for m in _LOWER_TYPE.finditer(ln):
+            lower_hits.append((path, i + 1, m.group(1)))
+    for start, end, aliases, has_other in _taxo_master_blocks(lines):
+        for i in range(start, end + 1):
+            ln = lines[i]
+            for m in _BAD_COL.finditer(ln):
+                if re.search(r"\bas\s*$", ln[:m.start()], re.IGNORECASE):
+                    continue
+                if _bad_col_is_taxo_ref(m.group(1), aliases, has_other):
+                    g2_set.add((path, i + 1, m.group(2)))
+
+
+# ---- .ts (inline SQL) : default-deny template scoping ----------------------
+def _skip_quote(text, i, q):
+    n = len(text)
+    j = i + 1
+    while j < n:
+        if text[j] == "\\":
+            j += 2
+            continue
+        if text[j] == q:
+            return j + 1
+        j += 1
+    return n
+
+
+def _skip_nested_template(text, i):
+    n = len(text)
+    j = i + 1
+    while j < n:
+        c = text[j]
+        if c == "\\":
+            j += 2
+            continue
+        if c == "`":
+            return j + 1
+        if c == "$" and j + 1 < n and text[j + 1] == "{":
+            j += 2
+            depth = 1
+            while j < n and depth:
+                d = text[j]
+                if d == "\\":
+                    j += 2
+                    continue
+                if d == "{":
+                    depth += 1
+                elif d == "}":
+                    depth -= 1
+                elif d == "`":
+                    j = _skip_nested_template(text, j)
+                    continue
+                j += 1
+            continue
+        j += 1
+    return n
+
+
+def _template_spans(text):
+    """(start, end, interps) for each top-level backtick template: content offsets
+    plus the `${...}` ranges to blank. Handles nested templates, quotes inside
+    interpolations, and escaped backticks."""
+    spans, i, n = [], 0, len(text)
+    while i < n:
+        if text[i] != "`":
+            i += 1
+            continue
+        start = i + 1
+        j = start
+        interps = []
+        while j < n:
+            c = text[j]
+            if c == "\\":
+                j += 2
+                continue
+            if c == "`":
+                break
+            if c == "$" and j + 1 < n and text[j + 1] == "{":
+                a = j
+                j += 2
+                depth = 1
+                while j < n and depth:
+                    d = text[j]
+                    if d == "\\":
+                        j += 2
+                        continue
+                    if d == "{":
+                        depth += 1
+                    elif d == "}":
+                        depth -= 1
+                    elif d == "`":
+                        j = _skip_nested_template(text, j)
+                        continue
+                    elif d in "\"'":
+                        j = _skip_quote(text, j, d)
+                        continue
+                    j += 1
+                interps.append((a, j))
+                continue
+            j += 1
+        spans.append((start, j, interps))
+        i = j + 1
+    return spans
+
+
+def _blank_interps(text, s, e, interps):
+    seg = list(text[s:e])
+    for a, b in interps:
+        for k in range(a, b):
+            if text[k] != "\n":
+                seg[k - s] = " "
+    return "".join(seg)
+
+
+def _scan_ts_text(path, text, g1_hits, g2_set, lower_hits):
+    for s, e, interps in _template_spans(text):
+        seg = _blank_interps(text, s, e, interps)
+        if not _TAXO.search(seg):
+            continue
+        aliases = {m.group(1) for m in _TAXO_MASTER_ALIAS.finditer(seg)
+                   if m.group(1) and m.group(1).lower() not in _SQL_NON_ALIAS}
+        has_other = any(m.group(1).lower() != "taxo.master"
+                        for m in _TABLE_REF.finditer(seg))
+        for m in _PASCAL_TYPE.finditer(seg):
+            g1_hits.append((path, _line_at(text, s + m.start()), m.group(1)))
+        for m in _LOWER_TYPE.finditer(seg):
+            lower_hits.append((path, _line_at(text, s + m.start()), m.group(1)))
+        for m in _BAD_COL.finditer(seg):
+            if re.search(r"\bas\s*$", seg[:m.start()], re.IGNORECASE):
+                continue
+            if _bad_col_is_taxo_ref(m.group(1), aliases, has_other):
+                g2_set.add((path, _line_at(text, s + m.start()), m.group(2)))
 
 
 def _scan_files(root):
-    """Static scan of *.sql.ts (and versioned *.sql.vN.ts) under `root`.
-
-    Returns (files, g1_hits, g2_hits, lower_hits) where:
-      files       = sorted list of scanned paths
-      g1_hits     = [(path, line, pascal_type)]      Rule 59 violations
-      g2_hits     = sorted [(path, line, bad_col)]   wrong taxo.master columns
-      lower_hits  = [(path, line, lowercase_type)]   candidates for the G3
-                    live-DB existence check (used only by --code-db)
-    """
-    # Match both plain (foo.sql.ts) and versioned (foo.sql.v1.ts / foo.sql.v2.ts)
-    # SQL template files. Versioned files were previously skipped by the bare
-    # *.sql.ts glob (Rule 86 CI-gate fix).
-    patterns = ("*.sql.ts", "*.sql.v[0-9]*.ts")
+    """Static scan. Returns (files, g1_hits, g2_hits, lower_hits) — same shape as
+    before, so run_code / run_code_db are unchanged."""
     files = sorted({
         f
-        for pat in patterns
+        for pat in GLOB_PATTERNS
         for f in glob.glob(os.path.join(root, "**", pat), recursive=True)
+        if os.path.isfile(f) and not _excluded(os.path.relpath(f, root))
     })
-    g1_hits = []
-    g2_set = set()
-    lower_hits = []
+    g1_hits, g2_set, lower_hits = [], set(), []
     for path in files:
         try:
             raw = open(path, encoding="utf-8", errors="replace").read()
@@ -294,32 +380,12 @@ def _scan_files(root):
             print(f"Warning: could not read {path}: {e}")
             continue
         text = _strip_line_comments(raw)
-        lines = text.split("\n")
-        if not re.search(r"\btaxo\.master\b", text):
-            continue  # file never touches taxo.master — out of scope
-        windows = _taxo_master_line_windows(lines)
-
-        # G1: PascalCase type literal (unchanged — critic-verified precise).
-        # G3 candidates: lowercase type literal (scoped to the same windows).
-        for i, ln in enumerate(lines):
-            if i not in windows:
-                continue
-            for m in _PASCAL_TYPE.finditer(ln):
-                g1_hits.append((path, i + 1, m.group(1)))
-            for m in _LOWER_TYPE.finditer(ln):
-                lower_hits.append((path, i + 1, m.group(1)))
-
-        # G2: bad column reference, scoped to actual taxo.master columns.
-        for start, end, aliases, has_other in _taxo_master_blocks(lines):
-            for i in range(start, end + 1):
-                ln = lines[i]
-                for m in _BAD_COL.finditer(ln):
-                    # An `AS <bad>` OUTPUT alias is not a taxo.master column
-                    # reference (e.g. `SELECT value AS joining_label`).
-                    if re.search(r"\bas\s*$", ln[:m.start()], re.IGNORECASE):
-                        continue
-                    if _bad_col_is_taxo_ref(m.group(1), aliases, has_other):
-                        g2_set.add((path, i + 1, m.group(2)))
+        if not _TAXO.search(text):
+            continue
+        if path.endswith(".sql"):
+            _scan_sql_text(path, text, g1_hits, g2_set, lower_hits)
+        else:
+            _scan_ts_text(path, text, g1_hits, g2_set, lower_hits)
     return files, g1_hits, sorted(g2_set), lower_hits
 
 
@@ -336,11 +402,10 @@ def _print_g1_g2(g1_hits, g2_hits):
 
 def run_code(args):
     files, g1_hits, g2_hits, _ = _scan_files(args.dir)
-
     print("=" * 72)
-    print("taxo_lint --code : *.sql.ts static scan")
+    print("taxo_lint --code : static scan")
     print("=" * 72)
-    print(f"scanned .sql.ts files              : {len(files)}")
+    print(f"scanned files                      : {len(files)}")
     print(f"[G1] PascalCase taxo type literals : {len(g1_hits)}  (Rule 59)")
     print(f"[G2] wrong taxo.master columns     : {len(g2_hits)}")
     _print_g1_g2(g1_hits, g2_hits)
@@ -354,31 +419,23 @@ def run_code(args):
 
 
 def run_code_db(args):
-    """--code-db : the --code static scan (G1 + G2) PLUS a live-DB existence
-    check (G3) of every lowercase type literal found on a taxo.master query.
-    G1/G2 behave exactly as in --code; G3 is the only DB-dependent addition."""
     import pymysql
     files, g1_hits, g2_hits, lower_hits = _scan_files(args.dir)
-
     creds = _load_db_creds(args)
     conn = pymysql.connect(connect_timeout=20, **creds)
     cur = conn.cursor()
     distinct = sorted({t for _, _, t in lower_hits})
     missing = set()
     for t in distinct:
-        cur.execute(
-            "SELECT COUNT(*) FROM taxo.master WHERE type = %s AND is_deleted = 0",
-            (t,),
-        )
+        cur.execute("SELECT COUNT(*) FROM taxo.master WHERE type = %s AND is_deleted = 0", (t,))
         if cur.fetchone()[0] == 0:
             missing.add(t)
     conn.close()
     g3_hits = [(p, ln, t) for (p, ln, t) in lower_hits if t in missing]
-
     print("=" * 72)
-    print("taxo_lint --code-db : *.sql.ts static scan + live-DB type existence")
+    print("taxo_lint --code-db : static scan + live-DB type existence")
     print("=" * 72)
-    print(f"scanned .sql.ts files                   : {len(files)}")
+    print(f"scanned files                           : {len(files)}")
     print(f"[G1] PascalCase taxo type literals      : {len(g1_hits)}  (Rule 59)")
     print(f"[G2] wrong taxo.master columns          : {len(g2_hits)}")
     print(f"[G3] lowercase types checked (live DB)  : {len(distinct)}")
@@ -404,17 +461,14 @@ def main():
     sub.add_argument("--data", action="store_true",
                      help="Validate live taxo.* data (needs DB).")
     sub.add_argument("--code", metavar="DIR",
-                     help="Static scan of *.sql.ts under DIR (no DB).")
+                     help="Static scan under DIR (no DB).")
     sub.add_argument("--code-db", metavar="DIR",
-                     help="Static scan of *.sql.ts under DIR PLUS a live-DB "
-                          "existence check (G3) of every lowercase type literal. "
-                          "Needs DB creds.")
+                     help="Static scan under DIR PLUS a live-DB existence check (G3).")
     ap.add_argument("--db-json", help="Path to bc_mysql_envs.json style creds file.")
     ap.add_argument("--db-env", default="sandbox", help="Env key inside --db-json.")
     ap.add_argument("--assert-type", action="append", default=[],
                     help="(--data) Assert this taxo.master type has >0 rows. Repeatable.")
     args = ap.parse_args()
-
     if args.code:
         args.dir = args.code
         sys.exit(run_code(args))

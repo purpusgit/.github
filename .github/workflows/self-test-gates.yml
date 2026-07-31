@@ -44,3 +44,5 @@ jobs:
         run: python3 scripts/gate_selftest.py
       - name: Run taxo-contract checker self-test (block-scoped 2.2)
         run: python3 taxo-contract/test_checker.py
+      - name: Run taxo_lint scan-scope self-test (glob broadening + template scoping)
+        run: python3 scripts/test_taxo_lint.py
