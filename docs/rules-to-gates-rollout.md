@@ -29,8 +29,9 @@ is measured by **caller count**, not by the gate's existence.
 | `reusable-sql-safety-gate.yml` | Stray semicolons in SQL template literals | `src/**/*.sql.ts` | n/a | Blocking |
 | `reusable-colors-safety-gate.yml` | Hardcoded `Colors.*`, `withOpacity`, `extension<>()!` | added lines in `lib/**/*.dart` | Diff-only | Blocking |
 | `reusable-dart-safety-gate.yml` | Escaped `\${` interpolation | `lib/**/*.dart` | n/a | Blocking |
-| `reusable-host-pin-autobump.yml` | Rolls host pubspec pins on pkg push | n/a | n/a | **0 callers — dead** |
 | `taxo-data-lint-nightly.yml` | FK:<Type> staleness (DB) | scheduled in `.github` | n/a | Nightly; metric = last-successful-run, **not** caller count |
+
+(`reusable-host-pin-autobump.yml` was **removed** 2026-08-01 in PR #18 — 0 callers, superseded by `main_org_orbit`'s `roll-internal-deps.yaml`.)
 
 **Two gates, two scopes (do not merge).** The bash `sql-typestring` gate has **no**
 context-gating — its safety is entirely that its glob is SQL-only file types. The
@@ -43,9 +44,9 @@ scan a broader set of files. See invariants.
 `scripts/gate_selftest.py` extracts each gate's live `run:` predicate, `bash -n`s it,
 and runs the self-contained gates against pass/fail fixtures with a canary that proves
 the fail-assertions can fail. Checker logic is guarded by offline tests
-(`taxo-contract/test_checker.py`, `scripts/test_taxo_lint.py`). Never prove red-detection
-by breaking a real gate on `main` — consumers resolve these workflows `@main`, so a
-deliberate break is an org-wide outage.
+(`taxo-contract/test_checker.py`; `scripts/test_taxo_lint.py` lands with PR #17).
+Never prove red-detection by breaking a real gate on `main` — consumers resolve these
+workflows `@main`, so a deliberate break is an org-wide outage.
 
 ---
 
@@ -58,7 +59,6 @@ Broadly enforced: `dart-safety` (17 repos), `sql-safety` (17), `colours` (14).
 | `sql-typestring` | `service_inapp_chat` (#77), `service_auth` (#188), `service_orbit_orgs` (#1127) | Diff-only; safe to wire anywhere |
 | `taxo-lint` (advisory) | `service_orbit_orgs`, `service_auth` (#188) | `service_auth` verified via dispatch run 30667001320 |
 | `taxo-contract-lint` | **none** | Detector correct, unwired — dead |
-| `host-pin-autobump` | **none** | Dead / superseded (see Open items) |
 
 Genuine taxo `*.sql.ts` surface exists only in `service_auth` and `service_orbit_orgs`
 (and, once broadened, the migration/inline-SQL surfaces of `service_inapp_chat` and
@@ -114,15 +114,15 @@ Reviewers should push new taxo queries into `*.sql.ts`.
 - **Bug #3 (`taxo-contract-lint`)** — checker rule 2.2 is correct and block-scoped
   (commit `6a5637d2`) but the gate has **0 callers**. Wiring blocked until the
   annotation-mandate question and a pilot repo are settled.
-- **`host-pin-autobump`** — 0 callers, **parked / superseded** (verified 2026-07-31).
-  The live host-pin mechanism is `main_org_orbit/.github/workflows/roll-internal-deps.yaml`
-  (`flutter pub upgrade` of internal `cwb` packages → PR → gated by flutter-analyze +
-  barrel-safety), which its own header calls "the clean replacement for the retired
-  lock-refresh workflow". Pins are **not** going stale; the org moved from SHA-pin
-  bumping to native pub upgrade. `host-pin-autobump.yml` is dead code — candidate for
-  deletion from `.github`.
 - **`service_orbit_orgs` legacy count** — run its first `full_scan` to get the exact
   pre-existing PascalCase count (non-blocking).
+
+## Recently done
+
+- **`host-pin-autobump` removed** (PR #18, 2026-08-01) — 0 callers, superseded by
+  `main_org_orbit`'s `roll-internal-deps.yaml` (native `flutter pub upgrade`, "the
+  clean replacement for the retired lock-refresh workflow"). `scripts/host_pin_integrity.py`
+  left in place (may serve a separate integrity gate).
 
 ## Governance memories
 
