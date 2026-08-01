@@ -12,6 +12,12 @@ name: Self-CI — Gate Predicate Fixture Suite
 # offline fixtures — NEVER by pushing a deliberately-broken predicate to a real
 # gate on main. Consumer repos resolve these workflows `@main`, so a deliberate
 # break here is an org-wide CI outage, not a local test.
+#
+# Why this job installs Flutter and Node: reusable-flutter-analyze and
+# reusable-tsc-check each have exactly one self-contained predicate
+# (`flutter analyze lib/`, `tsc --noEmit`). Without the toolchains those two
+# gates could only ever be syntax-checked, i.e. never proven to go red. The SDK
+# setup is the price of a behavioural assertion on them; it buys nothing else.
 
 on:
   push:
@@ -38,6 +44,18 @@ jobs:
       - uses: actions/setup-python@v6.3.0
         with:
           python-version: "3.11"
+      # Toolchains for the two behavioural fixtures added 2026-08-02.
+      # No version file is pinned on purpose: the fixtures assert on analyzer /
+      # tsc DIAGNOSTICS, not on SDK-version-specific output, so tracking stable
+      # is what we want — if a future SDK stops reporting `unused_element` as a
+      # warning, this harness should red and tell us.
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: Install deps
         run: pip install pyyaml jsonschema
       - name: Run gate self-test

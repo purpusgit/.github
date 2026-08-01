@@ -27,8 +27,23 @@ their exit codes cannot be asserted in isolation here — they get syntax-checki
 only, logged SKIP-BEHAVIOURAL / DEAD-NO-CALLERS with the reason. We do not fake
 coverage.
 
-flutter-analyze and tsc-check need flutter SDK + GH_PAT (or node + npm ci) that
-are not available in the self-test runner; they get syntax-checking only.
+flutter-analyze and tsc-check are PARTIAL: each has exactly one self-contained
+predicate (`flutter analyze lib/`, `tsc --noEmit`) and that one is behaviourally
+tested — the self-test job installs the Flutter SDK and Node for precisely that.
+Their other steps (private-dep resolution via GH_PAT, `npm ci` against a consumer
+lockfile) still cannot run here and stay syntax-only, logged PARTIAL with the
+reason rather than silently dropped.
+
+Two rules make those two fixtures honest, and they apply to any future gate whose
+behavioural step is not the last one:
+  * The step is pinned BY NAME (`kind: "step"`), never by `runs[-1]`. Positional
+    selection silently retargets the assertion at a different predicate the moment
+    a step is added or removed; by name, the harness reds with "step no longer
+    exists" and a human repoints it.
+  * FAIL fixtures assert an expected diagnostic substring (`expect`), not merely a
+    non-zero exit. A missing or broken toolchain exits 127, which a bare
+    exit-code assertion would happily score as "violation caught" — a green
+    harness proving nothing.
 
 Exit 0 = all checks passed (green). Exit 1 = a predicate broke or a fixture
 assertion failed (red).
@@ -42,6 +57,10 @@ FIXTURES = os.path.join(ROOT, "scripts", "gate-fixtures")
 # ── behavioural map: which gate is self-contained and how to run it ───────────
 # kind:
 #   'dir'    -> copy fixtures/<key>/{pass,fail} to a temp dir, run predicate there
+#   'step'   -> same, but pick the predicate by STEP NAME instead of runs[-1];
+#               optional 'prep' runs first (e.g. dependency resolution), optional
+#               'expect' asserts a substring in the FAIL fixture's output, and
+#               optional 'note' records which steps remain syntax-only
 #   'colors' -> build a two-branch git repo at runtime (gate is diff-based)
 #   'diff'   -> build a two-branch git repo; add pass/fail line (diff-based gate)
 #   'barrel' -> build two-branch git repo; test removal detection
@@ -56,8 +75,17 @@ BEHAVIOUR = {
         "pass": "  AND type = 'org_department'", "fail": "  AND type = 'Org_Department'"},
     "reusable-colors-safety-gate.yml":          {"kind": "colors"},
     "reusable-barrel-safety-gate.yml":          {"kind": "barrel"},
-    "reusable-flutter-analyze.yml":    {"kind": None, "reason": "needs flutter SDK + GH_PAT secret; syntax-checked only"},
-    "reusable-tsc-check.yml":          {"kind": None, "reason": "needs node 22 + npm ci to resolve types; skips when no .ts files"},
+    "reusable-flutter-analyze.yml":  {"kind": "step", "step": "Analyze (lib only)",
+        "key": "flutter-analyze", "prep": "dart pub get --no-example",
+        "expect": "unused_element",
+        "note": "checkout/git-config + `dart pub get` against private org deps need the"
+                " GH_PAT secret; the Test step needs a consumer test suite. Those stay"
+                " syntax-only. The analyze predicate itself is behaviourally tested."},
+    "reusable-tsc-check.yml":       {"kind": "step", "step": "TypeScript type-check",
+        "key": "tsc", "expect": "error TS2322",
+        "note": "`npm ci` needs the consumer repo's lockfile and the detect step writes to"
+                " $GITHUB_OUTPUT; both stay syntax-only. The tsc predicate itself is"
+                " behaviourally tested."},
     "reusable-rule84-flavor-fork-gate.yml":     {"kind": "rule84"},
     "reusable-taxo-lint.yml":        {"kind": None, "reason": "delegates to scripts/taxo_lint.py; --data needs live MySQL secrets"},
     "reusable-taxo-contract-lint.yml": {"kind": None, "reason": "wired to service_orbit_orgs (2026-08-01); needs ORG_GITHUB_READ_TOKEN cross-repo secret. checker.py offline-tested by taxo-contract/test_checker.py"},
@@ -81,6 +109,21 @@ def extract_runs(doc):
             if isinstance(step, dict) and "run" in step and step["run"]:
                 runs.append(step["run"])
     return runs
+
+def extract_named_runs(doc):
+    """{step name: run script} for every named `run:` step.
+
+    Lets a behavioural fixture pin itself to a step by NAME. Positional
+    selection (runs[-1]) silently retargets when a step is added or removed;
+    by name, the harness reds instead of quietly asserting on a different
+    predicate than the one the fixture was written for.
+    """
+    named = {}
+    for job in (doc.get("jobs") or {}).values():
+        for step in (job.get("steps") or []):
+            if isinstance(step, dict) and step.get("run") and step.get("name"):
+                named[step["name"]] = step["run"]
+    return named
 
 def sub_gha(script):
     """Actions expands ${{ ... }} before the shell runs. Mirror that so the
@@ -115,19 +158,34 @@ def run_predicate(script, workdir):
                        text=True, capture_output=True)
     return r.returncode, r.stdout + r.stderr
 
-def behavioural_dir(script, key, label):
+def behavioural_dir(script, key, label, prep=None, expect=None):
     src = os.path.join(FIXTURES, key)
     for case, want_zero in (("pass", True), ("fail", False)):
         with tempfile.TemporaryDirectory() as tmp:
             work = os.path.join(tmp, "repo")
             shutil.copytree(os.path.join(src, case), work)
+            if prep:
+                p = subprocess.run(["bash", "-c", prep], cwd=work,
+                                   text=True, capture_output=True)
+                if p.returncode != 0:
+                    fail(f"{label}: prep {prep!r} failed on the {case} fixture "
+                         f"(exit {p.returncode}) — cannot assert on the predicate\n"
+                         f"{p.stdout}{p.stderr}")
+                    continue
             code, out = run_predicate(script, work)
             if want_zero and code != 0:
                 fail(f"{label}: PASS fixture unexpectedly RED (exit {code})\n{out}")
             elif not want_zero and code == 0:
                 fail(f"{label}: FAIL fixture was NOT caught (exit 0) — gate is asleep\n{out}")
+            elif not want_zero and expect and expect not in out:
+                # Non-zero is necessary but not sufficient: a missing toolchain
+                # exits 127 and would otherwise be scored as a caught violation.
+                fail(f"{label}: FAIL fixture exited {code} but the output does not "
+                     f"contain {expect!r} — the gate went red for the WRONG reason\n{out}")
             else:
-                ok(f"{label}: {case} fixture behaves ({'exit 0' if want_zero else 'non-zero'})")
+                ok(f"{label}: {case} fixture behaves ("
+                   f"{'exit 0' if want_zero else 'non-zero'}"
+                   f"{'' if want_zero or not expect else f', reports {expect!r}'})")
 
 def build_diff_repo(tmp, fpath, base_content, added_line):
     """Two-branch git repo the diff-based gates need. Base branch 'cwb' holds
@@ -225,16 +283,48 @@ def canary(dart_script):
         fail(f"canary: weakened predicate still exited {code}; the FAIL fixture "
              "does not actually depend on the predicate")
 
+def canary_analyze(analyze_script):
+    """Second canary, for the analyze gate specifically.
+
+    The flags are the whole predicate here: `--no-fatal-infos` is deliberate,
+    `--no-fatal-warnings` would not be. Weaken the invocation exactly that way
+    and assert the FAIL fixture (a warning-level `unused_element`) stops being
+    caught — which is what proves the fixture tests the WARNING bar and not just
+    'analyze ran'.
+    """
+    weak = analyze_script.replace("--no-fatal-infos", "--no-fatal-infos --no-fatal-warnings")
+    if weak == analyze_script:
+        fail("canary[analyze]: `--no-fatal-infos` not found in the analyze predicate — "
+             "the gate changed shape; repoint this canary")
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        work = os.path.join(tmp, "repo")
+        shutil.copytree(os.path.join(FIXTURES, "flutter-analyze", "fail"), work)
+        p = subprocess.run(["bash", "-c", "dart pub get --no-example"], cwd=work,
+                           text=True, capture_output=True)
+        if p.returncode != 0:
+            fail(f"canary[analyze]: prep failed\n{p.stdout}{p.stderr}")
+            return
+        code, _ = run_predicate(weak, work)
+    if code == 0:
+        ok("canary[analyze]: predicate weakened to --no-fatal-warnings goes green on "
+           "the FAIL fixture — the fixture genuinely tests the warning bar")
+    else:
+        fail(f"canary[analyze]: weakened predicate still exited {code}; the FAIL "
+             "fixture is red for some reason other than the planted warning")
+
 def main():
     files = sorted(os.path.basename(p) for p in glob.glob(os.path.join(WF_DIR, "*.yml")))
     files = [f for f in files if f != "self-test-gates.yml"]
     print(f"Found {len(files)} workflow(s) in .github/workflows/\n")
 
     dart_script = None
+    analyze_script = None
     for fn in files:
         print(f"── {fn}")
         doc = load_yaml(os.path.join(WF_DIR, fn))
         runs = extract_runs(doc)
+        named = extract_named_runs(doc)
         if not runs:
             print("  (no run: steps)")
         for i, script in enumerate(runs):
@@ -255,6 +345,19 @@ def main():
             behavioural_dir(runs[-1], beh["key"], fn)
             if beh.get("key") == "dart":
                 dart_script = runs[-1]
+        elif beh["kind"] == "step":
+            script = named.get(beh["step"])
+            if script is None:
+                fail(f"{fn}: behavioural step {beh['step']!r} no longer exists in this "
+                     "gate — the gate changed shape. Repoint or remove the fixture; "
+                     "do NOT let it fall back to a positional guess.")
+            else:
+                behavioural_dir(script, beh["key"], fn,
+                                prep=beh.get("prep"), expect=beh.get("expect"))
+                if beh["key"] == "flutter-analyze":
+                    analyze_script = script
+            if beh.get("note"):
+                print(f"  ⤳ PARTIAL: {beh['note']}")
         elif beh["kind"] == "colors":
             behavioural_colors(runs[-1], fn)
         elif beh["kind"] == "diff":
@@ -270,6 +373,10 @@ def main():
         canary(dart_script)
     else:
         fail("canary: dart predicate not found")
+    if analyze_script:
+        canary_analyze(analyze_script)
+    else:
+        fail("canary[analyze]: analyze predicate not found")
     print()
 
     if FAILURES:
