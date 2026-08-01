@@ -1,0 +1,41 @@
+name: TypeScript Type Check — reusable
+
+# Lifted from service_mongo_social (node 22 version).
+# service_nearyest has repo-specific scripts (check-escaped-interpolation.mjs,
+# check-json-columns.mjs, integration tests) that cannot be in a shared gate;
+# those remain in-repo and call this workflow for the base type check.
+#
+# Why paths filter: a paths filter on the CALLER prevents vacuous runs on
+# markdown-only PRs. The caller owns the trigger and paths decision; this
+# reusable just runs tsc when invoked.
+
+on:
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+jobs:
+  tsc:
+    name: tsc --noEmit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci
+      - name: Detect TypeScript sources
+        id: tscan
+        run: |
+          if find . -type f \( -name '*.ts' -o -name '*.tsx' \) \
+               -not -path './node_modules/*' -print -quit | grep -q . ; then
+            echo "has_ts=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "has_ts=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No TypeScript files found in repo — skipping tsc"
+          fi
+      - name: TypeScript type-check
+        if: steps.tscan.outputs.has_ts == 'true'
+        run: npx --yes --package=typescript@5 tsc --noEmit

@@ -1,0 +1,54 @@
+name: Flutter Analyze — reusable (pkg_* packages)
+
+# Superset of pkg_orbit_auth + pkg_orbit_binder flutter_analyze.yml.
+# Use this for any Flutter package repo (pkg_*). NOT for main_org_orbit
+# (host app uses GIT_PASSWORD + flutter pub get, not dart pub get).
+#
+# Differences from main_org_orbit:
+#   - Secret: GH_PAT (not GIT_PASSWORD)
+#   - Resolver: dart pub get --no-example (package; not flutter pub get)
+#   - Tests: required; fails if test/ is absent
+#   - Push to cwb triggers here too (cwb is the integration branch)
+
+on:
+  workflow_call:
+    secrets:
+      GH_PAT:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: flutter analyze
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure git for private org repos
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "git@github.com:"
+          git config --global --add url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version-file: .fvmrc
+          channel: stable
+          cache: true
+      - run: dart pub get --no-example
+      - name: Analyze (lib only)
+        run: flutter analyze lib/ --no-fatal-infos --no-pub
+      - name: Test
+        run: |
+          if [ ! -d test ]; then
+            echo "::error::test/ is missing — a repo with no tests must not pass this gate silently"
+            exit 1
+          fi
+          flutter test --no-pub --reporter compact
+      - name: Escaped string-interpolation guard
+        run: |
+          if grep -rnF '\${' lib/ --include='*.dart' \
+             || grep -rnP '\\$(?=[A-Za-z_])' lib/ --include='*.dart'; then
+            echo "::error::Escaped Dart string interpolation found. '\${x}' renders as literal text, not the value of x. Remove the backslash."
+            exit 1
+          fi
+          echo "no escaped interpolations"

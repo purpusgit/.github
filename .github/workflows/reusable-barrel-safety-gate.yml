@@ -1,0 +1,96 @@
+name: Barrel & Factory Safety (Rule 66) — reusable
+
+# Enforces CLAUDE.md Rule 66: shared package public API is sacred.
+# Deployable to ANY pkg_* Flutter repo without modification.
+#
+# Barrel files checked:
+#   - All lib/**/index.dart files
+#   - All lib/*.dart files at root that contain export statements
+#
+# Fails CI if any of these files have lines REMOVED in the PR.
+# "Unused in this repo" is never a reason to remove from a barrel —
+# downstream consumers are external and invisible to this repo.
+on:
+  workflow_call: {}
+  # No `paths:` filter here or in callers. This is a REQUIRED status check:
+  # when skipped it never reports, and GitHub blocks the PR on
+  # "Expected — waiting for status". Observed live on pkg_orbit_binder #140,
+  # pkg_orbit_auth #107, pkg_inapp_chat #42.
+
+permissions:
+  contents: read
+
+jobs:
+  barrel-safety:
+    name: Barrel & factory safety (Rule 66)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect barrel files and check for removals
+        shell: bash
+        run: |
+          BASE="${{ github.base_ref }}"
+          echo "Checking diff against origin/$BASE ..."
+
+          declare -a BARREL_FILES
+
+          while IFS= read -r f; do
+            [[ -n "$f" ]] && BARREL_FILES+=("$f")
+          done < <(find lib/ -name "index.dart" 2>/dev/null | sort)
+
+          while IFS= read -r f; do
+            if grep -q "^export " "$f" 2>/dev/null; then
+              BARREL_FILES+=("$f")
+            fi
+          done < <(find lib/ -maxdepth 1 -name "*.dart" 2>/dev/null | sort)
+
+          if [ ${#BARREL_FILES[@]} -eq 0 ]; then
+            echo "No barrel files found in lib/ — nothing to check."
+            exit 0
+          fi
+
+          echo "Barrel files detected (${#BARREL_FILES[@]}):"
+          printf '  %s\n' "${BARREL_FILES[@]}"
+          echo ""
+
+          FAILED=0
+
+          for FILE in "${BARREL_FILES[@]}"; do
+            if ! git show "origin/$BASE:$FILE" > /dev/null 2>&1; then
+              echo "  ℹ️  $FILE — new in this PR, skipping"
+              continue
+            fi
+
+            REMOVED=$(git diff "origin/$BASE...HEAD" -- "$FILE" \
+              | grep '^-' \
+              | grep -v '^---' \
+              | grep -v '^-[[:space:]]*//' \
+              | grep -v '^-[[:space:]]*$' \
+              || true)
+
+            if [ -n "$REMOVED" ]; then
+              echo ""
+              echo "⛔  RULE 66 VIOLATION — removed lines in: $FILE"
+              echo "──────────────────────────────────────────────────────"
+              echo "$REMOVED"
+              echo "──────────────────────────────────────────────────────"
+              echo "  Downstream packages depend on every export here."
+              echo "  Removing lines = silent breaking change for dependents."
+              echo "  → Restore the removed lines, then re-push."
+              echo ""
+              FAILED=1
+            else
+              echo "  ✅ $FILE"
+            fi
+          done
+
+          echo ""
+          if [ "$FAILED" -eq 0 ]; then
+            echo "✅  All barrel files OK — no exports removed."
+          else
+            echo "See CLAUDE.md Rule 66 for policy details."
+            exit 1
+          fi

@@ -1,0 +1,55 @@
+name: Config & Fork Gate (Rule 84) — reusable
+
+# Canonicalized from pkg_orbit_japa / pkg_new_social / pkg_orbit_nearyest /
+# pkg_goalcaller_voicereach — all four copies were byte-for-byte identical.
+#
+# Wire to repos whose lib/ tree could contain:
+#   (a) hardcoded service host URLs (mypurpus.com / bookmyorbit.com)
+#   (b) String.fromEnvironment(...defaultValue) used as a base-URL fallback
+#   (c) lib/screens/chat/*.dart — screens owned by pkg_inapp_chat
+#
+# Do NOT wire to backend service repos or to the .github meta-repo.
+# Step 3 is vacuously green on any repo that has no lib/screens/chat dir —
+# that is acceptable (the gate is still validly enforced for the other two steps).
+
+on:
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+jobs:
+  rule84:
+    name: Config & fork gate (Rule 84)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Base URLs live only in client_core flavor_config.dart
+        run: |
+          set -euo pipefail
+          if grep -rnE "https?://[A-Za-z0-9.-]*(mypurpus\.com|bookmyorbit\.com)" lib/ --include=*.dart; then
+            echo "::error::Hardcoded service host in a flavor. Base URLs live ONLY in pkg_orbit_client_core/lib/flavor_config.dart as a per-flavor exhaustive switch. See '0 Coding RULES/Base_URL_And_Service_Endpoint_Architecture.md'."
+            exit 1
+          fi
+          echo "OK - no hardcoded service host."
+
+      - name: No base-URL fallback (a missing URL must be a compile error)
+        run: |
+          set -euo pipefail
+          if grep -rnE "String\.fromEnvironment\([^)]*defaultValue" lib/ --include=*.dart | grep -iE "url|host|endpoint|base"; then
+            echo "::error::String.fromEnvironment(defaultValue:) used as a base-URL fallback. A missing base URL must be a compile error, never a silent sandbox default."
+            exit 1
+          fi
+          echo "OK - no base-URL fallback."
+
+      - name: A flavor must not own another package's screens
+        run: |
+          set -euo pipefail
+          M=$(find lib/screens/chat -type f -name '*.dart' 2>/dev/null | sort || true)
+          if [ -n "$M" ]; then
+            echo "::error::Rule 84 - this flavor holds chat screens owned by pkg_inapp_chat. Navigate by route instead."
+            printf '  %s\n' $M
+            exit 1
+          fi
+          echo "OK - no cross-package screens."
