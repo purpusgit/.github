@@ -38,6 +38,11 @@ checks = [
  ("url_string: Url_Ok flagged (// inside URL string is not a comment)", has("src/services/url_string.ts", "Url_Ok")),
  ("block_in_string: BlockStr_Ok flagged (/* inside a string is not a comment)", has("src/services/block_in_string.ts", "BlockStr_Ok")),
  ("block_comment: Block_Bad flagged (stray ` in /* */ block comment)", has("src/services/block_comment.ts", "Block_Bad")),
+ # M9 KNOWN-GAP (documented in _mask_ts_noncode): a JS regex literal containing a
+ # backtick desyncs the masker, so this violation is MISSED. Pinned so that if
+ # anyone later adds regex tracking (or the gap silently moves either direction),
+ # this assertion trips and forces an intentional update.
+ ("regex_gap KNOWN-GAP: Regex_Gap NOT flagged (documented regex limitation)", not has("src/services/regex_gap.ts", "Regex_Gap")),
 ]
 bad = [n for n, ok in checks if not ok]
 for n, ok in checks:
