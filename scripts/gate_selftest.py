@@ -21,11 +21,12 @@ What it does, per workflow:
      fixture stops catching it — proving the behavioural assertions genuinely
      exercise the predicate (a test that cannot fail proves nothing).
 
-The four DELEGATING gates (taxo-lint, taxo-contract-lint, taxo-data-nightly,
-host-pin-autobump) call external Python that needs live MySQL secrets, a
-cross-repo checkout token, or opens a real PR against the host — their exit codes
-cannot be asserted in isolation here, so they get syntax-checking only, logged
-explicitly as SKIP-BEHAVIOURAL with the reason. We do not fake coverage.
+The DELEGATING gates (taxo-lint, taxo-contract-lint, taxo-data-nightly) call
+external Python that needs live MySQL secrets or a cross-repo checkout token, so
+their exit codes cannot be asserted in isolation here — they get syntax-checking
+only, logged SKIP-BEHAVIOURAL / DEAD-NO-CALLERS with the reason. We do not fake
+coverage. (host-pin-autobump was removed 2026-07-31 — dead, superseded by
+main_org_orbit's roll-internal-deps.yaml.)
 
 Exit 0 = all checks passed (green). Exit 1 = a predicate broke or a fixture
 assertion failed (red).
@@ -53,7 +54,6 @@ BEHAVIOUR = {
     "reusable-taxo-lint.yml":        {"kind": None, "reason": "delegates to scripts/taxo_lint.py; --data needs live MySQL secrets"},
     "reusable-taxo-contract-lint.yml": {"kind": "dead", "reason": "0 callers org-wide (2026-07-31); also needs cross-repo token. checker.py is offline-tested by taxo-contract/test_checker.py"},
     "taxo-data-lint-nightly.yml":    {"kind": None, "reason": "DB-backed scheduled job; needs TAXO_DB_* MySQL secrets"},
-    "reusable-host-pin-autobump.yml": {"kind": "dead", "reason": "0 callers org-wide (2026-07-31); pkg_* push callers never wired. Also opens a real PR against main_org_orbit"},
 }
 
 FAILURES = []
