@@ -30,6 +30,9 @@ SCAN SCOPE (2026-07-31 broadening — Fable decisions 1 + 2a):
     an unrelated TS `type = 'X_Y'` sits near a bare `'taxo.master'` string (e.g. a
     test), rather than relying on a line-proximity window (the same defect family
     as taxo-contract checker.py 2.2's _nearest_idfr, fixed 2026-07-31).
+    Before template parsing, `_mask_ts_noncode` blanks JS comments and ordinary
+    '/" strings (offset-preserving), so a stray backtick in a comment or string
+    cannot desync backtick-parity and blind the whole file.
     NOTE: SQL that is NOT inside a backtick template (single-quote concatenation)
     is not scanned in .ts files — the org convention is that taxo SQL lives in
     backtick template literals / *.sql.ts files.
@@ -176,6 +179,100 @@ def _strip_line_comments(text):
 
 def _line_at(text, off):
     return text.count("\n", 0, off) + 1
+
+
+def _mask_ts_noncode(text):
+    """Offset-preserving mask of JS line/block comments and ordinary '/" string
+    literals, so a stray backtick inside them cannot desync backtick-parity in
+    _template_spans (a single odd backtick in a comment/string otherwise blinds the
+    whole file — the vacuous-coverage class this gate exists to close).
+
+    Backtick TEMPLATE regions are left INTACT — their SQL single-quoted literals
+    (e.g. type = 'Org_Department') are the data we detect. `${...}` interpolations
+    are entered as code, so their comments/strings get masked too. Newlines are
+    preserved so line numbers stay valid.
+
+    Known limitation: JS regex literals are not tracked (division vs regex is
+    context-dependent); a backtick inside a regex could still desync. Rare in SQL
+    modules; documented rather than solved.
+    """
+    out = list(text)
+    n = len(text)
+    i = 0
+    # frame stack: ["code", brace_depth, is_interp] | ["tmpl"]
+    stack = [["code", 0, False]]
+
+    def bl(k):
+        if out[k] != "\n":
+            out[k] = " "
+
+    while i < n:
+        top = stack[-1]
+        c = text[i]
+        if top[0] == "code":
+            nxt = text[i + 1] if i + 1 < n else ""
+            if c == "/" and nxt == "/":
+                while i < n and text[i] != "\n":
+                    bl(i)
+                    i += 1
+                continue
+            if c == "/" and nxt == "*":
+                bl(i)
+                bl(i + 1)
+                i += 2
+                while i < n and not (text[i] == "*" and i + 1 < n and text[i + 1] == "/"):
+                    bl(i)
+                    i += 1
+                if i < n:
+                    bl(i)
+                    if i + 1 < n:
+                        bl(i + 1)
+                    i += 2
+                continue
+            if c == '"' or c == "'":
+                q = c
+                i += 1
+                while i < n and text[i] != q:
+                    if text[i] == "\\":
+                        bl(i)
+                        if i + 1 < n:
+                            bl(i + 1)
+                        i += 2
+                        continue
+                    bl(i)
+                    i += 1
+                i += 1  # keep the closing quote (it is not a backtick)
+                continue
+            if c == "`":
+                stack.append(["tmpl"])
+                i += 1
+                continue
+            if c == "{":
+                top[1] += 1
+                i += 1
+                continue
+            if c == "}":
+                if top[2] and top[1] == 0:
+                    stack.pop()  # close ${...} interpolation
+                elif top[1] > 0:
+                    top[1] -= 1
+                i += 1
+                continue
+            i += 1
+        else:  # inside a backtick template — preserve
+            if c == "\\":
+                i += 2
+                continue
+            if c == "`":
+                stack.pop()
+                i += 1
+                continue
+            if c == "$" and i + 1 < n and text[i + 1] == "{":
+                stack.append(["code", 0, True])
+                i += 2
+                continue
+            i += 1
+    return "".join(out)
 
 
 # ---- .sql (whole-file SQL) : statement-window scan -------------------------
@@ -379,13 +476,15 @@ def _scan_files(root):
         except Exception as e:  # pragma: no cover
             print(f"Warning: could not read {path}: {e}")
             continue
-        text = _strip_line_comments(raw)
-        if not _TAXO.search(text):
+        if not _TAXO.search(raw):
             continue
         if path.endswith(".sql"):
-            _scan_sql_text(path, text, g1_hits, g2_set, lower_hits)
+            # pure SQL — strip -- / // line comments, whole file is SQL
+            _scan_sql_text(path, _strip_line_comments(raw), g1_hits, g2_set, lower_hits)
         else:
-            _scan_ts_text(path, text, g1_hits, g2_set, lower_hits)
+            # .ts — mask JS comments + code strings (offset-preserving) so stray
+            # backticks in them cannot desync template parity; templates preserved
+            _scan_ts_text(path, _mask_ts_noncode(raw), g1_hits, g2_set, lower_hits)
     return files, g1_hits, sorted(g2_set), lower_hits
 
 

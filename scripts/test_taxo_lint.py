@@ -28,6 +28,16 @@ checks = [
  ("backups/ not scanned", not any("backups/" in r for r in rels)),
  ("dumps/ not scanned", not any("dumps/" in r for r in rels)),
  ("spec file not scanned", "src/spec/foo.spec.ts" not in rels),
+ # Fable FIX-FIRST: stray backtick in comments/strings must not desync template parity
+ ("comment_odd: Miss_Odd flagged (stray ` in // comment)", has("src/services/comment_odd.ts", "Miss_Odd")),
+ ("comment_two: First_Bad flagged (parity must not cascade)", has("src/services/comment_two.ts", "First_Bad")),
+ ("comment_two: Second_Bad flagged (parity must not cascade)", has("src/services/comment_two.ts", "Second_Bad")),
+ ("string_backtick: Miss_String flagged (stray ` in \" string)", has("src/services/string_backtick.ts", "Miss_String")),
+ ("even_parity: Even_Ok still flagged (regression guard)", has("src/services/even_parity.ts", "Even_Ok")),
+ # masker attack surface (Fable's re-attack, pre-empted)
+ ("url_string: Url_Ok flagged (// inside URL string is not a comment)", has("src/services/url_string.ts", "Url_Ok")),
+ ("block_in_string: BlockStr_Ok flagged (/* inside a string is not a comment)", has("src/services/block_in_string.ts", "BlockStr_Ok")),
+ ("block_comment: Block_Bad flagged (stray ` in /* */ block comment)", has("src/services/block_comment.ts", "Block_Bad")),
 ]
 bad = [n for n, ok in checks if not ok]
 for n, ok in checks:
