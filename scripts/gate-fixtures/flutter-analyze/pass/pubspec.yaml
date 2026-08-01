@@ -1,0 +1,8 @@
+# PASS fixture for reusable-flutter-analyze.yml, step "Analyze (lib only)".
+# Zero dependencies on purpose: `dart pub get` must resolve without GH_PAT, so
+# the behavioural test needs no org secret.
+name: gate_fixture_analyze_pass
+publish_to: none
+version: 0.0.1
+environment:
+  sdk: ">=3.0.0 <4.0.0"
