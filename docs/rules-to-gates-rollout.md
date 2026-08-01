@@ -24,7 +24,7 @@ is measured by **caller count**, not by the gate's existence.
 | Gate (reusable workflow) | Checks | Scan scope | Context-gated? | Mode |
 |---|---|---|---|---|
 | `reusable-sql-typestring-safety-gate.yml` | PascalCase `taxo.master` `type = '...'` (Rule 58/59) | `*.sql.ts` **only** | **No** — plain grep | Diff-only on PRs; `full_scan` for audits |
-| `reusable-taxo-lint.yml` → `scripts/taxo_lint.py --code` | G1 PascalCase type + G2 bad columns | `**/*.sql.ts` (broadening pending, see below) | **Yes** — only fires near a `taxo.master` mention | Advisory (`--code`); `--data` is DB-backed |
+| `reusable-taxo-lint.yml` → `scripts/taxo_lint.py --code` | G1 PascalCase type + G2 bad columns | `**/*.sql` + template-scoped `**/*.ts` (excl `backups`/`dumps`/tests) | **Yes** — template-scoped + only fires inside a `taxo.master` backtick template | Advisory (`--code`); `--data` is DB-backed |
 | `reusable-taxo-contract-lint.yml` → `taxo-contract/checker.py` | Wrong `hierarchy_level` / wrong concept (rule 2.2) | `src/**/*.sql.ts`, validators | Yes | **0 callers — dead** (see Open items) |
 | `reusable-sql-safety-gate.yml` | Stray semicolons in SQL template literals | `src/**/*.sql.ts` | n/a | Blocking |
 | `reusable-colors-safety-gate.yml` | Hardcoded `Colors.*`, `withOpacity`, `extension<>()!` | added lines in `lib/**/*.dart` | Diff-only | Blocking |
@@ -44,9 +44,9 @@ scan a broader set of files. See invariants.
 `scripts/gate_selftest.py` extracts each gate's live `run:` predicate, `bash -n`s it,
 and runs the self-contained gates against pass/fail fixtures with a canary that proves
 the fail-assertions can fail. Checker logic is guarded by offline tests
-(`taxo-contract/test_checker.py`; `scripts/test_taxo_lint.py` lands with PR #17).
-Never prove red-detection by breaking a real gate on `main` — consumers resolve these
-workflows `@main`, so a deliberate break is an org-wide outage.
+(`taxo-contract/test_checker.py`, `scripts/test_taxo_lint.py`). Never prove red-detection
+by breaking a real gate on `main` — consumers resolve these workflows `@main`, so a
+deliberate break is an org-wide outage.
 
 ---
 
@@ -57,7 +57,7 @@ Broadly enforced: `dart-safety` (17 repos), `sql-safety` (17), `colours` (14).
 | Gate | Wired repos | Notes |
 |---|---|---|
 | `sql-typestring` | `service_inapp_chat` (#77), `service_auth` (#188), `service_orbit_orgs` (#1127) | Diff-only; safe to wire anywhere |
-| `taxo-lint` (advisory) | `service_orbit_orgs`, `service_auth` (#188) | `service_auth` verified via dispatch run 30667001320 |
+| `taxo-lint` (advisory) | `service_orbit_orgs`, `service_auth` (#188), `service_inapp_chat` (#78), `service_goalcaller_voicereach` (#44) | inapp_chat/voicereach use `code_dir: "."` (taxo lives in root `migrations/` + route `.ts`, not `src/`); all dispatch-verified |
 | `taxo-contract-lint` | **none** | Detector correct, unwired — dead |
 
 Genuine taxo `*.sql.ts` surface exists only in `service_auth` and `service_orbit_orgs`
@@ -107,10 +107,6 @@ Reviewers should push new taxo queries into `*.sql.ts`.
 
 ## Open items
 
-- **`taxo_lint.py` glob broadening (decisions 1 + 2a)** — **draft PR #17 open**,
-  self-CI green (13-check regression `scripts/test_taxo_lint.py` + fixtures). Awaiting
-  Fable's parser line-review before merge. Adds migrations `*.sql` (excl `backups`/
-  `dumps`) + template-scoped inline SQL in `.ts` (excl spec/test).
 - **Bug #3 (`taxo-contract-lint`)** — checker rule 2.2 is correct and block-scoped
   (commit `6a5637d2`) but the gate has **0 callers**. Wiring blocked until the
   annotation-mandate question and a pilot repo are settled.
@@ -119,6 +115,12 @@ Reviewers should push new taxo queries into `*.sql.ts`.
 
 ## Recently done
 
+- **`taxo_lint.py` glob broadening merged** (PR #17, Fable-reviewed 2026-08-01) —
+  `**/*.sql` migrations + template-scoped inline SQL in `.ts`, with `_mask_ts_noncode`
+  (masks JS comments/strings so a stray backtick can't desync template parity).
+  Guarded by `scripts/test_taxo_lint.py` (23 checks incl. a pinned M9 KNOWN-GAP:
+  regex-literal backtick is a documented miss). Rolled to `service_inapp_chat` (#78)
+  and `service_goalcaller_voicereach` (#44), both dispatch-verified.
 - **`host-pin-autobump` removed** (PR #18, 2026-08-01) — 0 callers, superseded by
   `main_org_orbit`'s `roll-internal-deps.yaml` (native `flutter pub upgrade`, "the
   clean replacement for the retired lock-refresh workflow"). `scripts/host_pin_integrity.py`
