@@ -1,14 +1,53 @@
 name: Flutter Analyze — reusable (pkg_* packages)
 
-# Superset of pkg_orbit_auth + pkg_orbit_binder flutter_analyze.yml.
+# Runs EXACTLY the predicate the pkg_* repos already ran before conversion:
+#
+#     flutter analyze lib/ --no-fatal-infos
+#
+# Verified byte-identical against the pre-conversion flutter_analyze.yml in
+# pkg_orbit_nearyest, pkg_orbit_marketplace, pkg_orbit_japa and
+# pkg_orbit_discover_orgs. `--no-fatal-infos` is deliberate policy: infos are
+# not fatal, warnings are. A conversion PR must change WHERE a predicate lives,
+# never WHAT it asserts.
+#
 # Use this for any Flutter package repo (pkg_*). NOT for main_org_orbit
 # (host app uses GIT_PASSWORD + flutter pub get, not dart pub get).
 #
 # Differences from main_org_orbit:
 #   - Secret: GH_PAT (not GIT_PASSWORD)
 #   - Resolver: dart pub get --no-example (package; not flutter pub get)
-#   - Tests: required; fails if test/ is absent
 #   - Push to cwb triggers here too (cwb is the integration branch)
+#
+# ── Two steps removed 2026-08-02, and why ────────────────────────────────────
+#
+# This file used to describe itself as a "superset of pkg_orbit_auth +
+# pkg_orbit_binder flutter_analyze.yml". That was accurate, and that was the
+# defect: a superset of two repos is new, undeclared enforcement for the other
+# eighteen.
+#
+#   1. A mandatory `flutter test` step that hard-failed when test/ was absent.
+#      Only pkg_orbit_auth and pkg_orbit_binder ran anything like it before
+#      conversion. It caused 7 of the batch's 14 reds, none of them analyze
+#      findings — a repo went red under a check named "analyze" for having no
+#      test suite. Even in pkg_orbit_binder, the repo the gate was modelled on,
+#      it took three commits of test repair to pass.
+#      This is NOT a judgement that the rule is wrong. It may well be right. It
+#      belongs in its own reusable workflow, declared, piloted and rolled out on
+#      its own merit — the same treatment we require of any other new gate. See
+#      "Open items" in docs/rules-to-gates-rollout.md.
+#
+#   2. An escaped-string-interpolation grep guard. Duplicate:
+#      reusable-dart-safety-gate.yml already owns that rule and is wired to 17
+#      repos. Two gates flagging one line is duplicate noise with two
+#      suppression tokens (see standing invariant 1).
+#      Its second pattern was additionally DEAD:
+#        grep -rnP '\\$(?=[A-Za-z_])'
+#      PCRE reads the `$` as an end-of-line anchor, so "backslash at end of line
+#      immediately followed by a letter" can never match. Verified against a
+#      line containing a literal backslash-dollar-x: no match. The working form
+#      is '\\\$(?=[A-Za-z_])'. Deleting it therefore loses no coverage that
+#      existed — but the no-brace `\$var` case it was aiming at IS a real gap
+#      and is filed against the dart gate, which is where that rule lives.
 
 on:
   workflow_call:
@@ -21,6 +60,9 @@ permissions:
 
 jobs:
   analyze:
+    # Job id `analyze` and job name `flutter analyze` are load-bearing: GitHub
+    # reports this to consumers as the context `analyze / flutter analyze`.
+    # Renaming either breaks every repo's branch-protection required check.
     name: flutter analyze
     runs-on: ubuntu-latest
     steps:
@@ -35,20 +77,8 @@ jobs:
           channel: stable
           cache: true
       - run: dart pub get --no-example
+      # Behaviourally tested by scripts/gate_selftest.py, which pins this step
+      # BY NAME. Renaming it reds the harness rather than silently dropping the
+      # only fixture-backed assertion this gate has.
       - name: Analyze (lib only)
         run: flutter analyze lib/ --no-fatal-infos --no-pub
-      - name: Test
-        run: |
-          if [ ! -d test ]; then
-            echo "::error::test/ is missing — a repo with no tests must not pass this gate silently"
-            exit 1
-          fi
-          flutter test --no-pub --reporter compact
-      - name: Escaped string-interpolation guard
-        run: |
-          if grep -rnF '\${' lib/ --include='*.dart' \
-             || grep -rnP '\\$(?=[A-Za-z_])' lib/ --include='*.dart'; then
-            echo "::error::Escaped Dart string interpolation found. '\${x}' renders as literal text, not the value of x. Remove the backslash."
-            exit 1
-          fi
-          echo "no escaped interpolations"
