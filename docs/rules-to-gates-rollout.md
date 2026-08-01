@@ -5,7 +5,7 @@ checks, its scan scope, which repos call it, and the standing invariants. Lives 
 `purpusgit/.github` beside the gates it documents. Update this file in the same PR
 that changes a gate or wires a repo.
 
-_Last updated: 2026-07-31._
+_Last updated: 2026-08-01._
 
 ---
 
@@ -110,8 +110,6 @@ Reviewers should push new taxo queries into `*.sql.ts`.
 - **Bug #3 (`taxo-contract-lint`)** — checker rule 2.2 is correct and block-scoped
   (commit `6a5637d2`) but the gate has **0 callers**. Wiring blocked until the
   annotation-mandate question and a pilot repo are settled.
-- **`service_orbit_orgs` legacy count** — run its first `full_scan` to get the exact
-  pre-existing PascalCase count (non-blocking).
 
 ## Recently done
 
