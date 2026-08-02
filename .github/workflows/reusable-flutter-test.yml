@@ -1,0 +1,70 @@
+name: Flutter Test — reusable (pkg_* packages)
+
+# DECLARED SEPARATELY, ON PURPOSE.
+#
+# This rule used to ride inside reusable-flutter-analyze.yml, where it was
+# undeclared enforcement for 18 of 20 consumer repos: only pkg_orbit_auth and
+# pkg_orbit_binder had ever run anything like it before conversion. It caused 7
+# of that batch's 14 reds, none of them analyze findings — a repo went red under
+# a check named "analyze" for having no test suite. It was removed from there in
+# PR #20 and restated here so it can be piloted and rolled out on its own merit,
+# with its own caller count.
+#
+# ZERO CALLERS TODAY, and that is the correct state, not an oversight. Per the
+# rollout doctrine a gate's enforcement is measured by caller count, and this
+# rollout has not been agreed. Do not wire this to any repo until a pilot repo
+# is chosen and merged green.
+#
+# What it asserts:
+#   1. test/ must exist — a package with no tests must not pass silently.
+#   2. flutter test must pass.
+#
+# Known cost before anyone wires this, measured on the 20 pkg_* repos:
+#   - 5 have no test/ at all, or a directory with no runnable tests
+#   - 2 have genuinely broken suites (a test referencing a class that does not
+#     exist; a widget test asserting on text the screen no longer renders)
+#   - even pkg_orbit_binder, the repo this rule was modelled on, needed three
+#     commits of test repair to go green
+# Rolling this out is a repo-repair project with a CI change at the end of it,
+# not a CI change. Budget it that way.
+
+on:
+  workflow_call:
+    secrets:
+      GH_PAT:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # Job id `test` + job name `flutter test` => consumers report the context
+    # `test / flutter test`. Fix this before the first caller is wired; changing
+    # it afterwards breaks every branch-protection required check that uses it.
+    name: flutter test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure git for private org repos
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "git@github.com:"
+          git config --global --add url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version-file: .fvmrc
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - name: Require a test suite
+        run: |
+          if [ ! -d test ]; then
+            echo "::error::test/ is missing — a repo with no tests must not pass this gate silently"
+            exit 1
+          fi
+          echo "test/ present"
+      # Behaviourally tested by scripts/gate_selftest.py, which pins this step BY
+      # NAME. Renaming it reds the harness rather than silently dropping the only
+      # fixture-backed assertion this gate has.
+      - name: Run the suite
+        run: flutter test --no-pub --reporter compact

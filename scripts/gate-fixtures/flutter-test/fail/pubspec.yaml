@@ -1,0 +1,12 @@
+# FAIL fixture for reusable-flutter-test.yml, step "Run the suite".
+name: gate_fixture_test_fail
+publish_to: none
+version: 0.0.1
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+dependencies:
+  flutter:
+    sdk: flutter
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
