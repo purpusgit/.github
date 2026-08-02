@@ -3,7 +3,7 @@
 Self-CI for purpusgit/.github — exercises every reusable gate's `run:` predicate.
 
 Task 5 of the Rules-to-Gates canonicalisation spec: "a gate that never reds is
-untested". The eight org gates in .github/workflows/ are called `@main` by every
+untested". The org gates in .github/workflows/ are called `@main` by every
 consumer repo, yet .github had no CI on itself (PR #15 returned zero check runs).
 This harness gives it one.
 
@@ -17,9 +17,9 @@ What it does, per workflow:
   3. For the SELF-CONTAINED gates (no DB, no cross-repo token, single repo),
      runs the real extracted predicate against a PASS fixture (assert exit 0) and a
      FAIL fixture (assert exit != 0).
-  4. Runs a CANARY: deliberately weakens the dart predicate and asserts the FAIL
-     fixture stops catching it — proving the behavioural assertions genuinely
-     exercise the predicate (a test that cannot fail proves nothing).
+  4. Runs CANARIES: deliberately weakens a predicate and asserts the FAIL fixture
+     stops catching it — proving the behavioural assertions genuinely exercise the
+     predicate (a test that cannot fail proves nothing).
 
 The DELEGATING gates (taxo-lint, taxo-contract-lint, taxo-data-nightly) call
 external Python that needs live MySQL secrets or a cross-repo checkout token, so
@@ -27,23 +27,28 @@ their exit codes cannot be asserted in isolation here — they get syntax-checki
 only, logged SKIP-BEHAVIOURAL / DEAD-NO-CALLERS with the reason. We do not fake
 coverage.
 
-flutter-analyze and tsc-check are PARTIAL: each has exactly one self-contained
-predicate (`flutter analyze lib/`, `tsc --noEmit`) and that one is behaviourally
-tested — the self-test job installs the Flutter SDK and Node for precisely that.
-Their other steps (private-dep resolution via GH_PAT, `npm ci` against a consumer
-lockfile) still cannot run here and stay syntax-only, logged PARTIAL with the
-reason rather than silently dropped.
+flutter-analyze, flutter-test and tsc-check are PARTIAL: each has one
+self-contained predicate (`flutter analyze lib/`, `flutter test`, `tsc --noEmit`)
+and that one is behaviourally tested — the self-test job installs the Flutter SDK
+and Node for precisely that. Their other steps (private-dep resolution via
+GH_PAT, `npm ci` against a consumer lockfile) cannot run here and stay
+syntax-only, logged PARTIAL with the reason rather than silently dropped.
 
-Two rules make those two fixtures honest, and they apply to any future gate whose
+Two rules make those fixtures honest, and they apply to any future gate whose
 behavioural step is not the last one:
   * The step is pinned BY NAME (`kind: "step"`), never by `runs[-1]`. Positional
     selection silently retargets the assertion at a different predicate the moment
     a step is added or removed; by name, the harness reds with "step no longer
-    exists" and a human repoints it.
+    exists" and a human repoints it. This is not hypothetical: PR #20 removed two
+    steps from the analyze gate after this fixture was written.
   * FAIL fixtures assert an expected diagnostic substring (`expect`), not merely a
     non-zero exit. A missing or broken toolchain exits 127, which a bare
     exit-code assertion would happily score as "violation caught" — a green
     harness proving nothing.
+
+A gate with no BEHAVIOUR entry is a hard RED ("unmapped gate; refusing to
+silently skip"). Adding a workflow therefore forces a deliberate decision about
+how it will be tested. That is the point; do not soften it to a warning.
 
 Exit 0 = all checks passed (green). Exit 1 = a predicate broke or a fixture
 assertion failed (red).
@@ -78,9 +83,15 @@ BEHAVIOUR = {
     "reusable-flutter-analyze.yml":  {"kind": "step", "step": "Analyze (lib only)",
         "key": "flutter-analyze", "prep": "dart pub get --no-example",
         "expect": "unused_element",
-        "note": "checkout/git-config + `dart pub get` against private org deps need the"
-                " GH_PAT secret; the Test step needs a consumer test suite. Those stay"
-                " syntax-only. The analyze predicate itself is behaviourally tested."},
+        "note": "checkout/git-config and `dart pub get` against private org deps need"
+                " the GH_PAT secret; those stay syntax-only. The analyze predicate"
+                " itself is behaviourally tested."},
+    "reusable-flutter-test.yml":     {"kind": "step", "step": "Run the suite",
+        "key": "flutter-test", "prep": "flutter pub get",
+        "expect": "GATE_FIXTURE_PLANTED_FAILURE",
+        "note": "checkout/git-config need GH_PAT and the `Require a test suite`"
+                " guard is a plain bash existence check; both stay syntax-only."
+                " The suite-runs-and-passes predicate itself is behaviourally tested."},
     "reusable-tsc-check.yml":       {"kind": "step", "step": "TypeScript type-check",
         "key": "tsc", "expect": "error TS2322",
         "note": "`npm ci` needs the consumer repo's lockfile and the detect step writes to"
