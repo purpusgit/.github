@@ -27,6 +27,15 @@ jobs:
           FAILED=0
           BASE_REF="${{ inputs.base_ref || 'cwb' }}"
 
+          # Never pass vacuously. If the base ref cannot be resolved the diff below
+          # comes back EMPTY and the gate printed "No lib/ Dart files changed. Gate
+          # passed." — a silent pass on an uncomputable diff. Same guard shape as
+          # reusable-sql-typestring-safety-gate.yml.
+          if ! git rev-parse --verify --quiet "origin/${BASE_REF}" >/dev/null; then
+            echo "::error::Colours gate could not resolve base ref origin/${BASE_REF} — refusing to pass without diffing."
+            exit 1
+          fi
+
           # lib/ Dart files changed in this PR (diff-only; excludes test/ to avoid false positives)
           CHANGED=$(git diff "origin/${BASE_REF}...HEAD" --name-only -- '*.dart' 2>/dev/null | grep '^lib/')
 
