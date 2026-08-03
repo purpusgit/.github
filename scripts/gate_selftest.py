@@ -263,7 +263,7 @@ def behavioural_colors(script, label):
     # that could not compute its diff scored itself green. Must be RED.
     with tempfile.TemporaryDirectory() as tmp:
         build_diff_repo(tmp, "lib/w.dart", "class W {}\n",
-                        "  final c = colorScheme.primary;", origin_ref=True)
+                        "  final c = Colors.red;", origin_ref=False)
         _assert_diff(script, label, "fail[base-ref-unresolvable]", False, tmp,
                      expect="could not resolve base ref")
 
@@ -289,10 +289,10 @@ def behavioural_barrel(runs, label):
          True, None, True),
         ("fail", base, "export 'a.dart';\n", False, "RULE 66 VIOLATION", True),
         # R1 — barrel file absent at base: NEW in this PR, still a pass.
-        ("pass[new-barrel-file-at-base]", None, base, False, None, True),
+        ("pass[new-barrel-file-at-base]", None, base, True, None, True),
         # R1 — base ref unresolvable: no diff is computable, so RED.
-        ("fail[base-ref-unresolvable]", base, base + "export 'c.dart';\n", False,
-         "could not resolve base ref", True),
+        ("fail[base-ref-unresolvable]", base, "export 'a.dart';\n", False,
+         "could not resolve base ref", False),
     ]
     for case, base_content, work_content, want_zero, expect, origin_ref in cases:
         with tempfile.TemporaryDirectory() as tmp:
