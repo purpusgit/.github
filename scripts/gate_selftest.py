@@ -187,9 +187,13 @@ def behavioural_dir(script, key, label, prep=None, expect=None):
                    f"{'exit 0' if want_zero else 'non-zero'}"
                    f"{'' if want_zero or not expect else f', reports {expect!r}'})")
 
-def build_diff_repo(tmp, fpath, base_content, added_line):
+def build_diff_repo(tmp, fpath, base_content, added_line, origin_ref=True):
     """Two-branch git repo the diff-based gates need. Base branch 'cwb' holds
-    base_content at fpath; the work branch appends added_line."""
+    base_content at fpath; the work branch appends added_line.
+
+    origin_ref=False never creates refs/remotes/origin/cwb, so the gate cannot
+    resolve its base ref — the silent-pass case a diff-based gate must go RED on
+    instead of reporting an empty diff as "nothing changed, passed"."""
     g = ["git", "-c", "user.email=t@t.co", "-c", "user.name=t"]
     def run(*a): subprocess.run(list(a), cwd=tmp, check=True, capture_output=True)
     run(*g, "init", "-q", "-b", "cwb")
@@ -197,35 +201,53 @@ def build_diff_repo(tmp, fpath, base_content, added_line):
     os.makedirs(os.path.dirname(full), exist_ok=True)
     open(full, "w").write(base_content)
     run(*g, "add", "-A"); run(*g, "commit", "-qm", "base")
-    run(*g, "update-ref", "refs/remotes/origin/cwb", "HEAD")
+    if origin_ref:
+        run(*g, "update-ref", "refs/remotes/origin/cwb", "HEAD")
     run(*g, "checkout", "-qb", "work")
     with open(full, "a") as f:
         f.write("\n" + added_line + "\n")
     run(*g, "add", "-A"); run(*g, "commit", "-qm", "work")
 
-def build_barrel_repo(tmp, fpath, base_content, work_content):
+def build_barrel_repo(tmp, fpath, base_content, work_content, origin_ref=True):
     """Two-branch git repo where work branch overwrites fpath with work_content.
-    Supports testing both removal (fail) and addition (pass) cases."""
+    Supports testing both removal (fail) and addition (pass) cases.
+
+    base_content=None -> fpath does not exist on the base branch at all, i.e. a
+    barrel file NEW in this PR. That is legitimate and must still pass; it is the
+    case a naive "cat-file -e non-zero => fail" fix would have broken.
+    origin_ref=False  -> refs/remotes/origin/cwb is never created, so the gate
+    cannot resolve its base ref and must go RED."""
     g = ["git", "-c", "user.email=t@t.co", "-c", "user.name=t"]
     def run(*a): subprocess.run(list(a), cwd=tmp, check=True, capture_output=True)
     run(*g, "init", "-q", "-b", "cwb")
     full = os.path.join(tmp, fpath)
     os.makedirs(os.path.dirname(full), exist_ok=True)
-    open(full, "w").write(base_content)
+    if base_content is None:
+        open(os.path.join(os.path.dirname(full), "keep.txt"), "w").write("placeholder\n")
+    else:
+        open(full, "w").write(base_content)
     run(*g, "add", "-A"); run(*g, "commit", "-qm", "base")
-    run(*g, "update-ref", "refs/remotes/origin/cwb", "HEAD")
+    if origin_ref:
+        run(*g, "update-ref", "refs/remotes/origin/cwb", "HEAD")
     run(*g, "checkout", "-qb", "work")
     open(full, "w").write(work_content)
     run(*g, "add", "-A"); run(*g, "commit", "-qm", "work")
 
-def _assert_diff(script, label, case, want_zero, tmp):
+def _assert_diff(script, label, case, want_zero, tmp, expect=None):
     code, out = run_predicate(script, tmp)
     if want_zero and code != 0:
-        fail(f"{label}: PASS fixture unexpectedly RED (exit {code})\n{out}")
+        fail(f"{label}: {case} fixture unexpectedly RED (exit {code})\n{out}")
     elif not want_zero and code == 0:
-        fail(f"{label}: FAIL fixture was NOT caught (exit 0) — gate is asleep\n{out}")
+        fail(f"{label}: {case} fixture was NOT caught (exit 0) — gate is asleep\n{out}")
+    elif not want_zero and expect and expect not in out:
+        # Non-zero is necessary but not sufficient: a broken predicate can exit
+        # 1/127 for reasons unrelated to the violation and would otherwise be
+        # scored as a catch.
+        fail(f"{label}: {case} fixture exited {code} but the output does not contain "
+             f"{expect!r} — the gate went red for the WRONG reason\n{out}")
     else:
-        ok(f"{label}: {case} fixture behaves ({'exit 0' if want_zero else 'non-zero'})")
+        ok(f"{label}: {case} fixture behaves ({'exit 0' if want_zero else 'non-zero'}"
+           f"{'' if want_zero or not expect else f', reports {expect!r}'})")
 
 def behavioural_colors(script, label):
     for case, line, want_zero in (
@@ -234,7 +256,16 @@ def behavioural_colors(script, label):
     ):
         with tempfile.TemporaryDirectory() as tmp:
             build_diff_repo(tmp, "lib/w.dart", "class W {}\n", line)
-            _assert_diff(script, label, case, want_zero, tmp)
+            _assert_diff(script, label, case, want_zero, tmp,
+                         expect=None if want_zero else "Hardcoded Colors.* added")
+    # R2 — base ref unresolvable. The diff then comes back empty and the gate used
+    # to print "No lib/ Dart files changed. Gate passed." and exit 0, i.e. a gate
+    # that could not compute its diff scored itself green. Must be RED.
+    with tempfile.TemporaryDirectory() as tmp:
+        build_diff_repo(tmp, "lib/w.dart", "class W {}\n",
+                        "  final c = Colors.red;", origin_ref=False)
+        _assert_diff(script, label, "fail[base-ref-unresolvable]", False, tmp,
+                     expect="could not resolve base ref")
 
 def behavioural_diff(script, spec, label):
     for case, want_zero in (("pass", True), ("fail", False)):
@@ -243,18 +274,31 @@ def behavioural_diff(script, spec, label):
             _assert_diff(script, label, case, want_zero, tmp)
 
 def behavioural_barrel(runs, label):
-    """Test barrel removal detection. FAIL = removed export; PASS = added export."""
+    """Barrel removal detection, plus the two cases R1 separates.
+
+    The gate's `git show`/`cat-file` probe on the base ref is non-zero for BOTH
+    "file is new in this PR" (legitimate) and "base ref will not resolve"
+    (uncomputable diff). The first must pass, the second must red; a fix that
+    collapses them either way is wrong, so both are pinned here."""
     script = runs[-1]
     fpath = "lib/index.dart"
     base = "export 'a.dart';\nexport 'b.dart';\n"
     cases = [
-        ("pass", "export 'a.dart';\nexport 'b.dart';\nexport 'c.dart';\n", True),
-        ("fail", "export 'a.dart';\n", False),  # b.dart removed
+        # case, base_content, work_content, want_zero, expect, origin_ref
+        ("pass", base, "export 'a.dart';\nexport 'b.dart';\nexport 'c.dart';\n",
+         True, None, True),
+        ("fail", base, "export 'a.dart';\n", False, "RULE 66 VIOLATION", True),
+        # R1 — barrel file absent at base: NEW in this PR, still a pass.
+        ("pass[new-barrel-file-at-base]", None, base, True, None, True),
+        # R1 — base ref unresolvable: no diff is computable, so RED.
+        ("fail[base-ref-unresolvable]", base, "export 'a.dart';\n", False,
+         "could not resolve base ref", False),
     ]
-    for case, work_content, want_zero in cases:
+    for case, base_content, work_content, want_zero, expect, origin_ref in cases:
         with tempfile.TemporaryDirectory() as tmp:
-            build_barrel_repo(tmp, fpath, base, work_content)
-            _assert_diff(script, label, case, want_zero, tmp)
+            build_barrel_repo(tmp, fpath, base_content, work_content,
+                              origin_ref=origin_ref)
+            _assert_diff(script, label, case, want_zero, tmp, expect=expect)
 
 def behavioural_rule84(runs, label):
     """Test all 3 rule84 steps against their respective fixtures."""
