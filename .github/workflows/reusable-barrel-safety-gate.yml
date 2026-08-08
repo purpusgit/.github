@@ -35,6 +35,15 @@ jobs:
           BASE="${{ github.base_ref }}"
           echo "Checking diff against origin/$BASE ..."
 
+          # Pre-flight. Every check below is a diff against origin/$BASE, so if
+          # that ref will not resolve there is no diff to compute and "no removals
+          # found" would be a vacuous pass. A gate that cannot compute its diff
+          # goes RED.
+          if ! git rev-parse --verify --quiet "origin/$BASE" >/dev/null; then
+            echo "⛔  Barrel gate could not resolve base ref origin/$BASE — refusing to pass without diffing."
+            exit 1
+          fi
+
           declare -a BARREL_FILES
 
           while IFS= read -r f; do
@@ -59,8 +68,23 @@ jobs:
           FAILED=0
 
           for FILE in "${BARREL_FILES[@]}"; do
-            if ! git show "origin/$BASE:$FILE" > /dev/null 2>&1; then
-              echo "  ℹ️  $FILE — new in this PR, skipping"
+            # Three cases, not two.
+            #   present at base   -> diff it
+            #   absent at base    -> a NEW barrel file in this PR; legitimate, skip
+            #   any other git err -> the diff is not computable; RED
+            # `git cat-file -e` returns non-zero for the last two alike, and its
+            # message text is not stable across git versions, so `git ls-tree` is
+            # what separates them: exit 0 with EMPTY output means "the ref resolves
+            # and the path simply is not in it"; non-zero means git itself failed.
+            if ! git cat-file -e "origin/$BASE:$FILE" 2>/dev/null; then
+              LS_OUT=$(git ls-tree --name-only "origin/$BASE" -- "$FILE" 2>&1)
+              LS_RC=$?
+              if [ "$LS_RC" -ne 0 ] || [ -n "$LS_OUT" ]; then
+                echo "⛔  Barrel gate could not read origin/$BASE:$FILE (git exit $LS_RC) — refusing to pass without diffing."
+                echo "$LS_OUT"
+                exit 1
+              fi
+              echo "  ℹ️  $FILE — new in this PR (absent at origin/$BASE), skipping"
               continue
             fi
 
