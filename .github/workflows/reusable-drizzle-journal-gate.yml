@@ -1,0 +1,70 @@
+name: Reusable — Drizzle Journal Completeness Gate
+
+on:
+  workflow_call:
+    inputs:
+      migrations_dir:
+        description: Path to the Drizzle migrations folder (containing the .sql files and meta/_journal.json)
+        type: string
+        default: src/db/migrations
+
+jobs:
+  drizzle-journal-gate:
+    runs-on: ubuntu-latest
+    name: Migration journal completeness check
+    steps:
+      - uses: actions/checkout@v5.1.0
+      - name: Check every .sql file has a matching journal entry
+        env:
+          MIGRATIONS_DIR: ${{ inputs.migrations_dir }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, sys
+
+          migrations_dir = os.environ['MIGRATIONS_DIR']
+          journal_path = os.path.join(migrations_dir, 'meta', '_journal.json')
+
+          if not os.path.isdir(migrations_dir):
+              print(f'No migrations dir at {migrations_dir} — nothing to check.')
+              sys.exit(0)
+
+          if not os.path.isfile(journal_path):
+              print(f'ERROR: {journal_path} does not exist, but {migrations_dir} does.')
+              print('Every Drizzle migrations folder must carry its journal — run `drizzle-kit generate`')
+              print('or otherwise commit meta/_journal.json alongside the .sql files.')
+              sys.exit(1)
+
+          with open(journal_path, encoding='utf-8') as f:
+              journal = json.load(f)
+          journaled_tags = {entry['tag'] for entry in journal.get('entries', [])}
+
+          sql_files = sorted(
+              fn for fn in os.listdir(migrations_dir)
+              if fn.endswith('.sql')
+          )
+
+          missing = []
+          for fn in sql_files:
+              tag = fn[:-len('.sql')]
+              if tag not in journaled_tags:
+                  missing.append(fn)
+
+          if missing:
+              print('ERROR: Drizzle journal completeness gate FAILED')
+              print(f'{len(missing)} .sql file(s) under {migrations_dir} have no entry in meta/_journal.json:')
+              for fn in missing:
+                  print(f'  {fn}')
+              print()
+              print('A migration missing from the journal is permanently invisible to `drizzle-kit migrate`,')
+              print('regardless of whether it was applied to any database by hand — the exact failure mode')
+              print('behind service_ai_v_call migrations 0011 and 0013 (found only via a live DB query,')
+              print('months after both files were written and applied).')
+              print()
+              print('Fix: add a journal entry for each file above (or remove the stray file if it was never')
+              print('meant to ship). Do not edit any OTHER .sql file\'s content while doing so — that orphans')
+              print('its existing baseline hash in __drizzle_migrations and forces an unwanted re-run.')
+              sys.exit(1)
+
+          print(f'Drizzle journal completeness gate passed — {len(sql_files)} .sql files, '
+                f'{len(journaled_tags)} journal entries, all files accounted for.')
+          PYEOF
