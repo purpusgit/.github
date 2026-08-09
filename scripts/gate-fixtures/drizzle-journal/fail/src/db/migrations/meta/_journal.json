@@ -8,6 +8,13 @@
       "when": 1777455624699,
       "tag": "0000_wide_moon_knight",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1777455861149,
+      "tag": "0001_unjournaled_migration",
+      "breakpoints": true
     }
   ]
 }
