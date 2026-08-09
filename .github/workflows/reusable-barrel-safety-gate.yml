@@ -56,8 +56,9 @@ jobs:
           # files are lib/endpoints/*/index.dart holding *EndpointsFactory
           # classes with ZERO export lines, and Rule 66 forbidden action #2 is
           # removing a method from exactly those. So `^export ` is the WRONG
-          # discriminator here: it would drop all 6 factories AND leave the 7th
-          # file the only match, i.e. protect nothing at all org-wide.
+          # discriminator here: it would drop all 6 factories, and the 7th
+          # (binder's) has zero exports too — so it would match NONE of the
+          # org's 7 nested index.dart files, i.e. protect nothing at all.
           # lib/src/ is the right one: it excludes
           # pkg_orbit_binder/lib/src/utils/index.dart (the Binder class — a
           # private implementation file no downstream can import, whose lines
