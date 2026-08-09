@@ -87,6 +87,14 @@ BEHAVIOUR = {
                 " $GITHUB_OUTPUT; both stay syntax-only. The tsc predicate itself is"
                 " behaviourally tested."},
     "reusable-rule84-flavor-fork-gate.yml":     {"kind": "rule84"},
+    # `step`, not `dir`: the dir branch does not forward `expect`, and without one a
+    # Python traceback exiting 1 scores as "violation caught". The predicate is pure
+    # Python over a directory — no secrets, no network, no DB — so it earns a real
+    # behavioural fixture rather than a SKIP. `expect` is verbatim gate output.
+    "reusable-drizzle-journal-gate.yml": {"kind": "step",
+        "step": "Check every .sql file has a matching journal entry",
+        "key": "drizzle-journal",
+        "expect": "ERROR: Drizzle journal completeness gate FAILED"},
     "reusable-taxo-lint.yml":        {"kind": None, "reason": "delegates to scripts/taxo_lint.py; --data needs live MySQL secrets"},
     "reusable-taxo-contract-lint.yml": {"kind": None, "reason": "wired to service_orbit_orgs (2026-08-01); needs ORG_GITHUB_READ_TOKEN cross-repo secret. checker.py offline-tested by taxo-contract/test_checker.py"},
     "taxo-data-lint-nightly.yml":    {"kind": None, "reason": "DB-backed scheduled job; needs TAXO_DB_* MySQL secrets"},

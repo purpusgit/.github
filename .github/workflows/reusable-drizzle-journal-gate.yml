@@ -21,7 +21,11 @@ jobs:
           python3 - <<'PYEOF'
           import json, os, sys
 
-          migrations_dir = os.environ['MIGRATIONS_DIR']
+          # Default mirrors the workflow input's own `default: src/db/migrations`.
+          # In CI the env is always set from that input, so this changes nothing
+          # there; it exists so the predicate is runnable standalone (the gate
+          # self-test harness extracts `run:` scripts and never applies `env:`).
+          migrations_dir = os.environ.get('MIGRATIONS_DIR', 'src/db/migrations')
           journal_path = os.path.join(migrations_dir, 'meta', '_journal.json')
 
           if not os.path.isdir(migrations_dir):
