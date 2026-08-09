@@ -75,7 +75,39 @@ jobs:
         with:
           flutter-version-file: .fvmrc
           channel: stable
+          # Caches the Flutter SDK only. The pub cache is a separate store and is
+          # handled by the step below.
           cache: true
+
+      # ── Pub cache ────────────────────────────────────────────────────────────
+      # Why this exists: every pkg_* repo resolves ~13 PRIVATE purpusgit git
+      # dependencies (`ref: cwb`). Without a cache each run re-clones all of them
+      # from scratch, in 21 repos, on every PR. The SDK cache above does not cover
+      # this — `~/.pub-cache` is a different store.
+      #
+      # Why it is safe with branch-tracking deps: pub re-resolves every `ref: cwb`
+      # dependency on each run. The cache holds the git OBJECT STORE, so a hit makes
+      # the fetch incremental, not stale — a moved cwb HEAD is still picked up. This
+      # is a speed change, never a resolution change.
+      #
+      # Why only this gate: Actions bills each job rounded up to a whole minute, so
+      # shaving seconds off a sub-minute job saves NOTHING. This gate averages 2.09
+      # job-minutes per run (4,486 billable min / 2,146 runs, 30-day audit) — the
+      # one Flutter workflow whose runs straddle the minute boundary. Do not copy
+      # this step onto the grep gates expecting a saving.
+      - name: Cache pub packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          # pubspec.yaml is the dependency declaration every pkg_* repo commits.
+          # pubspec.lock is included where present but is NOT relied on — most
+          # package repos do not commit one, and hashFiles tolerates a miss.
+          key: pub-${{ runner.os }}-${{ hashFiles('**/pubspec.yaml', '**/pubspec.lock') }}
+          # Fall back to any previous pub cache for this OS. A partial hit still
+          # saves the bulk of the clone; pub reconciles the difference.
+          restore-keys: |
+            pub-${{ runner.os }}-
+
       - run: dart pub get --no-example
       # Behaviourally tested by scripts/gate_selftest.py, which pins this step
       # BY NAME. Renaming it reds the harness rather than silently dropping the
