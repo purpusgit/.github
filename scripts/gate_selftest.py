@@ -54,7 +54,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WF_DIR = os.path.join(ROOT, ".github", "workflows")
 FIXTURES = os.path.join(ROOT, "scripts", "gate-fixtures")
 
-# ── behavioural map: which gate is self-contained and how to run it ─────────────
+# ── behavioural map: which gate is self-contained and how to run it ───────────
 # kind:
 #   'dir'    -> copy fixtures/<key>/{pass,fail} to a temp dir, run predicate there
 #   'step'   -> same, but pick the predicate by STEP NAME instead of runs[-1];
