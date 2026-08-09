@@ -241,7 +241,9 @@ def build_barrel_repo(tmp, fpath, base_content, work_content, origin_ref=True,
         open(full, "w").write(base_content)
     for xp, xc in (extras or {}).items():
         xfull = os.path.join(tmp, xp)
-        os.makedirs(os.path.dirname(xfull), exist_ok=True)
+        xdir = os.path.dirname(xfull)
+        if xdir:
+            os.makedirs(xdir, exist_ok=True)
         open(xfull, "w").write(xc)
     run(*g, "add", "-A"); run(*g, "commit", "-qm", "base")
     if origin_ref:
@@ -300,16 +302,29 @@ def behavioural_barrel(runs, label):
     script = runs[-1]
     fpath = "lib/index.dart"
     base = "export 'a.dart';\nexport 'b.dart';\n"
-    # A real barrel, planted unchanged on both branches in the class-file case.
-    # Without it an "ignored the class file" pass is indistinguishable from a
+    # A real barrel, planted unchanged on both branches in the private-file case.
+    # Without it an "ignored the private file" pass is indistinguishable from a
     # "found no barrels at all" pass — the gate short-circuits on an empty list.
     real_barrel = {"lib/pkg.dart": "export 'src/a.dart';\nexport 'src/b.dart';\n"}
-    # A non-barrel that happens to be named index.dart, losing lines. This is
-    # pkg_orbit_binder/lib/src/utils/index.dart: the Binder class, zero exports.
-    # Name alone used to make it a barrel, freezing every line and failing this
-    # REQUIRED check on any legitimate refactor.
+    # A PRIVATE implementation file that happens to be named index.dart, losing
+    # lines. This is pkg_orbit_binder/lib/src/utils/index.dart: the Binder class,
+    # zero exports, under lib/src/ so no downstream can import it. Its name alone
+    # used to make it a barrel, freezing every line and failing this REQUIRED
+    # check on any legitimate refactor.
     klass_base = ("class Binder {\n  void a() {}\n  void b() {}\n  void c() {}\n}\n")
     klass_work = ("class Binder {\n  void a() {}\n}\n")
+    # The PR #373 incident itself, and the case with zero coverage before now: a
+    # PUBLIC factory class at lib/endpoints/*/index.dart. Zero export lines, so
+    # an `^export `-based rule would wave it through — but Rule 66 forbidden
+    # action #2 is removing a method from exactly this. Verified live: all 6 of
+    # pkg_orbit_client_core's lib/endpoints/*/index.dart have 0 export lines and
+    # hold *EndpointsFactory classes; org_service's holds the very three
+    # getSpiritual*Endpoints methods Rule 66 cites.
+    factory_base = ("class OrgServiceEndpointsFactory {\n"
+                    "  SpiritualCauseEndpoints getSpiritualCauseEndpoints() => x;\n"
+                    "  SpiritualUnitTypeEndpoints getSpiritualUnitTypeEndpoints() => y;\n}\n")
+    factory_work = ("class OrgServiceEndpointsFactory {\n"
+                    "  SpiritualCauseEndpoints getSpiritualCauseEndpoints() => x;\n}\n")
     cases = [
         # case, fpath, base_content, work_content, want_zero, expect, origin_ref, extras
         ("pass", fpath, base, "export 'a.dart';\nexport 'b.dart';\nexport 'c.dart';\n",
@@ -320,15 +335,21 @@ def behavioural_barrel(runs, label):
         # R1 — base ref unresolvable: no diff is computable, so RED.
         ("fail[base-ref-unresolvable]", fpath, base, "export 'a.dart';\n", False,
          "could not resolve base ref", False, None),
-        # ── both directions of "a barrel is defined by exports, not by name" ──
-        # A: class-file index.dart shedding lines must PASS, while a real barrel
-        #    sits in the same tree (so the gate provably had something to check).
-        ("pass[class-file-index.dart-loses-lines]", "lib/src/utils/index.dart",
+        # ── both directions of "protection follows reachability, not filename" ──
+        # A: a PRIVATE lib/src/**/index.dart shedding lines must PASS, while a
+        #    real barrel sits in the same tree (so the gate provably had
+        #    something to check and did not just short-circuit on an empty list).
+        ("pass[private-lib-src-index.dart-loses-lines]", "lib/src/utils/index.dart",
          klass_base, klass_work, True, None, True, real_barrel),
-        # B: and the true barrel must STILL red when IT sheds an export — the
+        # B: a PUBLIC nested barrel must STILL red when it sheds an export — the
         #    fix must not have bought A by switching the gate off.
-        ("fail[true-barrel-still-reds]", "lib/nested/index.dart",
+        ("fail[public-nested-barrel-still-reds]", "lib/nested/index.dart",
          base, "export 'a.dart';\n", False, "RULE 66 VIOLATION", True, real_barrel),
+        # C: a PUBLIC factory index.dart with ZERO exports shedding a METHOD must
+        #    still red. This is the PR #373 incident and the case an
+        #    `^export `-based rule would have silently let through.
+        ("fail[public-factory-method-removal-still-reds]", "lib/endpoints/org_service/index.dart",
+         factory_base, factory_work, False, "RULE 66 VIOLATION", True, real_barrel),
     ]
     for case, fp, base_content, work_content, want_zero, expect, origin_ref, extras in cases:
         with tempfile.TemporaryDirectory() as tmp:
