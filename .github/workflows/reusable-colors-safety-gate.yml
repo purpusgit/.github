@@ -36,6 +36,46 @@ jobs:
             exit 1
           fi
 
+          # Mask `//` line comments before matching. The gate used to match its own
+          # trigger strings inside prose: pkg_new_social PR #174 had to reword an
+          # accurate comment ("...instead of a raw Colors.green/grey.") for no reason
+          # other than to stop the regex firing — zero lines of code changed. A gate
+          # that rewards making comments less accurate is worse than no gate.
+          #
+          # Only an UNQUOTED `//` opens a comment. A `//` inside a string literal (a
+          # URL, say) is left alone, so real code after it on the same line is still
+          # scanned. `/* */` is deliberately NOT handled: same-line block comments are
+          # the sanctioned `/* intentional: <reason> */` stamp form and must keep
+          # working exactly as they do now. A quote left open at end of line (a
+          # multi-line string) masks nothing, which is the pre-existing behaviour.
+          # `if 1:` lets the whole script sit indented inside this YAML block scalar;
+          # unindented lines would terminate the block. \x27 / \x22 are a quote and a
+          # double quote, spelled that way so the script survives shell single-quoting.
+          mask_comments() {
+            python3 -c 'if 1:
+              import sys
+              for raw in sys.stdin:
+                  s = raw.rstrip("\n")
+                  q = ""
+                  i = 0
+                  while i < len(s):
+                      c = s[i]
+                      if q:
+                          if c == "\\":
+                              i += 2
+                              continue
+                          if c == q:
+                              q = ""
+                      elif c == "\x27" or c == "\x22":
+                          q = c
+                      elif c == "/" and s[i:i + 2] == "//":
+                          s = s[:i]
+                          break
+                      i += 1
+                  sys.stdout.write(s + "\n")
+              '
+          }
+
           # lib/ Dart files changed in this PR (diff-only; excludes test/ to avoid false positives)
           CHANGED=$(git diff "origin/${BASE_REF}...HEAD" --name-only -- '*.dart' 2>/dev/null | grep '^lib/')
 
@@ -55,34 +95,54 @@ jobs:
               continue
             fi
 
-            # B5b — file-level `fixed-stage` opt-out, SCOPED TO THE HEX CHECK ONLY.
+            # B5b — file-level `fixed-stage` opt-out, SCOPED TO THE COLOUR-SOURCING
+            # CHECKS ONLY: hex literals and `Colors.*`.
             # Some surfaces are a deliberately fixed dark stage that does not follow
             # the theme (chant session, PiP, calibration wizard, wake overlay, voice
             # lock, welcome screen). Their hex literals have no light-token match BY
             # DESIGN, so B5 forced them to be suppressed one line at a time — one repo
             # reached 505 `// intentional:` stamps, 415 of which suppressed nothing.
             #
+            # `Colors.*` is the same statement in another spelling and honours the same
+            # header. It did not, and that asymmetry cost pkg_new_social PR #174 sixty-
+            # nine per-line `// intentional:` stamps layered ON TOP of a header that had
+            # already declared the file a fixed stage. B5b bans exactly that pairing:
+            # `// intentional:` is the suppression token, so a line carrying one is
+            # exempt forever — including a future edit that pastes a genuinely wrong
+            # colour onto it. One header, one decision, one thing to review.
+            #
             # It must NOT skip the whole file. The first draft of this used `continue`,
-            # which ALSO disabled the `Colors.*`, `.withOpacity(` and `extension<X>()!`
-            # checks — and `extension<X>()!` is a null-assertion CRASH check with
-            # nothing to do with B5. One comment line would have opted a file out of a
-            # runtime-safety gate. A fixed stage is a statement about colour SOURCING,
-            # not a licence to crash.
+            # which ALSO disabled the `.withOpacity(` and `extension<X>()!` checks —
+            # and `extension<X>()!` is a null-assertion CRASH check with nothing to do
+            # with B5. One comment line would have opted a file out of a runtime-safety
+            # gate. A fixed stage is a statement about colour SOURCING, not a licence
+            # to crash.
             FIXED_STAGE=0
             if head -20 "$FILE" | grep -qE '^[[:space:]]*//[[:space:]]*fixed-stage:'; then
               FIXED_STAGE=1
-              echo "fixed-stage (B5b): $FILE - hex skipped; Colors.*, withOpacity, extension<>()! still enforced"
+              echo "fixed-stage (B5b): $FILE - hex + Colors.* skipped; withOpacity, extension<>()! still enforced"
             fi
 
             # Added lines only — lines starting with + but not the +++ file header
             ADDED=$(git diff "origin/${BASE_REF}...HEAD" -- "$FILE" 2>/dev/null | grep '^+' | grep -v '^+++')
+
+            # The matching surface for every arm below: added lines, minus the ones
+            # carrying an `intentional:` stamp, with `//` comments masked.
+            # The `intentional:` filter runs FIRST and on the RAW line, exactly as each
+            # arm ran it before — masking first would have stripped trailing
+            # `// intentional: <reason>` stamps and turned them into new failures.
+            ADDED_CODE=$(echo "$ADDED" | grep -v 'intentional:' | mask_comments)
 
             # Block any Colors.* except Colors.transparent
             # Uses perl negative lookbehind (?<![a-zA-Z]) to avoid false-positives like gradientColors.map
             # and negative lookahead (?!transparent) so Colors.transparent is permitted on the same line
             # Also exclude constructor default parameters (this.<param> = Colors.<X>)
             # BuildContext is unavailable at class-scope defaults — colorScheme tokens cannot be used there.
-            COLOR_HITS=$(echo "$ADDED" | grep -v 'intentional:' | grep -vP '\bthis\.[a-zA-Z_][a-zA-Z0-9_]* = Colors\.' | perl -ne 'print if /(?<![a-zA-Z])Colors\.(?!transparent\b)[a-zA-Z]/')
+            # Skipped entirely on a `fixed-stage` file (see B5b above).
+            COLOR_HITS=""
+            if [ "$FIXED_STAGE" -eq 0 ]; then
+              COLOR_HITS=$(echo "$ADDED_CODE" | grep -vP '\bthis\.[a-zA-Z_][a-zA-Z0-9_]* = Colors\.' | perl -ne 'print if /(?<![a-zA-Z])Colors\.(?!transparent\b)[a-zA-Z]/')
+            fi
 
             if [ -n "$COLOR_HITS" ]; then
               echo ""
@@ -92,6 +152,7 @@ jobs:
               echo "    Error / danger               -> colorScheme.error"
               echo "    Primary brand                -> colorScheme.primary"
               echo "    WhatsApp brand               -> (Theme.of(context).extension<OrbitColors>())?.brandWhatsapp ?? colorScheme.secondary"
+              echo "    Whole surface ignores theme  -> declare '// fixed-stage: <why>' in the file header"
               echo "    Suppress (last resort)       -> add '// intentional: <reason>' on the same line"
               echo ""
               echo "$COLOR_HITS" | head -10
@@ -99,7 +160,7 @@ jobs:
             fi
 
             # Block deprecated .withOpacity(); use .withValues(alpha:) — Flutter 3.27+
-            OPACITY_HITS=$(echo "$ADDED" | grep '\.withOpacity(' | grep -v 'intentional:')
+            OPACITY_HITS=$(echo "$ADDED_CODE" | grep '\.withOpacity(')
 
             if [ -n "$OPACITY_HITS" ]; then
               echo ""
@@ -111,7 +172,7 @@ jobs:
 
             # Block non-null extension<X>()! assertions — crashes if host theme doesn't provide the extension
             # (Dark_Mode_Architecture.md §17)
-            EXTENSION_BANG=$(echo "$ADDED" | grep 'extension<' | grep ')!' | grep -v 'intentional:')
+            EXTENSION_BANG=$(echo "$ADDED_CODE" | grep 'extension<' | grep ')!')
 
             if [ -n "$EXTENSION_BANG" ]; then
               echo ""
@@ -135,7 +196,7 @@ jobs:
             # entirely - example/lib/main.dart already uses it.
             HEX_HITS=""
             if [ "$FIXED_STAGE" -eq 0 ]; then
-              HEX_HITS=$(echo "$ADDED" | grep -v 'intentional:' | grep -oP 'Color\(0x(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6})\)|Color\.fromARGB\(' | head -10)
+              HEX_HITS=$(echo "$ADDED_CODE" | grep -oP 'Color\(0x(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6})\)|Color\.fromARGB\(' | head -10)
             fi
             if [ -n "$HEX_HITS" ]; then
               echo ""
