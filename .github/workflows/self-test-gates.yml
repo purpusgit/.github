@@ -20,16 +20,33 @@ name: Self-CI — Gate Predicate Fixture Suite
 # setup is the price of a behavioural assertion on them; it buys nothing else.
 
 on:
+  # ── push: paths-filtered, deliberately ──────────────────────────────────────
+  # A push to `main` genuinely only matters for these paths, and keeping the
+  # filter here caps the cost of the Flutter+Node install below. A push trigger
+  # carries no obligation to report a status on anything.
   push:
     paths:
       - '.github/workflows/**'
       - 'scripts/**'
       - 'taxo-contract/**'
+
+  # ── pull_request: NO paths filter. This is load-bearing. ────────────────────
+  # This job's check run is a REQUIRED CONTEXT on `main`. A required check that
+  # is SKIPPED never reports, and GitHub then blocks the PR forever on
+  # "Expected — waiting for status".
+  #
+  # With a paths filter here, a docs-only PR — a README edit, a rollout-doc
+  # change, anything outside the three globs above — would skip this workflow
+  # and deadlock. That failure is an ABSENCE, not a red: nothing fails, nothing
+  # is logged, and it is invisible to every check that looks for failures. The
+  # org has already paid a week of a blocked incident-fix queue for exactly this
+  # (japa, 2026-08-02), and an org-wide audit a week later still found one
+  # survivor.
+  #
+  # ⛔ DO NOT ADD A `paths:` FILTER HERE while this context is required.
+  #    Governed by M43 — git_workflow_guidelines.md.
   pull_request:
-    paths:
-      - '.github/workflows/**'
-      - 'scripts/**'
-      - 'taxo-contract/**'
+
   workflow_dispatch: {}
 
 permissions:
@@ -38,6 +55,10 @@ permissions:
 jobs:
   gate-selftest:
     runs-on: ubuntu-latest
+    # ⚠️ This job `name:` IS the required status-check context. Renaming it
+    # breaks branch protection on `main`. If it must ever change, rename the
+    # required context FIRST, observe the new name reporting on a real PR head,
+    # and only then rename here (M43 — context and reporter move together).
     name: Exercise every reusable gate predicate
     steps:
       - uses: actions/checkout@v5.1.0
