@@ -3,8 +3,9 @@ name: Barrel & Factory Safety (Rule 66) — reusable
 # Enforces CLAUDE.md Rule 66: shared package public API is sacred.
 # Deployable to ANY pkg_* Flutter repo without modification.
 #
-# Barrel files checked:
-#   - All lib/**/index.dart files
+# Barrel files checked (a barrel is defined by having >=1 `^export ` line —
+# never by filename alone):
+#   - All lib/**/index.dart files that contain export statements
 #   - All lib/*.dart files at root that contain export statements
 #
 # Fails CI if any of these files have lines REMOVED in the PR.
@@ -46,8 +47,16 @@ jobs:
 
           declare -a BARREL_FILES
 
+          # A file is a barrel because it EXPORTS, never because of its name.
+          # `index.dart` is also the conventional name for a plain class file in
+          # several org packages (pkg_orbit_binder/lib/src/utils/index.dart IS
+          # the Binder class, 0 export lines). Treating those as barrels froze
+          # every line in them and failed this REQUIRED check on legitimate
+          # refactors. Same `^export ` condition the root-level pass already had.
           while IFS= read -r f; do
-            [[ -n "$f" ]] && BARREL_FILES+=("$f")
+            if grep -q "^export " "$f" 2>/dev/null; then
+              BARREL_FILES+=("$f")
+            fi
           done < <(find lib/ -name "index.dart" 2>/dev/null | sort)
 
           while IFS= read -r f; do

@@ -216,7 +216,8 @@ def build_diff_repo(tmp, fpath, base_content, added_line, origin_ref=True):
         f.write("\n" + added_line + "\n")
     run(*g, "add", "-A"); run(*g, "commit", "-qm", "work")
 
-def build_barrel_repo(tmp, fpath, base_content, work_content, origin_ref=True):
+def build_barrel_repo(tmp, fpath, base_content, work_content, origin_ref=True,
+                      extras=None):
     """Two-branch git repo where work branch overwrites fpath with work_content.
     Supports testing both removal (fail) and addition (pass) cases.
 
@@ -224,7 +225,11 @@ def build_barrel_repo(tmp, fpath, base_content, work_content, origin_ref=True):
     barrel file NEW in this PR. That is legitimate and must still pass; it is the
     case a naive "cat-file -e non-zero => fail" fix would have broken.
     origin_ref=False  -> refs/remotes/origin/cwb is never created, so the gate
-    cannot resolve its base ref and must go RED."""
+    cannot resolve its base ref and must go RED.
+    extras={path: content} -> extra files written IDENTICALLY on both branches,
+    so they contribute no diff. Used to plant a real barrel alongside a
+    non-barrel `index.dart`, which is the only way to tell "the gate correctly
+    ignored the class file" apart from "the gate found nothing to check at all"."""
     g = ["git", "-c", "user.email=t@t.co", "-c", "user.name=t"]
     def run(*a): subprocess.run(list(a), cwd=tmp, check=True, capture_output=True)
     run(*g, "init", "-q", "-b", "cwb")
@@ -234,6 +239,10 @@ def build_barrel_repo(tmp, fpath, base_content, work_content, origin_ref=True):
         open(os.path.join(os.path.dirname(full), "keep.txt"), "w").write("placeholder\n")
     else:
         open(full, "w").write(base_content)
+    for xp, xc in (extras or {}).items():
+        xfull = os.path.join(tmp, xp)
+        os.makedirs(os.path.dirname(xfull), exist_ok=True)
+        open(xfull, "w").write(xc)
     run(*g, "add", "-A"); run(*g, "commit", "-qm", "base")
     if origin_ref:
         run(*g, "update-ref", "refs/remotes/origin/cwb", "HEAD")
@@ -291,21 +300,40 @@ def behavioural_barrel(runs, label):
     script = runs[-1]
     fpath = "lib/index.dart"
     base = "export 'a.dart';\nexport 'b.dart';\n"
+    # A real barrel, planted unchanged on both branches in the class-file case.
+    # Without it an "ignored the class file" pass is indistinguishable from a
+    # "found no barrels at all" pass — the gate short-circuits on an empty list.
+    real_barrel = {"lib/pkg.dart": "export 'src/a.dart';\nexport 'src/b.dart';\n"}
+    # A non-barrel that happens to be named index.dart, losing lines. This is
+    # pkg_orbit_binder/lib/src/utils/index.dart: the Binder class, zero exports.
+    # Name alone used to make it a barrel, freezing every line and failing this
+    # REQUIRED check on any legitimate refactor.
+    klass_base = ("class Binder {\n  void a() {}\n  void b() {}\n  void c() {}\n}\n")
+    klass_work = ("class Binder {\n  void a() {}\n}\n")
     cases = [
-        # case, base_content, work_content, want_zero, expect, origin_ref
-        ("pass", base, "export 'a.dart';\nexport 'b.dart';\nexport 'c.dart';\n",
-         True, None, True),
-        ("fail", base, "export 'a.dart';\n", False, "RULE 66 VIOLATION", True),
+        # case, fpath, base_content, work_content, want_zero, expect, origin_ref, extras
+        ("pass", fpath, base, "export 'a.dart';\nexport 'b.dart';\nexport 'c.dart';\n",
+         True, None, True, None),
+        ("fail", fpath, base, "export 'a.dart';\n", False, "RULE 66 VIOLATION", True, None),
         # R1 — barrel file absent at base: NEW in this PR, still a pass.
-        ("pass[new-barrel-file-at-base]", None, base, True, None, True),
+        ("pass[new-barrel-file-at-base]", fpath, None, base, True, None, True, None),
         # R1 — base ref unresolvable: no diff is computable, so RED.
-        ("fail[base-ref-unresolvable]", base, "export 'a.dart';\n", False,
-         "could not resolve base ref", False),
+        ("fail[base-ref-unresolvable]", fpath, base, "export 'a.dart';\n", False,
+         "could not resolve base ref", False, None),
+        # ── both directions of "a barrel is defined by exports, not by name" ──
+        # A: class-file index.dart shedding lines must PASS, while a real barrel
+        #    sits in the same tree (so the gate provably had something to check).
+        ("pass[class-file-index.dart-loses-lines]", "lib/src/utils/index.dart",
+         klass_base, klass_work, True, None, True, real_barrel),
+        # B: and the true barrel must STILL red when IT sheds an export — the
+        #    fix must not have bought A by switching the gate off.
+        ("fail[true-barrel-still-reds]", "lib/nested/index.dart",
+         base, "export 'a.dart';\n", False, "RULE 66 VIOLATION", True, real_barrel),
     ]
-    for case, base_content, work_content, want_zero, expect, origin_ref in cases:
+    for case, fp, base_content, work_content, want_zero, expect, origin_ref, extras in cases:
         with tempfile.TemporaryDirectory() as tmp:
-            build_barrel_repo(tmp, fpath, base_content, work_content,
-                              origin_ref=origin_ref)
+            build_barrel_repo(tmp, fp, base_content, work_content,
+                              origin_ref=origin_ref, extras=extras)
             _assert_diff(script, label, case, want_zero, tmp, expect=expect)
 
 def behavioural_rule84(runs, label):
