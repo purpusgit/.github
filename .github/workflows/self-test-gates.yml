@@ -79,6 +79,33 @@ jobs:
           node-version: "22"
       - name: Install deps
         run: pip install pyyaml jsonschema
+      # actionlint parses GitHub's own expression grammar — the one defect class
+      # neither `yaml.safe_load` nor `bash -n` can see (notify-host-tip-moved.yml,
+      # 2026-08-10: a literal empty `${{ }}` in a run: comment made Actions reject
+      # 13 workflows at validation time, silently). Deliberately a STEP in this
+      # job, not a job of its own: Actions bills per job rounded UP to a whole
+      # minute, so an ~11s second job costs a full billed minute to run a linter
+      # that adds ~1s here.
+      #
+      # Version PINNED, and checksum-verified: a linter that changes its rules
+      # under us reds this harness for something no PR introduced, and this binary
+      # is executed, so it gets the same treatment as any other executable
+      # dependency. `set -euo pipefail` means a failed download or a checksum
+      # mismatch reds the step — gate_selftest.py then reds a second time on
+      # `shutil.which("actionlint")`. Fail-closed twice; an absent check is the
+      # exact failure mode this gate exists to prevent.
+      - name: Install actionlint (pinned)
+        env:
+          ACTIONLINT_VERSION: "1.7.7"
+          ACTIONLINT_SHA256: "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757"
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/actionlint.tgz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  $RUNNER_TEMP/actionlint.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/actionlint.tgz" -C "$RUNNER_TEMP" actionlint
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/actionlint" --version
       - name: Run gate self-test
         run: python3 scripts/gate_selftest.py
       - name: Run taxo-contract checker self-test (block-scoped 2.2)
