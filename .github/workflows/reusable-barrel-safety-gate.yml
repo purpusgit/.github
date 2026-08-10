@@ -3,8 +3,11 @@ name: Barrel & Factory Safety (Rule 66) — reusable
 # Enforces CLAUDE.md Rule 66: shared package public API is sacred.
 # Deployable to ANY pkg_* Flutter repo without modification.
 #
-# Barrel files checked:
-#   - All lib/**/index.dart files
+# Files checked (the test is REACHABILITY by a downstream package, not the
+# presence of `export` — this gate guards factory classes too, and those
+# export nothing):
+#   - All lib/**/index.dart files OUTSIDE lib/src/ (lib/src/ is private by
+#     Dart convention: no downstream package can import it)
 #   - All lib/*.dart files at root that contain export statements
 #
 # Fails CI if any of these files have lines REMOVED in the PR.
@@ -46,9 +49,24 @@ jobs:
 
           declare -a BARREL_FILES
 
+          # What makes an index.dart protected is REACHABILITY, not exports.
+          # Dart's convention: lib/src/ is private by definition, everything
+          # else under lib/ is importable by any downstream package. This gate
+          # is "Barrel & FACTORY safety" — 6 of the org's 7 nested index.dart
+          # files are lib/endpoints/*/index.dart holding *EndpointsFactory
+          # classes with ZERO export lines, and Rule 66 forbidden action #2 is
+          # removing a method from exactly those. So `^export ` is the WRONG
+          # discriminator here: it would drop all 6 factories, and the 7th
+          # (binder's) has zero exports too — so it would match NONE of the
+          # org's 7 nested index.dart files, i.e. protect nothing at all.
+          # lib/src/ is the right one: it excludes
+          # pkg_orbit_binder/lib/src/utils/index.dart (the Binder class — a
+          # private implementation file no downstream can import, whose lines
+          # this gate used to freeze, failing a REQUIRED check on legitimate
+          # refactors) while keeping every public barrel and factory frozen.
           while IFS= read -r f; do
             [[ -n "$f" ]] && BARREL_FILES+=("$f")
-          done < <(find lib/ -name "index.dart" 2>/dev/null | sort)
+          done < <(find lib/ -name "index.dart" -not -path "lib/src/*" 2>/dev/null | sort)
 
           while IFS= read -r f; do
             if grep -q "^export " "$f" 2>/dev/null; then
