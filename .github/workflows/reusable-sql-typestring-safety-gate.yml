@@ -45,6 +45,16 @@ jobs:
           fetch-depth: 0
       - name: Check for PascalCase taxo.master type strings
         run: |
+          # `set +e` is LOAD-BEARING. GitHub runs every `run:` block as
+          # `bash -e {0}`, so errexit is ALREADY ON before the next line, and
+          # `set -uo pipefail` does NOT clear it — only `set +e` does. Without it
+          # this gate dies mid-scan at the first command that legitimately returns
+          # non-zero: `grep '^+'` on a changed file with no added lines (a
+          # deletions-only edit), or `find src` when the repo has no src/ tree.
+          # The whole shape below — a per-file loop, a FAIL accumulator, one
+          # report at the end — only means anything if execution continues past
+          # those. Do not remove this line, and do not "tidy" it into `-e`.
+          set +e
           set -uo pipefail
           PAT="type[[:space:]]*=[[:space:]]*'[A-Z][A-Za-z0-9_]*'"
           FAIL=0
