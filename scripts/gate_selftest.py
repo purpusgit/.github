@@ -20,6 +20,9 @@ What it does, per workflow:
   4. Runs a CANARY: deliberately weakens the dart predicate and asserts the FAIL
      fixture stops catching it — proving the behavioural assertions genuinely
      exercise the predicate (a test that cannot fail proves nothing).
+  5. Runs actionlint over EVERY workflow in this repo — the workflow-validity
+     class that steps 1-2 structurally cannot see, because a workflow Actions
+     refuses to compile is still perfectly valid YAML. See actionlint_gate().
 
 The DELEGATING gates (taxo-lint, taxo-contract-lint, taxo-data-nightly) call
 external Python that needs live MySQL secrets or a cross-repo checkout token, so
@@ -414,6 +417,136 @@ def canary_analyze(analyze_script):
         fail(f"canary[analyze]: weakened predicate still exited {code}; the FAIL "
              "fixture is red for some reason other than the planted warning")
 
+# ── actionlint: workflow-validity check ──────────────────────────────────────
+# Added 2026-08-10 after notify-host-tip-moved.yml was fanned out to 13 repos
+# carrying a literal empty `${{ }}` inside what reads as a shell comment in a
+# `run:` body. Actions evaluates expressions everywhere in a run: block scalar —
+# `#` means nothing to it — and an empty expression cannot compile, so Actions
+# REJECTED the whole workflow at validation time.
+#
+# Nothing in this harness could see it. The file is valid YAML: yaml.safe_load
+# parses it clean, so load_yaml() and bash_n() both pass it. And the symptom on
+# GitHub is an absence, not a red step: a workflow that fails validation never
+# gets its trigger filter evaluated, so a run is materialised for EVERY push
+# regardless of `on: push: branches:`, then dies in 0s with 0 jobs, a 404
+# logs_url and the file PATH reported where the `name:` should be. It went
+# unnoticed for days because there was nothing to read.
+#
+# actionlint parses GitHub's expression grammar, which is the one thing
+# yaml.safe_load and `bash -n` structurally cannot do.
+ACTIONLINT_FLAGS = ["-no-color", "-oneline", "-shellcheck=", "-pyflakes="]
+# NARROWED, deliberately. The two empty flags disable actionlint's shellcheck
+# and pyflakes integrations. On this tree at c8b4cf4 they contribute four
+# pre-existing style/info findings — SC2005 (colors gate), SC2016 (dart gate),
+# SC2086 (rule84 gate), SC2001 (sql-typestring gate) — none of which this PR
+# introduced, and silencing them means editing live predicates that every
+# consumer repo resolves `@main`. Turning them on would red this harness on day
+# one for reasons no PR caused, which is how a gate gets disabled by whoever is
+# unblocking a release at 2am.
+#   What the exclusion costs: no shell-quoting lint (SC2086-class unquoted
+#   expansion) and no lint of embedded python heredocs beyond the py_compile
+#   above. What it does NOT cost: anything in the expression/syntax class — that
+#   is actionlint's own parser, unaffected by these flags, and the fixture below
+#   pins exactly that. Re-enable by clearing the two flags once the four are
+#   fixed in their own PR.
+
+# The defective line, verbatim from notify-host-tip-moved.yml @ 6fba4248 (the
+# fan-out commit). Copied rather than paraphrased on purpose: a fixture that
+# tests a hand-written approximation of a bug proves nothing about the bug.
+BROKEN_EXPR_LINE = (
+    "          # $GITHUB_REPOSITORY / $GITHUB_SHA rather than `${{ }}` interpolation —"
+)
+FIXED_EXPR_LINE = BROKEN_EXPR_LINE.replace("`${{ }}` interpolation",
+                                           "expression interpolation")
+ACTIONLINT_FIXTURE = """name: Notify host — tip moved
+on:
+  push:
+    branches: [cwb]
+permissions: {}
+jobs:
+  notify:
+    name: dispatch package-tip-moved
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch to main_org_orbit
+        run: |
+          set -euo pipefail
+__LINE__
+          # nothing untrusted gets spliced into the script text.
+          echo "dispatched: $GITHUB_REPOSITORY @ $GITHUB_SHA"
+"""
+
+
+def _actionlint(exe, paths, cwd):
+    r = subprocess.run([exe] + ACTIONLINT_FLAGS + list(paths),
+                       cwd=cwd, text=True, capture_output=True)
+    return r.returncode, r.stdout + r.stderr
+
+
+def actionlint_gate():
+    """Lint every workflow in THIS repo, and prove the linter can still go red.
+
+    Fails closed: if actionlint is absent or unrunnable this reds. An absent
+    check is precisely the failure mode the incident above consisted of, so
+    'could not run the linter' must never score as 'the linter found nothing'.
+    """
+    print("── actionlint (workflow validity: expression + syntax)")
+    exe = shutil.which("actionlint")
+    if not exe:
+        fail("actionlint: not installed / not on PATH — refusing to score an "
+             "un-run linter as green (see the Install actionlint step in "
+             "self-test-gates.yml)")
+        return
+
+    # Red-proof first: if the fixture does not behave, the clean run below means
+    # nothing. Same reasoning as the dart canary — a check that cannot fail
+    # proves nothing.
+    with tempfile.TemporaryDirectory() as tmp:
+        wfd = os.path.join(tmp, ".github", "workflows")
+        os.makedirs(wfd)
+        cases = [("fixture-broken.yml", BROKEN_EXPR_LINE),
+                 ("fixture-control.yml", FIXED_EXPR_LINE)]
+        for fn, line in cases:
+            with open(os.path.join(wfd, fn), "w") as f:
+                f.write(ACTIONLINT_FIXTURE.replace("__LINE__", line))
+        code, out = _actionlint(exe, [os.path.join(wfd, "fixture-broken.yml")], tmp)
+        if code == 0:
+            fail("actionlint[fixture]: the real defect shape (empty `${{ }}` in a "
+                 "run: comment) was NOT caught — this actionlint no longer detects "
+                 "the incident class")
+        elif "[expression]" not in out:
+            fail(f"actionlint[fixture]: exited {code} but reported no [expression] "
+                 f"finding — red for the WRONG reason\n{out}")
+        else:
+            ok("actionlint[fixture]: empty `${{ }}` inside a run: comment goes RED "
+               "[expression] — the real defect shape is caught")
+        code, out = _actionlint(exe, [os.path.join(wfd, "fixture-control.yml")], tmp)
+        if code != 0:
+            fail(f"actionlint[fixture]: the control (same file, empty expression "
+                 f"removed) is not clean — the fixture reds for an unrelated "
+                 f"reason and pins nothing\n{out}")
+        else:
+            ok("actionlint[fixture]: same file with the expression removed is GREEN")
+
+    # Scope: every workflow on disk, derived at runtime. Never a hardcoded list —
+    # a list is how a file gets added and stays invisible to its own gate.
+    # self-test-gates.yml is INCLUDED here (main() excludes it from the gate loop
+    # because it is not a gate; it is still a workflow that can fail validation).
+    wfs = sorted(glob.glob(os.path.join(WF_DIR, "*.yml")) +
+                 glob.glob(os.path.join(WF_DIR, "*.yaml")))
+    if not wfs:
+        fail("actionlint: derived zero workflow files from "
+             f"{WF_DIR} — scope derivation is broken, not the repo empty")
+        return
+    code, out = _actionlint(exe, wfs, ROOT)
+    if code != 0:
+        n = len([l for l in out.splitlines() if l.strip()])
+        fail(f"actionlint: {n} finding(s) across {len(wfs)} workflow(s)\n{out}")
+    else:
+        ok(f"actionlint: all {len(wfs)} workflow(s) clean")
+    print()
+
+
 def main():
     files = sorted(os.path.basename(p) for p in glob.glob(os.path.join(WF_DIR, "*.yml")))
     files = [f for f in files if f != "self-test-gates.yml"]
@@ -468,6 +601,8 @@ def main():
         elif beh["kind"] == "rule84":
             behavioural_rule84(runs, fn)
         print()
+
+    actionlint_gate()
 
     print("── canary (negative test of the test)")
     if dart_script:
