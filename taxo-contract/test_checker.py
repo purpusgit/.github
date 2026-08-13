@@ -90,6 +90,18 @@ if code == 0:
 if len(ia2) != 1 or "org_mission_category_idfr" not in ia2[0] or "org_purpose_category_idfr" in "".join(ia2):
     fails.append(f"fail_is_active_clause_bleed: expected exactly one 'omits is_active' finding on org_mission_category_idfr; got:\n{chr(10).join(ia2)}")
 
+# 6. is_active_exempt_glob: identical query under src/api-admin/** (contract exempts
+#    this glob) and src/api/** (not exempt) -- admin copy must be clean, non-admin
+#    copy must still RED. Regression guard for the glob-vs-exact-membership bug
+#    found via live verification (2026-08-13): rule 2.6 originally did `rel not in
+#    is_active_exempt`, an exact dict-key check, so a glob key like
+#    'src/api-admin/**' silently exempted nothing.
+code, err = run("is_active_exempt_glob")
+ia3 = [ln for ln in err.splitlines() if "omits is_active" in ln]
+if len(ia3) != 1 or "src/api/y/q.sql.ts" not in ia3[0] or "src/api-admin" in "".join(ia3):
+    fails.append(f"is_active_exempt_glob: expected exactly one 'omits is_active' finding, "
+                 f"on src/api/y/q.sql.ts only (admin copy must be exempt); got:\n{chr(10).join(ia3)}")
+
 if fails:
     print("checker self-test RED:")
     for f in fails:
