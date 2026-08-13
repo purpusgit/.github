@@ -19,6 +19,17 @@
   * --advisory makes the gate report reds but exit 0, so it can be wired non-blocking
     on a repo before its pre-existing state is known (mirrors reusable-taxo-lint.yml).
 
+2026-08-13 addition (G3, SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md):
+  * Rule 2.6 -- a taxo.master read that filters both type and hierarchy_level but
+    omits is_active = 1 is RED. Scoped to the same JOIN clause as 2.2 (this rule was
+    composed on top of the 2.2 clause-bounds fix below, from the start, after an
+    adversarial test showed the block-wide version had the identical bleed bug 2.2
+    had before the fix -- a neighbouring join's is_active = 1 covering a different
+    join with none). Admin read paths that deliberately include inactive rows go on
+    a named allowlist in the contract (is_active_exempt), never a bare exception in
+    code. Starts empty. IS_ACTIVE_RE also matches `is_active = TRUE` (confirmed live
+    house style in service_orbit_orgs/src/api-admin/department/department.sql.ts).
+
 2026-08-13 fix (external critic follow-up on PR #32): _closest() resolved the
   level within the whole SQL block, so a NEIGHBOURING join's hierarchy_level
   literal could be misattributed to a different column with no level literal of
@@ -44,6 +55,10 @@ LEVEL_LIT_RE = re.compile(r"hierarchy_level\s*=\s*'([^']+)'", re.IGNORECASE)
 IDFR_RE      = re.compile(r"\b([a-z][a-z0-9_]*_idfr)\b")
 JOIN_RE      = re.compile(r"\bJOIN\b", re.IGNORECASE)
 DIM_LIT_RE   = re.compile(r"dimension\s*=\s*'([^']+)'", re.IGNORECASE)
+# also matches the SQL-boolean spelling (`is_active = TRUE`) -- confirmed live in
+# service_orbit_orgs/src/api-admin/department/department.sql.ts, a compliant read
+# this rule would otherwise have false-RED'd the day G1 wires this gate.
+IS_ACTIVE_RE = re.compile(r"is_active\s*=\s*(?:1\b|TRUE\b)", re.IGNORECASE)
 
 RED, YELLOW = "RED", "YELLOW"
 
@@ -117,6 +132,7 @@ def scan_file(path, rel, text, contract, findings):
     endpoint_types = contract.get("endpoint_types", {})
     not_in = {k.lower(): v for k, v in contract.get("not_in_taxo_master", {}).items()}
     junctions = contract.get("junctions", {})
+    is_active_exempt = contract.get("is_active_exempt", {})
 
     touches_taxo = bool(TAXO_REF_RE.search(text))
     annots = ANNOT_RE.findall(text)
@@ -171,6 +187,17 @@ def scan_file(path, rel, text, contract, findings):
             if want_lvl == "multi" and lvl_m and lvl_m.group(1) not in spec.get("levels", []):
                 findings.append((RED, "2.2", rel, line,
                                  f"column '{col}' multi-level {spec.get('levels')} but SQL uses '{lvl_m.group(1)}'"))
+
+        # 2.6 -- RED: filters type AND hierarchy_level but omits is_active = 1. Scoped to the
+        # same JOIN...ON clause as 2.2 (clo, chi, not the whole block lo, hi) -- a neighbouring
+        # join's is_active = 1 in the same backtick block must not cover a different join that
+        # has none (same bleed class #34 fixed for hierarchy_level, applied here for is_active).
+        # Admin paths that deliberately include inactive rows go on a named allowlist in the
+        # contract (is_active_exempt, keyed by relative file path), never a bare code exception.
+        if lvl_m and rel not in is_active_exempt and not _closest(IS_ACTIVE_RE, text, clo, chi, m.start()):
+            findings.append((RED, "2.6", rel, line,
+                             f"taxo.master read filters type='{typ}' and hierarchy_level="
+                             f"'{lvl_m.group(1)}' but omits is_active = 1"))
 
     for tbl, jspec in junctions.items():
         short = tbl.split(".")[-1]
