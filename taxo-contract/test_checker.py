@@ -102,6 +102,28 @@ if len(ia3) != 1 or "src/api/y/q.sql.ts" not in ia3[0] or "src/api-admin" in "".
     fails.append(f"is_active_exempt_glob: expected exactly one 'omits is_active' finding, "
                  f"on src/api/y/q.sql.ts only (admin copy must be exempt); got:\n{chr(10).join(ia3)}")
 
+# 7. fail_suffix_match_wrong_level: identifier is a bare/unprefixed suffix of a
+#    contract column ('department_idfr' vs 'org_department_idfr') -- rule 2.2 must
+#    still resolve it (suffix-match) and catch the wrong level.
+code, err = run("fail_suffix_match_wrong_level")
+wl7 = wrong_level_lines(err)
+if code == 0:
+    fails.append("fail_suffix_match_wrong_level not caught (exit 0)")
+if len(wl7) != 1 or "org_department_idfr" not in wl7[0]:
+    fails.append(f"fail_suffix_match_wrong_level: expected one WRONG LEVEL on org_department_idfr; got:\n{chr(10).join(wl7)}")
+
+# 8. fail_annotation_wrong_level: camelCase param ('deptId') has no '..._idfr' text at
+#    all, so identifier-based resolution can't even attempt a match -- a voluntary
+#    // TAXO_CONTRACT: type@level annotation must be used as the fallback source of
+#    truth and still catch the wrong level. Regression guard for the real bug that
+#    slipped through in user_mission.validator.ts (rule 2.6 caught it, 2.2 never did).
+code, err = run("fail_annotation_wrong_level")
+va8 = [ln for ln in err.splitlines() if "vs annotation" in ln]
+if code == 0:
+    fails.append("fail_annotation_wrong_level not caught (exit 0)")
+if len(va8) != 1:
+    fails.append(f"fail_annotation_wrong_level: expected one WRONG LEVEL vs annotation finding; got:\n{chr(10).join(va8)}")
+
 if fails:
     print("checker self-test RED:")
     for f in fails:
