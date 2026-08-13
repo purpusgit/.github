@@ -33,22 +33,30 @@ jobs:
         with:
           ref: ${{ inputs.repo-checkout-ref }}
 
+      - name: Mint a short-lived installation token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.ORBIT_BOT_APP_ID }}
+          private-key: ${{ secrets.ORBIT_BOT_PRIVATE_KEY }}
+          owner: purpusgit
+          # Least privilege: this token only needs to read .github.
+          repositories: .github
+
       - name: Checkout .github (for contract + checker)
         uses: actions/checkout@v5.1.0
         with:
           repository: purpusgit/.github
           path: _org_github
           ref: main
-          # purpusgit/.github is a PUBLIC repo, so no token is strictly needed --
-          # but a hard `${{ secrets.ORG_GITHUB_READ_TOKEN }}` with no fallback
-          # made actions/checkout error "Input required and not supplied: token"
-          # the moment that secret is unset for a given caller (confirmed live,
-          # 2026-08-13, wiring G1 into service_orbit_orgs -- the org secret does
-          # not exist / is not readable from this integration). Mirrors
-          # reusable-taxo-lint.yml's own `TAXO_GATE_TOKEN || github.token`
-          # defensive pattern, so a future private .github still works if the
-          # secret is ever actually provisioned.
-          token: ${{ secrets.ORG_GITHUB_READ_TOKEN || github.token }}
+          # Uses the org's established bot-token pattern (same as
+          # notify-host-tip-moved.yml, 13+ repos) instead of a raw secret with a
+          # github.token fallback -- works identically whether .github is public
+          # or private, and the same mechanism unblocks cross-repo reads for
+          # currently-private repos too. github.token kept as a last-resort
+          # fallback only for the unlikely case the org secrets are unset for a
+          # given caller or orbit-sessions-bot isn't installed there.
+          token: ${{ steps.app-token.outputs.token || github.token }}
 
       - name: Set up Python
         uses: actions/setup-python@v6.3.0
