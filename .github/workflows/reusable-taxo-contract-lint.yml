@@ -12,6 +12,17 @@ on:
         required: false
         type: string
         default: ${{ github.sha }}
+      advisory:
+        description: >-
+          When true, passed through as checker.py --advisory: reds are still
+          scanned and printed, but the checker exits 0 and the job (therefore
+          the check) reports success -- non-blocking. Set false once a caller's
+          pre-existing violations are cleared, to make the gate hard. Mirrors
+          reusable-taxo-lint.yml's advisory input; uses checker.py's own native
+          --advisory flag rather than continue-on-error, so the step itself
+          reports a clean pass in advisory mode instead of a visible failure.
+        default: false
+        type: boolean
 jobs:
   taxo-lint:
     name: taxo-lint / G4 wrong-concept / wrong-level check
@@ -51,4 +62,5 @@ jobs:
             --contract    _org_github/taxo-contract/taxo_fk_contract.json \
             --schema      _org_github/taxo-contract/taxo_fk_contract.schema.json \
             --repo-root   . \
-            --scan-globs  'src/api/**/*.sql.ts' 'src/api-admin/**/*.sql.ts' 'src/**/*.validator.ts'
+            --scan-globs  'src/api/**/*.sql.ts' 'src/api-admin/**/*.sql.ts' 'src/**/*.validator.ts' \
+            ${{ inputs.advisory && '--advisory' || '' }}
