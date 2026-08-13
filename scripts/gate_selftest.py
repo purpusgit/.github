@@ -99,7 +99,7 @@ BEHAVIOUR = {
         "key": "drizzle-journal",
         "expect": "ERROR: Drizzle journal completeness gate FAILED"},
     "reusable-taxo-lint.yml":        {"kind": None, "reason": "delegates to scripts/taxo_lint.py; --data needs live MySQL secrets"},
-    "reusable-taxo-contract-lint.yml": {"kind": None, "reason": "wired to service_orbit_orgs (2026-08-01); needs ORG_GITHUB_READ_TOKEN cross-repo secret. checker.py offline-tested by taxo-contract/test_checker.py"},
+    "reusable-taxo-contract-lint.yml": {"kind": "dead", "reason": "0 callers org-wide (independently confirmed via a sweep of all 59 repos / 218 workflow files, 2026-08-13) -- not yet wired to any consumer. checker.py offline-tested by taxo-contract/test_checker.py."},
     "taxo-data-lint-nightly.yml":    {"kind": None, "reason": "DB-backed scheduled job; needs TAXO_DB_* MySQL secrets"},
 }
 

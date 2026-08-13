@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Offline self-test for checker.py's block-scoped 2.2 resolution.
 
+Also guards: rule 2.6 (missing is_active = 1, 2026-08-13) and its clause-scoping
+(is_active on a neighbouring join must not bleed onto a different one, 2026-08-13).
 Guards the 2026-07-31 fix: two adjacent taxo.master queries at different levels in
 one file must be judged independently — a wrong level in query A must not mask or
 mis-attribute to query B, and vice versa. Run in CI (self-test-gates.yml). Exits 1
@@ -65,6 +67,28 @@ wl = wrong_level_lines(err)
 if code != 0 or wl:
     fails.append(f"pass_neighbor_join_bleed: a join with no level literal must not "
                  f"inherit a NEIGHBOURING join's level; exit={code}\n{chr(10).join(wl)}")
+
+
+# 4. fail_missing_is_active: same two queries as (the old) pass fixture minus
+#    is_active = 1 -> two RED 2.6 findings (one per query), zero WRONG LEVEL.
+code, err = run("fail_missing_is_active")
+ia = [ln for ln in err.splitlines() if "omits is_active" in ln]
+if code == 0:
+    fails.append("fail_missing_is_active not caught (exit 0)")
+if len(ia) != 2:
+    fails.append(f"fail_missing_is_active: expected 2 'omits is_active' findings; got:\n{chr(10).join(ia)}")
+if wrong_level_lines(err):
+    fails.append(f"fail_missing_is_active should not trigger WRONG LEVEL:\n{chr(10).join(wrong_level_lines(err))}")
+
+# 5. fail_is_active_clause_bleed: two JOINs in ONE block, only the first has is_active = 1.
+#    The second (different column) must still RED -- its neighbour's is_active must not
+#    bleed across via block-wide (rather than clause-scoped) resolution.
+code, err = run("fail_is_active_clause_bleed")
+ia2 = [ln for ln in err.splitlines() if "omits is_active" in ln]
+if code == 0:
+    fails.append("fail_is_active_clause_bleed not caught (exit 0)")
+if len(ia2) != 1 or "org_mission_category_idfr" not in ia2[0] or "org_purpose_category_idfr" in "".join(ia2):
+    fails.append(f"fail_is_active_clause_bleed: expected exactly one 'omits is_active' finding on org_mission_category_idfr; got:\n{chr(10).join(ia2)}")
 
 if fails:
     print("checker self-test RED:")

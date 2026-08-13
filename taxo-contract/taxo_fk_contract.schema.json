@@ -195,6 +195,13 @@
           }
         }
       }
+    },
+    "is_active_exempt": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "relative file path -> reason this file's admin read paths may omit is_active = 1"
     }
   }
 }
