@@ -193,7 +193,7 @@
       "hierarchy_level": "leaf",
       "space": "master",
       "concept": "organization purpose category (leaf level)",
-      "source": "SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md §G2 (founder-approved 2026-08-13) proposed hierarchy_level='domain'; corrected to 'leaf' per live-code verification 2026-08-13 — service_orbit_orgs explore-organization.sql.ts + discover.sql.v1.ts (5 JOIN sites across 2 files, all agree; matches existing contract's match_*_p_idfr leaf pattern)",
+      "source": "SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md §G2 (founder-approved 2026-08-13) proposed hierarchy_level='domain'; corrected to 'leaf' per live-code verification 2026-08-13 — service_orbit_orgs explore-organization.sql.ts (opc.hierarchy_level='leaf') + discover.sql.v1.ts (4 query blocks, pcat.hierarchy_level='leaf'); zero occurrences of hierarchy_level='domain' found anywhere in the org for this column; matches existing contract's match_*_p_idfr leaf pattern. External-critic re-verified 2026-08-13, no contradicting evidence found.",
       "data_status": "ok"
     },
     "org_purpose_sub_category_idfr": {
@@ -202,7 +202,7 @@
       "hierarchy_level": "category",
       "space": "master",
       "concept": "organization purpose sub-category (category level)",
-      "source": "SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md §G2 (founder-approved 2026-08-13); confirmed via service_orbit_orgs explore-organization.sql.ts + discover.sql.v1.ts (5 JOIN sites across 2 files, all agree; matches existing contract's match_*_p_idfr leaf pattern)",
+      "source": "SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md §G2 (founder-approved 2026-08-13); confirmed via service_orbit_orgs explore-organization.sql.ts (opsc) + discover.sql.v1.ts (psub, 4 query blocks), all hierarchy_level='category'.",
       "data_status": "ok"
     },
     "org_mission_category_idfr": {
@@ -211,7 +211,7 @@
       "hierarchy_level": "leaf",
       "space": "master",
       "concept": "organization mission category (leaf level)",
-      "source": "SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md §G2 (founder-approved 2026-08-13) proposed hierarchy_level='domain'; corrected to 'leaf' per live-code verification 2026-08-13 — service_orbit_orgs explore-organization.sql.ts + discover.sql.v1.ts (5 JOIN sites across 2 files, all agree; matches existing contract's match_*_p_idfr leaf pattern)",
+      "source": "SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md §G2 (founder-approved 2026-08-13) proposed hierarchy_level='domain'; corrected to 'leaf' per live-code verification 2026-08-13 — service_orbit_orgs explore-organization.sql.ts (omc.hierarchy_level='leaf', the only site that asserts a level for this column); zero occurrences of hierarchy_level='domain' found anywhere in the org for this column; matches existing contract's match_*_p_idfr leaf pattern. External-critic re-verified 2026-08-13, no contradicting evidence found.",
       "data_status": "ok"
     },
     "org_mission_sub_category_idfr": {
@@ -220,7 +220,7 @@
       "hierarchy_level": "category",
       "space": "master",
       "concept": "organization mission sub-category (category level)",
-      "source": "SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md §G2 (founder-approved 2026-08-13); confirmed via service_orbit_orgs explore-organization.sql.ts + discover.sql.v1.ts (5 JOIN sites across 2 files, all agree; matches existing contract's match_*_p_idfr leaf pattern)",
+      "source": "SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md §G2 (founder-approved 2026-08-13); confirmed via service_orbit_orgs explore-organization.sql.ts (omsc.hierarchy_level='category', the only site that asserts a level for this column).",
       "data_status": "ok"
     }
   },
@@ -307,9 +307,10 @@
   "needs_founder_decision": [
     {
       "column_or_concept": "org_goal_category_idfr",
-      "conflict": "Spec proposes meta.organization.org_goal_category_idfr -> match_goals/domain. No live JOIN evidence found for that column against taxo.master. A same-named column on org_n.org_goal is a plain FK to a per-tenant org_goal_category table (not taxo.master). The only live match_goals/taxo.master binding found is a DIFFERENT column, match_goals_p_idfr (already in this contract, at hierarchy_level=leaf).",
+      "conflict": "Spec proposes meta.organization.org_goal_category_idfr -> match_goals/domain. Live code CONFIRMS entity_table=meta.organization and taxo_type=match_goals (service_orbit_orgs discover.sql.ts, getDiscoverOrgByMissionPurpose, resolves via `SELECT id, value FROM taxo.master WHERE id IN (?) AND type = 'match_goals'`) — but that resolve query has NO hierarchy_level filter, so hierarchy_level is genuinely unconfirmed (could be leaf, domain, or category; the query doesn't constrain it). This was corrected from an earlier draft of this entry that incorrectly claimed no taxo.master evidence existed at all (external-critic catch, 2026-08-13). Separately, org_n.org_goal.org_goal_category_idfr is a plain FK to a per-tenant org_goal_category table (not taxo.master, out of scope). The only live match_goals/taxo.master binding with a hierarchy_level assertion is a DIFFERENT column, match_goals_p_idfr (already in this contract, at hierarchy_level=leaf).",
       "sources": [
         "SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md §G2",
+        "service_orbit_orgs discover.sql.ts (getDiscoverOrgByMissionPurpose, ~line 1650)",
         "service_orbit_orgs org_goal.sql.ts (setMatchGoal, getOrgGoals)",
         "service_orbit_orgs organization.sql.ts"
       ]
