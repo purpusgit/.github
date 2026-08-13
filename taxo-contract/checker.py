@@ -37,6 +37,7 @@
   clause containing the type literal.
 """
 import argparse
+import fnmatch
 import glob
 import json
 import os
@@ -127,6 +128,13 @@ def _clause_bounds(text, lo, hi, pos):
     return (starts[-1] if starts else lo), (ends[0] if ends else hi)
 
 
+def _is_active_exempt(rel, is_active_exempt):
+    """True if rel matches an is_active_exempt key -- exact path or fnmatch glob
+    (e.g. 'src/api-admin/**'). fnmatch's '*' matches '/' too, so a single '**' or
+    '*' both cover an arbitrary sub-path -- confirmed empirically, not assumed."""
+    return any(fnmatch.fnmatch(rel, pattern) for pattern in is_active_exempt)
+
+
 def scan_file(path, rel, text, contract, findings):
     columns = contract.get("columns", {})
     endpoint_types = contract.get("endpoint_types", {})
@@ -193,8 +201,9 @@ def scan_file(path, rel, text, contract, findings):
         # join's is_active = 1 in the same backtick block must not cover a different join that
         # has none (same bleed class #34 fixed for hierarchy_level, applied here for is_active).
         # Admin paths that deliberately include inactive rows go on a named allowlist in the
-        # contract (is_active_exempt, keyed by relative file path), never a bare code exception.
-        if lvl_m and rel not in is_active_exempt and not _closest(IS_ACTIVE_RE, text, clo, chi, m.start()):
+        # contract (is_active_exempt, keyed by exact relative file path OR an fnmatch glob,
+        # e.g. 'src/api-admin/**' -- never a bare code exception).
+        if lvl_m and not _is_active_exempt(rel, is_active_exempt) and not _closest(IS_ACTIVE_RE, text, clo, chi, m.start()):
             col_desc = f"column '{col}'" if col else f"type='{typ}'"
             findings.append((RED, "2.6", rel, line,
                              f"{col_desc} taxo.master read (type='{typ}', hierarchy_level="

@@ -39,5 +39,8 @@
     }
   },
   "endpoint_types": {},
-  "not_in_taxo_master": {}
+  "not_in_taxo_master": {},
+  "is_active_exempt": {
+    "src/api-admin/**": "test glob exemption"
+  }
 }
