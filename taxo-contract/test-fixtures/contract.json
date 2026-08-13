@@ -1,8 +1,43 @@
 {
-  "version": "1.0", "generated": "2026-07-20", "sources": ["test"],
+  "version": "1.0",
+  "generated": "2026-07-20",
+  "sources": [
+    "test"
+  ],
   "columns": {
-    "influencer_category_idfr": {"entity_table":"meta.influencers","taxo_type":"infl_domain","hierarchy_level":"category","concept":"x","source":"x","data_status":"ok"},
-    "org_department_idfr": {"entity_table":"org_n.dept","taxo_type":"o_department","hierarchy_level":"leaf","concept":"x","source":"x","data_status":"ok"}
+    "influencer_category_idfr": {
+      "entity_table": "meta.influencers",
+      "taxo_type": "infl_domain",
+      "hierarchy_level": "category",
+      "concept": "x",
+      "source": "x",
+      "data_status": "ok"
+    },
+    "org_department_idfr": {
+      "entity_table": "org_n.dept",
+      "taxo_type": "o_department",
+      "hierarchy_level": "leaf",
+      "concept": "x",
+      "source": "x",
+      "data_status": "ok"
+    },
+    "org_purpose_category_idfr": {
+      "entity_table": "meta.organization",
+      "taxo_type": "match_purpose",
+      "hierarchy_level": "domain",
+      "concept": "x",
+      "source": "x",
+      "data_status": "ok"
+    },
+    "org_mission_category_idfr": {
+      "entity_table": "meta.organization",
+      "taxo_type": "match_mission",
+      "hierarchy_level": "domain",
+      "concept": "x",
+      "source": "x",
+      "data_status": "ok"
+    }
   },
-  "endpoint_types": {}, "not_in_taxo_master": {}
+  "endpoint_types": {},
+  "not_in_taxo_master": {}
 }
