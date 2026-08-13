@@ -39,7 +39,16 @@ jobs:
           repository: purpusgit/.github
           path: _org_github
           ref: main
-          token: ${{ secrets.ORG_GITHUB_READ_TOKEN }}   # read-only org-scoped PAT
+          # purpusgit/.github is a PUBLIC repo, so no token is strictly needed --
+          # but a hard `${{ secrets.ORG_GITHUB_READ_TOKEN }}` with no fallback
+          # made actions/checkout error "Input required and not supplied: token"
+          # the moment that secret is unset for a given caller (confirmed live,
+          # 2026-08-13, wiring G1 into service_orbit_orgs -- the org secret does
+          # not exist / is not readable from this integration). Mirrors
+          # reusable-taxo-lint.yml's own `TAXO_GATE_TOKEN || github.token`
+          # defensive pattern, so a future private .github still works if the
+          # secret is ever actually provisioned.
+          token: ${{ secrets.ORG_GITHUB_READ_TOKEN || github.token }}
 
       - name: Set up Python
         uses: actions/setup-python@v6.3.0
