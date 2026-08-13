@@ -1,5 +1,5 @@
 {
-  "version": "1.2",
+  "version": "1.3",
   "generated": "2026-08-13",
   "sources": [
     "03 Database Architecture/Legacy_Column_Flutter_Keep_Map.md",
@@ -9,7 +9,8 @@
     "CoWork Projects/Founders Future Prompts/Taxo_FK_Contract_Build_Spec.md v2 (founder-approved starter table)",
     "live taxo.master @ sandbox (existence-check + drift re-check only, 2026-07-20)",
     "CoWork Projects/Founders Future Prompts/Add Rules to Git/SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md (founder-approved; G2 entries added 2026-08-13, hierarchy_level for org_purpose_category_idfr/org_mission_category_idfr corrected from spec's 'domain' to 'leaf' per live-code cross-check; org_goal_category_idfr deliberately excluded pending founder clarification)",
-    "External critic follow-up on .github#32 (2026-08-13, this PR): the merged contract's hierarchy_level='leaf' for org_purpose_category_idfr / org_mission_category_idfr was sourced from explore-organization.sql.ts and discover.sql.v1.ts's read-JOIN predicates -- the exact predicates PR #1130 (service_orbit_orgs, merged 25 minutes after #32) removed on the finding that 'leaf' was WRONG there. Corrected to 'domain' per the live write/validate reference paths (org_purpus_category.sql.ts:addPredefinedPurposeCategory, org_mission_category.validator.ts:validateMissionCetegoryId), which reject any id that is not hierarchy_level='domain'. checker.py also fixed: _closest() was block-scoped only, so a level literal from a NEIGHBOURING join in the same backtick block (e.g. a size/type join) could be misattributed to a column with no level literal of its own -- narrowed to the single JOIN...ON clause."
+    "External critic follow-up on .github#32 (2026-08-13, this PR): the merged contract's hierarchy_level='leaf' for org_purpose_category_idfr / org_mission_category_idfr was sourced from explore-organization.sql.ts and discover.sql.v1.ts's read-JOIN predicates -- the exact predicates PR #1130 (service_orbit_orgs, merged 25 minutes after #32) removed on the finding that 'leaf' was WRONG there. Corrected to 'domain' per the live write/validate reference paths (org_purpus_category.sql.ts:addPredefinedPurposeCategory, org_mission_category.validator.ts:validateMissionCetegoryId), which reject any id that is not hierarchy_level='domain'. checker.py also fixed: _closest() was block-scoped only, so a level literal from a NEIGHBOURING join in the same backtick block (e.g. a size/type join) could be misattributed to a column with no level literal of its own -- narrowed to the single JOIN...ON clause.",
+    "CoWork Projects/Founders Future Prompts/Add Rules to Git/SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md (founder-approved; G3 2026-08-13, added is_active_exempt allowlist, starts empty; rebased on #34's domain-level correction)"
   ],
   "columns": {
     "influencer_domain_idfr": {
@@ -314,5 +315,6 @@
     "user_category": "lives in org_n.org_user_category (per-tenant) / master.org_user_category (renamed 2026-07-17) — NOT taxo.master",
     "user_category_option": "lives in org_n per-tenant / master.org_user_category_option — NOT taxo.master"
   },
-  "needs_founder_decision": []
+  "needs_founder_decision": [],
+  "is_active_exempt": {}
 }
