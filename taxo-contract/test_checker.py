@@ -52,6 +52,20 @@ if code == 0:
 if len(wl) != 1 or "org_department_idfr" not in wl[0] or "influencer_category_idfr" in "".join(wl):
     fails.append(f"fail_wrongB: expected exactly one WRONG LEVEL on org_department_idfr; got:\n{chr(10).join(wl)}")
 
+# 4. neighbour-join-bleed: two adjacent JOINs in one block, the first asserting a
+#    hierarchy_level and the second (a different column, no level predicate of
+#    its own) must NOT inherit the first join's level literal by proximity.
+#    Regression guard for the false-RED found reviewing PR #32's contract change
+#    (2026-08-13): explore-organization.sql.ts's org_purpose_sub_category_idfr /
+#    org_mission_sub_category_idfr joins carry no level literal post-PR-#1130,
+#    but sit two lines below a size join's hierarchy_level='leaf' in the same
+#    backtick block -- block-scoped _closest() alone picked that up as theirs.
+code, err = run("pass_neighbor_join_bleed")
+wl = wrong_level_lines(err)
+if code != 0 or wl:
+    fails.append(f"pass_neighbor_join_bleed: a join with no level literal must not "
+                 f"inherit a NEIGHBOURING join's level; exit={code}\n{chr(10).join(wl)}")
+
 if fails:
     print("checker self-test RED:")
     for f in fails:

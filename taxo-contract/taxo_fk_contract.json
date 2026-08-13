@@ -1,5 +1,5 @@
 {
-  "version": "1.1",
+  "version": "1.2",
   "generated": "2026-08-13",
   "sources": [
     "03 Database Architecture/Legacy_Column_Flutter_Keep_Map.md",
@@ -8,7 +8,8 @@
     "03 Database Architecture/MySql Migration Scripts/bc_entity_constants.py",
     "CoWork Projects/Founders Future Prompts/Taxo_FK_Contract_Build_Spec.md v2 (founder-approved starter table)",
     "live taxo.master @ sandbox (existence-check + drift re-check only, 2026-07-20)",
-    "CoWork Projects/Founders Future Prompts/Add Rules to Git/SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md (founder-approved; G2 entries added 2026-08-13, hierarchy_level for org_purpose_category_idfr/org_mission_category_idfr corrected from spec's 'domain' to 'leaf' per live-code cross-check; org_goal_category_idfr deliberately excluded pending founder clarification)"
+    "CoWork Projects/Founders Future Prompts/Add Rules to Git/SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md (founder-approved; G2 entries added 2026-08-13, hierarchy_level for org_purpose_category_idfr/org_mission_category_idfr corrected from spec's 'domain' to 'leaf' per live-code cross-check; org_goal_category_idfr deliberately excluded pending founder clarification)",
+    "External critic follow-up on .github#32 (2026-08-13, this PR): the merged contract's hierarchy_level='leaf' for org_purpose_category_idfr / org_mission_category_idfr was sourced from explore-organization.sql.ts and discover.sql.v1.ts's read-JOIN predicates -- the exact predicates PR #1130 (service_orbit_orgs, merged 25 minutes after #32) removed on the finding that 'leaf' was WRONG there. Corrected to 'domain' per the live write/validate reference paths (org_purpus_category.sql.ts:addPredefinedPurposeCategory, org_mission_category.validator.ts:validateMissionCetegoryId), which reject any id that is not hierarchy_level='domain'. checker.py also fixed: _closest() was block-scoped only, so a level literal from a NEIGHBOURING join in the same backtick block (e.g. a size/type join) could be misattributed to a column with no level literal of its own -- narrowed to the single JOIN...ON clause."
   ],
   "columns": {
     "influencer_domain_idfr": {
@@ -190,10 +191,10 @@
     "org_purpose_category_idfr": {
       "entity_table": "meta.organization",
       "taxo_type": "match_purpose",
-      "hierarchy_level": "leaf",
+      "hierarchy_level": "domain",
       "space": "master",
-      "concept": "organization purpose category (leaf level)",
-      "source": "SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md §G2 (founder-approved 2026-08-13) proposed hierarchy_level='domain'; corrected to 'leaf' per live-code verification 2026-08-13 — service_orbit_orgs explore-organization.sql.ts (opc.hierarchy_level='leaf') + discover.sql.v1.ts (4 query blocks, pcat.hierarchy_level='leaf'); zero occurrences of hierarchy_level='domain' found anywhere in the org for this column; matches existing contract's match_*_p_idfr leaf pattern. External-critic re-verified 2026-08-13, no contradicting evidence found.",
+      "concept": "organization purpose category (domain level)",
+      "source": "SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md §G2 (founder-approved 2026-08-13); corrected 2026-08-13 (this follow-up) from an earlier 'leaf' value that was sourced from the read-side predicate service_orbit_orgs PR #1130 removed as wrong. Ground truth is the write/validate path: org_purpus_category.sql.ts:addPredefinedPurposeCategory filters hierarchy_level='domain' when resolving this column; no code anywhere writes or validates it at any other level.",
       "data_status": "ok"
     },
     "org_purpose_sub_category_idfr": {
@@ -208,10 +209,10 @@
     "org_mission_category_idfr": {
       "entity_table": "meta.organization",
       "taxo_type": "match_mission",
-      "hierarchy_level": "leaf",
+      "hierarchy_level": "domain",
       "space": "master",
-      "concept": "organization mission category (leaf level)",
-      "source": "SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md §G2 (founder-approved 2026-08-13) proposed hierarchy_level='domain'; corrected to 'leaf' per live-code verification 2026-08-13 — service_orbit_orgs explore-organization.sql.ts (omc.hierarchy_level='leaf', the only site that asserts a level for this column); zero occurrences of hierarchy_level='domain' found anywhere in the org for this column; matches existing contract's match_*_p_idfr leaf pattern. External-critic re-verified 2026-08-13, no contradicting evidence found.",
+      "concept": "organization mission category (domain level)",
+      "source": "SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md §G2 (founder-approved 2026-08-13); corrected 2026-08-13 (this follow-up) from an earlier 'leaf' value that was sourced from the read-side predicate service_orbit_orgs PR #1130 removed as wrong. Ground truth is the write/validate path: org_mission_category.validator.ts:validateMissionCetegoryId filters hierarchy_level='domain' when resolving this column.",
       "data_status": "ok"
     },
     "org_mission_sub_category_idfr": {
@@ -221,6 +222,15 @@
       "space": "master",
       "concept": "organization mission sub-category (category level)",
       "source": "SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md §G2 (founder-approved 2026-08-13); confirmed via service_orbit_orgs explore-organization.sql.ts (omsc.hierarchy_level='category', the only site that asserts a level for this column).",
+      "data_status": "ok"
+    },
+    "org_goal_category_idfr": {
+      "entity_table": "meta.organization",
+      "taxo_type": "match_goals",
+      "hierarchy_level": "domain",
+      "space": "master",
+      "concept": "organization goal category (domain level)",
+      "source": "Moved out of needs_founder_decision 2026-08-13 (this follow-up). org_goal_category.validator.ts filters type='match_goals' AND hierarchy_level='domain' when resolving this column -- the same reference-write-path shape as org_purpus_category.sql.ts and org_mission_category.validator.ts. discover.sql.ts's getDiscoverOrgByMissionPurpose resolves the same concept with no level filter at all (read-side, does not contradict a write-side assertion). org_n.org_goal.org_goal_category_idfr is a separate, out-of-scope column: a plain FK to a per-tenant org_goal_category table, not taxo.master.",
       "data_status": "ok"
     }
   },
@@ -304,16 +314,5 @@
     "user_category": "lives in org_n.org_user_category (per-tenant) / master.org_user_category (renamed 2026-07-17) — NOT taxo.master",
     "user_category_option": "lives in org_n per-tenant / master.org_user_category_option — NOT taxo.master"
   },
-  "needs_founder_decision": [
-    {
-      "column_or_concept": "org_goal_category_idfr",
-      "conflict": "Spec proposes meta.organization.org_goal_category_idfr -> match_goals/domain. Live code CONFIRMS entity_table=meta.organization and taxo_type=match_goals (service_orbit_orgs discover.sql.ts, getDiscoverOrgByMissionPurpose, resolves via `SELECT id, value FROM taxo.master WHERE id IN (?) AND type = 'match_goals'`) — but that resolve query has NO hierarchy_level filter, so hierarchy_level is genuinely unconfirmed (could be leaf, domain, or category; the query doesn't constrain it). This was corrected from an earlier draft of this entry that incorrectly claimed no taxo.master evidence existed at all (external-critic catch, 2026-08-13). Separately, org_n.org_goal.org_goal_category_idfr is a plain FK to a per-tenant org_goal_category table (not taxo.master, out of scope). The only live match_goals/taxo.master binding with a hierarchy_level assertion is a DIFFERENT column, match_goals_p_idfr (already in this contract, at hierarchy_level=leaf).",
-      "sources": [
-        "SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md §G2",
-        "service_orbit_orgs discover.sql.ts (getDiscoverOrgByMissionPurpose, ~line 1650)",
-        "service_orbit_orgs org_goal.sql.ts (setMatchGoal, getOrgGoals)",
-        "service_orbit_orgs organization.sql.ts"
-      ]
-    }
-  ]
+  "needs_founder_decision": []
 }
