@@ -49,3 +49,24 @@ jobs:
           TAXO_DB_USER: ${{ secrets.TAXO_DB_USER }}
           TAXO_DB_PASSWORD: ${{ secrets.TAXO_DB_PASSWORD }}
         run: python scripts/taxo_lint.py --data
+
+      # N1 -- fk_space_map.json: classifies every *_idfr column (master FK ->
+      # taxo.master.id / tenant FK -> elsewhere / none -- no live FK at all).
+      # Read-only against information_schema, same DB secrets as the check above.
+      # Query + methodology: Part67_N1_IdSpace_Column_Classification.html §5.
+      # Artifact only for now -- this does not gate the build (no naming-
+      # convention checker consumes it yet, that's N1 step 3, not built here).
+      - name: Generate fk_space_map.json (N1)
+        env:
+          TAXO_DB_HOST: ${{ secrets.TAXO_DB_HOST }}
+          TAXO_DB_PORT: ${{ secrets.TAXO_DB_PORT }}
+          TAXO_DB_USER: ${{ secrets.TAXO_DB_USER }}
+          TAXO_DB_PASSWORD: ${{ secrets.TAXO_DB_PASSWORD }}
+        run: python scripts/gen_fk_space_map.py --out fk_space_map.json
+
+      - name: Upload fk_space_map.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: fk-space-map
+          path: fk_space_map.json
+          retention-days: 90
