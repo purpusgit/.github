@@ -18,6 +18,12 @@
     and by CLOSEST match to the `type=` literal, not first-in-window.
   * --advisory makes the gate report reds but exit 0, so it can be wired non-blocking
     on a repo before its pre-existing state is known (mirrors reusable-taxo-lint.yml).
+
+2026-08-13 fix (external critic follow-up on PR #32): _closest() resolved the
+  level within the whole SQL block, so a NEIGHBOURING join's hierarchy_level
+  literal could be misattributed to a different column with no level literal of
+  its own. Added _clause_bounds() to narrow resolution to the single JOIN...ON
+  clause containing the type literal.
 """
 import argparse
 import glob
@@ -36,6 +42,7 @@ TAXO_REF_RE  = re.compile(r"taxo\.master\b", re.IGNORECASE)
 TYPE_LIT_RE  = re.compile(r"type\s*=\s*'([^']+)'", re.IGNORECASE)
 LEVEL_LIT_RE = re.compile(r"hierarchy_level\s*=\s*'([^']+)'", re.IGNORECASE)
 IDFR_RE      = re.compile(r"\b([a-z][a-z0-9_]*_idfr)\b")
+JOIN_RE      = re.compile(r"\bJOIN\b", re.IGNORECASE)
 DIM_LIT_RE   = re.compile(r"dimension\s*=\s*'([^']+)'", re.IGNORECASE)
 
 RED, YELLOW = "RED", "YELLOW"
@@ -92,6 +99,19 @@ def _closest(regex, text, lo, hi, pos):
     return best
 
 
+def _clause_bounds(text, lo, hi, pos):
+    """Narrow [lo, hi) (the whole SQL block) to the single JOIN ... ON clause
+    containing `pos`. Without this, _closest() can pick up a hierarchy_level
+    literal that belongs to a NEIGHBOURING join on an adjacent line of the same
+    backtick block — e.g. a size/type join's `hierarchy_level = 'leaf'` read as
+    the level for a category join two lines below that carries no level
+    predicate at all. Falls back to the full block when no JOIN keyword is
+    found (a plain SELECT ... WHERE with no join to scope to)."""
+    starts = [m.start() for m in JOIN_RE.finditer(text, lo, hi) if m.start() <= pos]
+    ends = [m.start() for m in JOIN_RE.finditer(text, lo, hi) if m.start() > pos]
+    return (starts[-1] if starts else lo), (ends[0] if ends else hi)
+
+
 def scan_file(path, rel, text, contract, findings):
     columns = contract.get("columns", {})
     endpoint_types = contract.get("endpoint_types", {})
@@ -135,8 +155,9 @@ def scan_file(path, rel, text, contract, findings):
         # 2.2 — RED: wrong concept / wrong level. Column AND level resolved within
         # the SAME SQL block, by closest match to this type literal.
         lo, hi = _block_bounds(text, m.start())
-        lvl_m = _closest(LEVEL_LIT_RE, text, lo, hi, m.start())
-        col_m = _closest(IDFR_RE, text, lo, hi, m.start())
+        clo, chi = _clause_bounds(text, lo, hi, m.start())
+        lvl_m = _closest(LEVEL_LIT_RE, text, clo, chi, m.start())
+        col_m = _closest(IDFR_RE, text, clo, chi, m.start())
         col = col_m.group(1) if col_m else None
         if col and col in columns:
             spec = columns[col]
