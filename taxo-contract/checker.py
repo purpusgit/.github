@@ -115,6 +115,28 @@ def _closest(regex, text, lo, hi, pos):
     return best
 
 
+def _closest_annot(text, pos, typ, window=600):
+    """Nearest // TAXO_CONTRACT: <type>@<level> annotation to pos whose declared
+    type matches typ. Comments live OUTSIDE the SQL backtick block (can't reuse
+    _block_bounds/_clause_bounds), so this searches a plain character window
+    around pos instead. Opt-in, voluntary mechanism -- a file with several
+    same-type annotations close together could still pick the wrong one; that's
+    an accepted tradeoff for a mechanism nobody is forced to use.
+    ponytail: window-based, not scope-based -- upgrade to a real scope if this
+    ever produces a wrong match in practice.
+    """
+    lo, hi = max(0, pos - window), min(len(text), pos + window)
+    best, best_d = None, None
+    for m in ANNOT_RE.finditer(text, lo, hi):
+        a_type, _, a_level = m.group(1).partition("@")
+        if a_type != typ:
+            continue
+        d = abs(m.start() - pos)
+        if best_d is None or d < best_d:
+            best, best_d = a_level, d
+    return best
+
+
 def _clause_bounds(text, lo, hi, pos):
     """Narrow [lo, hi) (the whole SQL block) to the single JOIN ... ON clause
     containing `pos`. Without this, _closest() can pick up a hierarchy_level
@@ -183,6 +205,14 @@ def scan_file(path, rel, text, contract, findings):
         lvl_m = _closest(LEVEL_LIT_RE, text, clo, chi, m.start())
         col_m = _closest(IDFR_RE, text, clo, chi, m.start())
         col = col_m.group(1) if col_m else None
+        if col and col not in columns:
+            # Abbreviated/unprefixed local identifier (e.g. a validator's
+            # 'mission_category_idfr' param for the contract's
+            # 'org_mission_category_idfr') -- suffix-match against the contract's
+            # own column names, only when exactly one candidate exists.
+            suffix_hits = [k for k in columns if k == col or k.endswith("_" + col)]
+            if len(suffix_hits) == 1:
+                col = suffix_hits[0]
         if col and col in columns:
             spec = columns[col]
             if spec["taxo_type"] != typ:
@@ -195,6 +225,17 @@ def scan_file(path, rel, text, contract, findings):
             if want_lvl == "multi" and lvl_m and lvl_m.group(1) not in spec.get("levels", []):
                 findings.append((RED, "2.2", rel, line,
                                  f"column '{col}' multi-level {spec.get('levels')} but SQL uses '{lvl_m.group(1)}'"))
+        elif lvl_m:
+            # No identifier-based column match at all (or an ambiguous/unknown one) --
+            # fall back to a voluntary // TAXO_CONTRACT: <type>@<level> annotation as
+            # the source of truth for the expected level. Silent no-op if the file
+            # isn't annotated -- this does not retroactively catch every possible
+            # naming mismatch, only the ones a developer chose to make checkable.
+            ann_level = _closest_annot(text, m.start(), typ)
+            if ann_level and ann_level != lvl_m.group(1):
+                findings.append((RED, "2.2", rel, line,
+                                 f"annotation declares '{typ}@{ann_level}' but SQL uses "
+                                 f"hierarchy_level='{lvl_m.group(1)}' (WRONG LEVEL vs annotation)"))
 
         # 2.6 -- RED: filters type AND hierarchy_level but omits is_active = 1. Scoped to the
         # same JOIN...ON clause as 2.2 (clo, chi, not the whole block lo, hi) -- a neighbouring
