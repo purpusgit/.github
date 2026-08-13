@@ -195,9 +195,10 @@ def scan_file(path, rel, text, contract, findings):
         # Admin paths that deliberately include inactive rows go on a named allowlist in the
         # contract (is_active_exempt, keyed by relative file path), never a bare code exception.
         if lvl_m and rel not in is_active_exempt and not _closest(IS_ACTIVE_RE, text, clo, chi, m.start()):
+            col_desc = f"column '{col}'" if col else f"type='{typ}'"
             findings.append((RED, "2.6", rel, line,
-                             f"taxo.master read filters type='{typ}' and hierarchy_level="
-                             f"'{lvl_m.group(1)}' but omits is_active = 1"))
+                             f"{col_desc} taxo.master read (type='{typ}', hierarchy_level="
+                             f"'{lvl_m.group(1)}') omits is_active = 1"))
 
     for tbl, jspec in junctions.items():
         short = tbl.split(".")[-1]
