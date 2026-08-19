@@ -107,6 +107,45 @@ Reviewers should push new taxo queries into `*.sql.ts`.
 
 ## Open items
 
+- **The two `flutter test` failures PR #20 surfaced — never recorded until now, both still live.**
+  PR #20 (`af225dce3e`, 2026-08-02) removed the mandatory `flutter test` step from
+  `reusable-flutter-analyze.yml` and stated the two genuine failures it had found were
+  *"recorded in the doc's Open items so removing the step does not lose them"*. They were not
+  written here. Recorded now, and **both were re-verified as still failing on 2026-08-19**:
+
+  1. **`pkg_orbit_marketplace`** — `test/orbit_marketplace_test.dart:7:24: Error: Method not
+     found: 'Calculator'.` Still present on `cwb` today: the file is the unmodified
+     `flutter create` template test, calling `Calculator().addOne(...)` against a symbol
+     `package:orbit_marketplace/orbit_marketplace.dart` does not export. It has never
+     compiled. Fix is to delete or rewrite the template stub — this is not product debt.
+  2. **`pkg_orbit_broadcast`** — `test/screens/composer_screen_test.dart`: `RenderFlex`
+     overflow + `Found 0 widgets with text "Message"`. Re-confirmed 2026-08-19 on
+     `pkg_orbit_broadcast` PR #31 (check run 96137... , job log): **27 failed / 44 passed**,
+     all 27 in that one file. `A RenderFlex overflowed by 424 pixels on the right`, raised
+     from `lib/screens/composer/composer.screen.dart:399:17` inside `_HeroPreview`; the
+     overflow then prevents the sheet-opening taps from finding their targets
+     (`Found 0 widgets with text "Message"` ×12, `"Audience"` ×6, `"Channel"` ×3,
+     `"Advanced"` ×3). The other four suites in that repo pass. This is a real layout
+     defect at small widths, not test-harness noise.
+
+- **Per-repo `flutter test` gate rollout — in flight.** The replacement the removal note
+  proposed (*"it belongs in its own declared reusable workflow, piloted and rolled out on its
+  own merit"*) is being adopted as a repo-local `.github/workflows/flutter_test.yml` reporting
+  under job name `flutter test`. Live in `pkg_orbit_japa` and `pkg_orbit_inapp_purchases`
+  (`0c4add7638`). Open PRs 2026-08-19: `pkg_orbit_client_core` #555 (green),
+  `pkg_inapp_chat` #91 (green), `pkg_orbit_auth` #139 (green), `pkg_orbit_binder` #188,
+  `pkg_orbit_broadcast` #31 (red — item 2 above). Not yet a reusable workflow: five repos of
+  identical content is the threshold to lift it, and that lift should happen once the red
+  ones are resolved.
+
+  Two mechanical findings worth keeping from that rollout:
+  - **No `paths:` filter.** A required check that is skipped never reports, so GitHub blocks
+    the PR on *"Expected — waiting for status"* indefinitely. It also means the gate runs on
+    the PR that introduces it.
+  - **No `branches:` list under `pull_request`.** That list matches the PR's *base*, so a
+    stacked PR gets zero check runs. All five `flutter_analyze.yml` callers still carry
+    `branches: [cwb, dev, master]` and have this defect today.
+
 - **Bug #3 (`taxo-contract-lint`)** — checker rule 2.2 is correct and block-scoped
   (commit `6a5637d2`) but the gate has **0 callers**. Wiring blocked until the
   annotation-mandate question and a pilot repo are settled.
