@@ -1,0 +1,62 @@
+name: Flutter test gate
+description: >-
+  Run a package's Dart suite and tell "this package has no suite" apart from
+  "this package's suite failed". A composite action, not a reusable workflow,
+  on purpose: a reusable workflow reports as `<caller job> / <reusable job>`,
+  which would rename the `flutter test` check-run context that branch
+  protection already keys on in six packages. A composite action runs inside
+  the caller's own job, so the reported name is unchanged.
+
+# ── Why this exists ─────────────────────────────────────────────────────────
+# The per-repo gate carried this predicate inline and copied verbatim, and the
+# copy had a hole: it asked whether a *_test.dart FILE exists, not whether that
+# file DECLARES anything. A file containing `void main() {}` passes the check,
+# and `flutter test` then exits 79 "No tests ran." — so the gate went red on
+# four packages while reporting nothing about their code. Fixing that in N
+# copies is how the next hole gets introduced; it lives here instead.
+#
+# ── Why the exit code and not a grep ────────────────────────────────────────
+# `flutter test` already answers "did anything run", so nothing here re-derives
+# it. Grepping the suite for `test(` fails in the direction that matters: a
+# call inside a comment or a string reads as a declaration (harmless — the gate
+# runs and the runner corrects it), but a suite whose tests come from a helper
+# or a loop reads as NONE, and the gate would skip a real suite silently. An
+# exit code cannot be fooled by either.
+#
+# ponytail: tolerating 79 cannot tell a package that never had a suite from one
+# that just lost its last test — both are "declares nothing" from here. That is
+# acceptable while the gate is being rolled out. If losing the last test must
+# be red, the upgrade path is a committed floor (a test count checked into the
+# repo) rather than more inference at runtime.
+
+runs:
+  using: composite
+  steps:
+    - name: Test
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [ -z "$(find test -name '*_test.dart' -type f -print -quit 2>/dev/null)" ]; then
+          echo "No *_test.dart found under test/ — no suite to run, so nothing to assert."
+          exit 0
+        fi
+
+        echo "Test files found:"
+        find test -name '*_test.dart' -type f | sort
+
+        set +e
+        flutter test --no-pub --reporter compact
+        rc=$?
+        set -e
+
+        # 79 is package:test's "No tests ran." A suite that loaded and declared
+        # nothing is an EMPTY suite, which is what this gate tolerates. Every
+        # other non-zero code is a real failure and is passed straight through:
+        # no `|| true`, nothing swallowed.
+        if [ "$rc" -eq 79 ]; then
+          echo "::warning title=Empty suite::Every *_test.dart under test/ loaded but declared zero tests (exit 79). Treated as an empty suite, not a failure — this package is asserting nothing."
+          exit 0
+        fi
+
+        exit "$rc"
