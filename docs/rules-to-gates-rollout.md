@@ -5,7 +5,7 @@ checks, its scan scope, which repos call it, and the standing invariants. Lives 
 `purpusgit/.github` beside the gates it documents. Update this file in the same PR
 that changes a gate or wires a repo.
 
-_Last updated: 2026-08-01._
+_Last updated: 2026-08-20._
 
 ---
 
@@ -85,10 +85,25 @@ Reviewers should push new taxo queries into `*.sql.ts`.
 2. **A gate that cannot diff must red, not pass.** The `sql-typestring` PR path
    `rev-parse --verify`s the base ref and fails if it can't resolve it — no silent
    vacuous pass.
-3. **Paths-filtered callers must never be added to required status checks.** A required
-   context that skips never reports, deadlocking every non-matching PR on
-   "Expected — waiting for status" (cost `pkg_orbit_client_core` #494/#496). Use
-   `workflow_dispatch` to force a verification run instead.
+3. **A required check is never `paths:`- or `branches:`-filtered. Delete the filter,
+   never the requirement.** A filtered context that misses does not report `skipped` —
+   it does not report AT ALL, and protection blocks on the ABSENCE. The pull request
+   pins on "Expected — waiting for status" permanently; re-running, reopening and empty
+   commits all do nothing, because there is nothing to re-run. The block is invisible to
+   anything that looks for failures. Cost so far: `pkg_orbit_client_core` #494/#496,
+   `service_org_broadcast` #150, `service_orbit_orgs` #1128 and #1137,
+   `service_marketplace_ecom` #3.
+   An earlier wording of this invariant read "paths-filtered callers must never be added
+   to required status checks", which describes the *workaround* as if it were the rule:
+   read literally it licenses dropping a requirement to escape a filter, which is a gate
+   removal wearing a bug fix's clothes. One rule survives, and it is this one — the
+   filter goes, the requirement stays.
+   A filter on a gate that is NOT required is fine, and is a saved runner minute, under
+   the tripwire convention already written into `pkg_orbit_inapp_purchases`: the moment
+   that gate is added to `required_status_checks`, its filter is deleted in the same
+   change. To cut cost on a gate that IS required, do it inside the job — cache, an
+   early-exit step, a `concurrency:` group — so the check still reports a conclusion.
+   Never at the `on:` trigger. A gate that can go silent is not a gate.
 4. **Do not roll a CI change to N repos before it is green on 1.**
 5. **No vacuous wiring.** Do not wire a gate onto a repo whose real taxo surface is
    outside the gate's glob — it reports green while guarding nothing.
