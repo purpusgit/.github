@@ -4,7 +4,8 @@ description: >-
   "this package's suite failed". A composite action, not a reusable workflow,
   on purpose: a reusable workflow reports as `<caller job> / <reusable job>`,
   which would rename the `flutter test` check-run context that branch
-  protection already keys on in six packages. A composite action runs inside
+  protection already keys on in FIVE packages: pkg_orbit_japa, pkg_orbit_auth,
+  pkg_orbit_inapp_purchases, pkg_orbit_client_core and pkg_inapp_chat. A composite action runs inside
   the caller's own job, so the reported name is unchanged.
 
 # ── Why this exists ─────────────────────────────────────────────────────────
@@ -24,10 +25,10 @@ description: >-
 # exit code cannot be fooled by either.
 #
 # ponytail: tolerating 79 cannot tell a package that never had a suite from one
-# that just lost its last test — both are "declares nothing" from here. That is
-# acceptable while the gate is being rolled out. If losing the last test must
-# be red, the upgrade path is a committed floor (a test count checked into the
-# repo) rather than more inference at runtime.
+# whose last test was deleted out of an existing file — both are "declares
+# nothing" from here. Deleting the DIRECTORY is red (above), so the remaining
+# hole is narrow. If emptying the last file must also be red, the upgrade path
+# is a committed test-count floor rather than more inference at runtime.
 
 runs:
   using: composite
@@ -37,9 +38,15 @@ runs:
       run: |
         set -euo pipefail
 
-        if [ -z "$(find test -name '*_test.dart' -type f -print -quit 2>/dev/null)" ]; then
-          echo "No *_test.dart found under test/ — no suite to run, so nothing to assert."
-          exit 0
+        # A MISSING suite is red, not tolerated. pkg_orbit_japa's inline gate
+        # already exits 1 here and has 492 tests to lose; if this action exited 0
+        # instead, adopting it there would silently weaken a working gate, and
+        # `rm -rf test/` would become the cheapest way to buy a green check.
+        # The only tolerated case is the one below: a suite that is PRESENT and
+        # declares nothing.
+        if [ ! -d test ] || [ -z "$(find test -name '*_test.dart' -type f -print -quit 2>/dev/null)" ]; then
+          echo "::error title=No suite::test/ is missing, or contains no *_test.dart. A package wired to this gate must have a suite."
+          exit 1
         fi
 
         echo "Test files found:"
