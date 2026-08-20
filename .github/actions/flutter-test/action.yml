@@ -1,34 +1,25 @@
 name: Flutter test gate
 description: >-
-  Run a package's Dart suite and tell "this package has no suite" apart from
-  "this package's suite failed". A composite action, not a reusable workflow,
-  on purpose: a reusable workflow reports as `<caller job> / <reusable job>`,
-  which would rename the `flutter test` check-run context that branch
-  protection already keys on in FIVE packages: pkg_orbit_japa, pkg_orbit_auth,
-  pkg_orbit_inapp_purchases, pkg_orbit_client_core and pkg_inapp_chat. A composite action runs inside
-  the caller's own job, so the reported name is unchanged.
+  Run a package's Dart suite. A composite action, not a reusable workflow, on
+  purpose: a reusable workflow reports as `<caller job> / <reusable job>`, which
+  would rename the `flutter test` check-run context that branch protection keys
+  on in eleven packages. A composite action runs inside the caller's own job, so
+  the reported name is unchanged.
 
 # ── Why this exists ─────────────────────────────────────────────────────────
-# The per-repo gate carried this predicate inline and copied verbatim, and the
-# copy had a hole: it asked whether a *_test.dart FILE exists, not whether that
-# file DECLARES anything. A file containing `void main() {}` passes the check,
-# and `flutter test` then exits 79 "No tests ran." — so the gate went red on
-# four packages while reporting nothing about their code. Fixing that in N
-# copies is how the next hole gets introduced; it lives here instead.
+# The predicate was copied inline into every package gate, and the copies had
+# drifted: pkg_orbit_japa exits 1 when test/ is missing, the other four exit 0.
+# One of those is wrong. It lives here now so the next fix lands once.
 #
-# ── Why the exit code and not a grep ────────────────────────────────────────
-# `flutter test` already answers "did anything run", so nothing here re-derives
-# it. Grepping the suite for `test(` fails in the direction that matters: a
-# call inside a comment or a string reads as a declaration (harmless — the gate
-# runs and the runner corrects it), but a suite whose tests come from a helper
-# or a loop reads as NONE, and the gate would skip a real suite silently. An
-# exit code cannot be fooled by either.
+# ── What is red ─────────────────────────────────────────────────────────────
+# Everything. No suite is red. A suite that declares nothing is red (exit 79).
+# A failing test is red. There is no tolerated case and no `|| true`.
 #
-# ponytail: tolerating 79 cannot tell a package that never had a suite from one
-# whose last test was deleted out of an existing file — both are "declares
-# nothing" from here. Deleting the DIRECTORY is red (above), so the remaining
-# hole is narrow. If emptying the last file must also be red, the upgrade path
-# is a committed test-count floor rather than more inference at runtime.
+# An earlier draft tolerated exit 79 so that packages with stub suites could
+# adopt the gate before they had assertions. All eleven consumers now have real
+# suites, so the tolerance protected nobody and would have quietly weakened
+# pkg_orbit_japa, which has always failed on 79. Removed rather than kept for a
+# rollout that is over.
 
 runs:
   using: composite
@@ -38,12 +29,8 @@ runs:
       run: |
         set -euo pipefail
 
-        # A MISSING suite is red, not tolerated. pkg_orbit_japa's inline gate
-        # already exits 1 here and has 492 tests to lose; if this action exited 0
-        # instead, adopting it there would silently weaken a working gate, and
-        # `rm -rf test/` would become the cheapest way to buy a green check.
-        # The only tolerated case is the one below: a suite that is PRESENT and
-        # declares nothing.
+        # Fail here rather than letting `flutter test` fail later, only because
+        # the message is clearer. The outcome is the same either way: red.
         if [ ! -d test ] || [ -z "$(find test -name '*_test.dart' -type f -print -quit 2>/dev/null)" ]; then
           echo "::error title=No suite::test/ is missing, or contains no *_test.dart. A package wired to this gate must have a suite."
           exit 1
@@ -52,18 +39,4 @@ runs:
         echo "Test files found:"
         find test -name '*_test.dart' -type f | sort
 
-        set +e
         flutter test --no-pub --reporter compact
-        rc=$?
-        set -e
-
-        # 79 is package:test's "No tests ran." A suite that loaded and declared
-        # nothing is an EMPTY suite, which is what this gate tolerates. Every
-        # other non-zero code is a real failure and is passed straight through:
-        # no `|| true`, nothing swallowed.
-        if [ "$rc" -eq 79 ]; then
-          echo "::warning title=Empty suite::Every *_test.dart under test/ loaded but declared zero tests (exit 79). Treated as an empty suite, not a failure — this package is asserting nothing."
-          exit 0
-        fi
-
-        exit "$rc"
