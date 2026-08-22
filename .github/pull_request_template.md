@@ -2,6 +2,20 @@
 
 <!-- One or two sentences. What behaviour is different after this merges? -->
 
+## Spec
+
+<!-- REQUIRED if this PR came from a spec. Write "none" if it did not. -->
+
+Spec: `<exact filename>`
+
+- [ ] I wrote this PR's number and URL into that spec, in the same session I raised it
+- [ ] I moved the spec to its Completed folder — the moment the PR was RAISED, not at merge
+- [ ] Before executing, I re-verified the spec's factual claims against live code, and any
+      claim that had gone stale is corrected in the spec or noted here
+
+<!-- A spec that has been executed but does not say so is indistinguishable from one nobody
+     has started, and the next session redoes the work. That has now happened three times. -->
+
 ## Verification
 
 <!-- REQUIRED. Paste the command you ran and its ACTUAL output, not a summary.
