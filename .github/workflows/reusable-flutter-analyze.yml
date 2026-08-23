@@ -14,7 +14,8 @@ name: Flutter Analyze — reusable (pkg_* packages)
 # (host app uses GIT_PASSWORD + flutter pub get, not dart pub get).
 #
 # Differences from main_org_orbit:
-#   - Secret: GH_PAT (not GIT_PASSWORD)
+#   - Credential: a minted App installation token (migrated 2026-08-24 off
+#     GH_PAT), not GIT_PASSWORD
 #   - Resolver: dart pub get --no-example (package; not flutter pub get)
 #   - Push to cwb triggers here too (cwb is the integration branch)
 #
@@ -51,9 +52,6 @@ name: Flutter Analyze — reusable (pkg_* packages)
 
 on:
   workflow_call:
-    secrets:
-      GH_PAT:
-        required: true
 
 permissions:
   contents: read
@@ -67,10 +65,45 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Credential migrated 2026-08-24: GH_PAT (a long-lived repository-secret
+      # PAT) expired between 21:16 and 23:33 on 2026-08-22, taking
+      # `analyze / flutter analyze` red across all 19 callers of this
+      # workflow at once -- it read as CI flake on individual repos until
+      # traced to the PAT via a control pair on notify-host-tip-moved.yml
+      # (mints an App token, SUCCEEDED) vs this job (consumed GH_PAT, FAILED),
+      # same commit, same minute. Mirrors notify-host-tip-moved.yml's
+      # already-proven pattern: an App installation token minted per run,
+      # expiring in ~1hr, nothing to rotate.
+      #
+      # CALLER CONTRACT CHANGED: this workflow no longer declares or accepts
+      # a GH_PAT secret. Every caller must pass `secrets: inherit` instead of
+      # `secrets: { GH_PAT: ... }` -- verified against GitHub's own docs
+      # (Reuse workflows > Using inputs and secrets in a reusable workflow):
+      # a workflow_call reusable workflow has NO ambient access to org
+      # secrets and cannot see anything the caller does not explicitly pass
+      # or inherit. `owner: purpusgit` with no `repositories:` filter mints a
+      # token scoped to every repo orbit-sessions-bot's installation covers --
+      # deliberately broader than a single-repo scope, because this workflow
+      # is called by ~19 different packages whose private sibling
+      # dependencies differ per caller and are not knowable here.
+      - name: Mint a short-lived installation token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.ORBIT_BOT_APP_ID }}
+          private-key: ${{ secrets.ORBIT_BOT_PRIVATE_KEY }}
+          owner: purpusgit
       - name: Configure git for private org repos
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "git@github.com:"
-          git config --global --add url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::No installation token was minted. Check the org secrets ORBIT_BOT_APP_ID / ORBIT_BOT_PRIVATE_KEY, that orbit-sessions-bot is installed on this repo, and that the calling workflow passed secrets: inherit (a bare secrets: { GH_PAT: ... } map no longer supplies anything this workflow reads). dart pub get cannot clone private siblings without it -- failing loudly instead of falling through to an anonymous fetch."
+            exit 1
+          fi
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "git@github.com:"
+          git config --global --add url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
       - uses: subosito/flutter-action@v2
         with:
           flutter-version-file: .fvmrc
