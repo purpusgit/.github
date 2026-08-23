@@ -41,8 +41,17 @@ jobs:
               continue
             fi
             block=$(awk '/^on:/{inb=1;next} inb && /^[^[:space:]#]/{inb=0} inb' "$f")
-            echo "$block" | grep -qE '^[[:space:]]*(paths|paths-ignore|branches|branches-ignore):'
-            rc=$?
+            # `|| rc=$?` is load-bearing, not style. GitHub runs `shell: bash` as
+            # `bash --noprofile --norc -e -o pipefail`, and `set -uo pipefail` above does
+            # NOT clear that inherited `-e`. A bare `grep -q` followed by `rc=$?` therefore
+            # aborts the whole step the moment grep exits 1 -- which is the CLEAN case --
+            # so the guard reported red on exactly the workflows it was meant to pass, while
+            # the dirty case reddened via fail=1. It could not pass either way.
+            # `||` suppresses `-e` for its left operand while preserving the exit code, so
+            # the three-way `case` below (0 found / 1 clean / 2+ grep itself failed) keeps
+            # the distinction that an `if` would collapse.
+            rc=0
+            echo "$block" | grep -qE '^[[:space:]]*(paths|paths-ignore|branches|branches-ignore):' || rc=$?
             case $rc in
               0) echo "::error file=$f::Required-check workflow has a trigger filter in its 'on:' block. A required check must never be paths- or branches-filtered: when the filter misses it does not report 'skipped', it does not report AT ALL, and branch protection blocks on the ABSENCE. Filter inside the job instead."
                  echo "$block" | grep -nE '^[[:space:]]*(paths|paths-ignore|branches|branches-ignore):'
