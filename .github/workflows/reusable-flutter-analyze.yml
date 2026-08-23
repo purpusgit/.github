@@ -52,6 +52,31 @@ name: Flutter Analyze — reusable (pkg_* packages)
 
 on:
   workflow_call:
+    secrets:
+      GH_PAT:
+        # VESTIGIAL, READ BY NOTHING, AND DELIBERATELY STILL DECLARED.
+        #
+        # The credential migration below stopped reading GH_PAT, and the first
+        # draft of that change deleted this block. Deleting it is a fleet
+        # outage, not a tidy-up: GitHub validates a caller's `secrets:` map
+        # against the callee's declaration, and a caller passing an UNDECLARED
+        # secret does not fail the job -- the run never starts at all
+        # (`startup_failure`), so NO check run named `analyze / flutter analyze`
+        # is ever created. A required check that never reports blocks every PR
+        # on that repo permanently, which is strictly worse than a red one.
+        #
+        # Proven, not reasoned: pkg_orbit_orgtree, same probe branch, same
+        # pinned reusable ref, 88 seconds apart --
+        #   run 32660182877  secrets: { GH_PAT: ... }  -> startup_failure, 0 jobs, 0 check runs
+        #   run 32660260878  secrets: inherit          -> success, `analyze / flutter analyze`
+        #
+        # Every caller on its default branch still passes the explicit map, so
+        # this declaration is what makes the migration merge-order-independent:
+        # this workflow can land before, after, or between the 19 caller PRs
+        # without ever un-reporting a required check. DELETE IT ONLY once all
+        # 19 callers are on `secrets: inherit`, in its own PR, with the caller
+        # list re-verified live at that moment.
+        required: false
 
 permissions:
   contents: read
@@ -65,19 +90,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Credential migrated 2026-08-24: GH_PAT (a long-lived repository-secret
-      # PAT) expired between 21:16 and 23:33 on 2026-08-22, taking
-      # `analyze / flutter analyze` red across all 19 callers of this
-      # workflow at once -- it read as CI flake on individual repos until
-      # traced to the PAT via a control pair on notify-host-tip-moved.yml
-      # (mints an App token, SUCCEEDED) vs this job (consumed GH_PAT, FAILED),
-      # same commit, same minute. Mirrors notify-host-tip-moved.yml's
-      # already-proven pattern: an App installation token minted per run,
-      # expiring in ~1hr, nothing to rotate.
+      # Credential migrated 2026-08-24. GH_PAT lost its permission on
+      # purpusgit/pkg_orbit_client_core between 23:02:57 and 23:33:43 on
+      # 2026-08-22, taking `analyze / flutter analyze` red on every caller
+      # that has a private sibling dependency.
       #
-      # CALLER CONTRACT CHANGED: this workflow no longer declares or accepts
-      # a GH_PAT secret. Every caller must pass `secrets: inherit` instead of
-      # `secrets: { GH_PAT: ... }` -- verified against GitHub's own docs
+      # It did NOT expire -- the first draft of this comment said it had, and
+      # that was wrong. The failing runs all print, byte for byte:
+      #     remote: Write access to repository not granted.
+      #     fatal: ... The requested URL returned error: 403
+      # An expired, revoked, or empty credential cannot produce that. Reproduced
+      # locally against this very repo:
+      #     empty / bogus credential  -> 401 remote: Invalid username or token.
+      #     valid token, repo not granted to it -> 404 remote: Repository not found.
+      #     valid token, repo granted, permission too low -> 403 remote: Write
+      #                                access to repository not granted.  <-- match
+      # So GH_PAT still authenticates and can still SEE the repo; its grant on
+      # that one repo is no longer sufficient. Rotating it would not have
+      # helped. Migrating off it does, and retires the failure class with it:
+      # an App installation token is minted per run and expires in ~1hr, so
+      # there is nothing left to expire, revoke, or narrow.
+      #
+      # CALLER CONTRACT: this workflow no longer READS GH_PAT (it still
+      # declares it, see above). Every caller should move to `secrets: inherit`
+      # -- verified against GitHub's own docs
       # (Reuse workflows > Using inputs and secrets in a reusable workflow):
       # a workflow_call reusable workflow has NO ambient access to org
       # secrets and cannot see anything the caller does not explicitly pass
@@ -88,6 +124,12 @@ jobs:
       # dependencies differ per caller and are not knowable here.
       - name: Mint a short-lived installation token
         id: app-token
+        # continue-on-error so the guard below owns the failure. Without it the
+        # action aborts the job on its own generic "input required" error and
+        # the actionable message never prints -- which matters most during the
+        # transition, when a caller still on the explicit GH_PAT map reaches
+        # here with no app-id and needs to be told exactly that.
+        continue-on-error: true
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ secrets.ORBIT_BOT_APP_ID }}
@@ -99,7 +141,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::error::No installation token was minted. Check the org secrets ORBIT_BOT_APP_ID / ORBIT_BOT_PRIVATE_KEY, that orbit-sessions-bot is installed on this repo, and that the calling workflow passed secrets: inherit (a bare secrets: { GH_PAT: ... } map no longer supplies anything this workflow reads). dart pub get cannot clone private siblings without it -- failing loudly instead of falling through to an anonymous fetch."
+            echo "::error::No installation token was minted. Check the org secrets ORBIT_BOT_APP_ID / ORBIT_BOT_PRIVATE_KEY, that orbit-sessions-bot is installed on this repo, and that the calling workflow passed secrets: inherit (a bare secrets: { GH_PAT: ... } map still starts the run but supplies nothing this workflow reads -- switch that caller to secrets: inherit). dart pub get cannot clone private siblings without it -- failing loudly instead of falling through to an anonymous fetch."
             exit 1
           fi
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "git@github.com:"
@@ -115,3 +157,4 @@ jobs:
       # only fixture-backed assertion this gate has.
       - name: Analyze (lib only)
         run: flutter analyze lib/ --no-fatal-infos --no-pub
+
