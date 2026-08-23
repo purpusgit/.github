@@ -53,6 +53,25 @@ name: Flutter Analyze — reusable (pkg_* packages)
 on:
   workflow_call:
     secrets:
+      ORBIT_BOT_APP_ID:
+        # Declared so ${{ secrets.ORBIT_BOT_APP_ID }} resolves inside the
+        # mint step below -- actionlint flags an undeclared workflow_call
+        # secret as a static error even though the org secret genuinely
+        # exists, because a reusable workflow's `secrets.*` namespace is
+        # scoped to exactly what it declares here, independent of what the
+        # org actually has. required: false for the same reason GH_PAT is
+        # required: false two entries down: a caller still on the explicit
+        # `secrets: { GH_PAT: ... }` map (pre-migration) must still be able
+        # to START this job -- required: true on a name that map doesn't
+        # pass would itself produce the startup_failure / zero-check-runs
+        # failure this migration exists to retire, just moved one input
+        # earlier. The empty-token guard in "Configure git for private org
+        # repos" below is what turns a missing value into a loud, named
+        # ::error instead of a silent gap.
+        required: false
+      ORBIT_BOT_PRIVATE_KEY:
+        # Same reasoning as ORBIT_BOT_APP_ID immediately above.
+        required: false
       GH_PAT:
         # VESTIGIAL, READ BY NOTHING, AND DELIBERATELY STILL DECLARED.
         #
