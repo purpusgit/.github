@@ -14,7 +14,8 @@ name: Flutter Analyze — reusable (pkg_* packages)
 # (host app uses GIT_PASSWORD + flutter pub get, not dart pub get).
 #
 # Differences from main_org_orbit:
-#   - Secret: GH_PAT (not GIT_PASSWORD)
+#   - Credential: a minted App installation token (migrated 2026-08-24 off
+#     GH_PAT), not GIT_PASSWORD
 #   - Resolver: dart pub get --no-example (package; not flutter pub get)
 #   - Push to cwb triggers here too (cwb is the integration branch)
 #
@@ -52,8 +53,49 @@ name: Flutter Analyze — reusable (pkg_* packages)
 on:
   workflow_call:
     secrets:
+      ORBIT_BOT_APP_ID:
+        # Declared so ${{ secrets.ORBIT_BOT_APP_ID }} resolves inside the
+        # mint step below -- actionlint flags an undeclared workflow_call
+        # secret as a static error even though the org secret genuinely
+        # exists, because a reusable workflow's `secrets.*` namespace is
+        # scoped to exactly what it declares here, independent of what the
+        # org actually has. required: false for the same reason GH_PAT is
+        # required: false two entries down: a caller still on the explicit
+        # `secrets: { GH_PAT: ... }` map (pre-migration) must still be able
+        # to START this job -- required: true on a name that map doesn't
+        # pass would itself produce the startup_failure / zero-check-runs
+        # failure this migration exists to retire, just moved one input
+        # earlier. The empty-token guard in "Configure git for private org
+        # repos" below is what turns a missing value into a loud, named
+        # ::error instead of a silent gap.
+        required: false
+      ORBIT_BOT_PRIVATE_KEY:
+        # Same reasoning as ORBIT_BOT_APP_ID immediately above.
+        required: false
       GH_PAT:
-        required: true
+        # VESTIGIAL, READ BY NOTHING, AND DELIBERATELY STILL DECLARED.
+        #
+        # The credential migration below stopped reading GH_PAT, and the first
+        # draft of that change deleted this block. Deleting it is a fleet
+        # outage, not a tidy-up: GitHub validates a caller's `secrets:` map
+        # against the callee's declaration, and a caller passing an UNDECLARED
+        # secret does not fail the job -- the run never starts at all
+        # (`startup_failure`), so NO check run named `analyze / flutter analyze`
+        # is ever created. A required check that never reports blocks every PR
+        # on that repo permanently, which is strictly worse than a red one.
+        #
+        # Proven, not reasoned: pkg_orbit_orgtree, same probe branch, same
+        # pinned reusable ref, 88 seconds apart --
+        #   run 32660182877  secrets: { GH_PAT: ... }  -> startup_failure, 0 jobs, 0 check runs
+        #   run 32660260878  secrets: inherit          -> success, `analyze / flutter analyze`
+        #
+        # Every caller on its default branch still passes the explicit map, so
+        # this declaration is what makes the migration merge-order-independent:
+        # this workflow can land before, after, or between the 19 caller PRs
+        # without ever un-reporting a required check. DELETE IT ONLY once all
+        # 19 callers are on `secrets: inherit`, in its own PR, with the caller
+        # list re-verified live at that moment.
+        required: false
 
 permissions:
   contents: read
@@ -67,10 +109,62 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Credential migrated 2026-08-24. GH_PAT lost its permission on
+      # purpusgit/pkg_orbit_client_core between 23:02:57 and 23:33:43 on
+      # 2026-08-22, taking `analyze / flutter analyze` red on every caller
+      # that has a private sibling dependency.
+      #
+      # It did NOT expire -- the first draft of this comment said it had, and
+      # that was wrong. The failing runs all print, byte for byte:
+      #     remote: Write access to repository not granted.
+      #     fatal: ... The requested URL returned error: 403
+      # An expired, revoked, or empty credential cannot produce that. Reproduced
+      # locally against this very repo:
+      #     empty / bogus credential  -> 401 remote: Invalid username or token.
+      #     valid token, repo not granted to it -> 404 remote: Repository not found.
+      #     valid token, repo granted, permission too low -> 403 remote: Write
+      #                                access to repository not granted.  <-- match
+      # So GH_PAT still authenticates and can still SEE the repo; its grant on
+      # that one repo is no longer sufficient. Rotating it would not have
+      # helped. Migrating off it does, and retires the failure class with it:
+      # an App installation token is minted per run and expires in ~1hr, so
+      # there is nothing left to expire, revoke, or narrow.
+      #
+      # CALLER CONTRACT: this workflow no longer READS GH_PAT (it still
+      # declares it, see above). Every caller should move to `secrets: inherit`
+      # -- verified against GitHub's own docs
+      # (Reuse workflows > Using inputs and secrets in a reusable workflow):
+      # a workflow_call reusable workflow has NO ambient access to org
+      # secrets and cannot see anything the caller does not explicitly pass
+      # or inherit. `owner: purpusgit` with no `repositories:` filter mints a
+      # token scoped to every repo orbit-sessions-bot's installation covers --
+      # deliberately broader than a single-repo scope, because this workflow
+      # is called by ~19 different packages whose private sibling
+      # dependencies differ per caller and are not knowable here.
+      - name: Mint a short-lived installation token
+        id: app-token
+        # continue-on-error so the guard below owns the failure. Without it the
+        # action aborts the job on its own generic "input required" error and
+        # the actionable message never prints -- which matters most during the
+        # transition, when a caller still on the explicit GH_PAT map reaches
+        # here with no app-id and needs to be told exactly that.
+        continue-on-error: true
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.ORBIT_BOT_APP_ID }}
+          private-key: ${{ secrets.ORBIT_BOT_PRIVATE_KEY }}
+          owner: purpusgit
       - name: Configure git for private org repos
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "git@github.com:"
-          git config --global --add url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::No installation token was minted. Check the org secrets ORBIT_BOT_APP_ID / ORBIT_BOT_PRIVATE_KEY, that orbit-sessions-bot is installed on this repo, and that the calling workflow passed secrets: inherit (a bare secrets: { GH_PAT: ... } map still starts the run but supplies nothing this workflow reads -- switch that caller to secrets: inherit). dart pub get cannot clone private siblings without it -- failing loudly instead of falling through to an anonymous fetch."
+            exit 1
+          fi
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "git@github.com:"
+          git config --global --add url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
       - uses: subosito/flutter-action@v2
         with:
           flutter-version-file: .fvmrc
@@ -82,3 +176,4 @@ jobs:
       # only fixture-backed assertion this gate has.
       - name: Analyze (lib only)
         run: flutter analyze lib/ --no-fatal-infos --no-pub
+
