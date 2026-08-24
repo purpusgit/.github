@@ -35,13 +35,18 @@ jobs:
 
       - name: Mint a short-lived installation token
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ secrets.ORBIT_BOT_APP_ID }}
           private-key: ${{ secrets.ORBIT_BOT_PRIVATE_KEY }}
           owner: purpusgit
           # Least privilege: this token only needs to read .github.
           repositories: .github
+          # @v2 is load-bearing: @v1 DECLARES every `permission-*` input and then
+          # silently ignores it -- no error, no warning, and the runner still echoes
+          # the input back, so a broken mint's log is identical to a working one's.
+          # Measured: v1 -> create-ref 201, v2 -> 403. Do not downgrade the pin.
+          permission-contents: read
 
       - name: Checkout .github (for contract + checker)
         uses: actions/checkout@v5.1.0
