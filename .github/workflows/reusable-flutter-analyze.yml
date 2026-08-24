@@ -149,11 +149,16 @@ jobs:
         # transition, when a caller still on the explicit GH_PAT map reaches
         # here with no app-id and needs to be told exactly that.
         continue-on-error: true
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ secrets.ORBIT_BOT_APP_ID }}
           private-key: ${{ secrets.ORBIT_BOT_PRIVATE_KEY }}
           owner: purpusgit
+          # @v2 is load-bearing: @v1 DECLARES every `permission-*` input and then
+          # silently ignores it -- no error, no warning, and the runner still echoes
+          # the input back, so a broken mint's log is identical to a working one's.
+          # Measured: v1 -> create-ref 201, v2 -> 403. Do not downgrade the pin.
+          permission-contents: read
       - name: Configure git for private org repos
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
