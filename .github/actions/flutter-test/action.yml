@@ -1,0 +1,42 @@
+name: Flutter test gate
+description: >-
+  Run a package's Dart suite. A composite action, not a reusable workflow, on
+  purpose: a reusable workflow reports as `<caller job> / <reusable job>`, which
+  would rename the `flutter test` check-run context that branch protection keys
+  on in eleven packages. A composite action runs inside the caller's own job, so
+  the reported name is unchanged.
+
+# ── Why this exists ─────────────────────────────────────────────────────────
+# The predicate was copied inline into every package gate, and the copies had
+# drifted: pkg_orbit_japa exits 1 when test/ is missing, the other four exit 0.
+# One of those is wrong. It lives here now so the next fix lands once.
+#
+# ── What is red ─────────────────────────────────────────────────────────────
+# Everything. No suite is red. A suite that declares nothing is red (exit 79).
+# A failing test is red. There is no tolerated case and no `|| true`.
+#
+# An earlier draft tolerated exit 79 so that packages with stub suites could
+# adopt the gate before they had assertions. All eleven consumers now have real
+# suites, so the tolerance protected nobody and would have quietly weakened
+# pkg_orbit_japa, which has always failed on 79. Removed rather than kept for a
+# rollout that is over.
+
+runs:
+  using: composite
+  steps:
+    - name: Test
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # Fail here rather than letting `flutter test` fail later, only because
+        # the message is clearer. The outcome is the same either way: red.
+        if [ ! -d test ] || [ -z "$(find test -name '*_test.dart' -type f -print -quit 2>/dev/null)" ]; then
+          echo "::error title=No suite::test/ is missing, or contains no *_test.dart. A package wired to this gate must have a suite."
+          exit 1
+        fi
+
+        echo "Test files found:"
+        find test -name '*_test.dart' -type f | sort
+
+        flutter test --no-pub --reporter compact
