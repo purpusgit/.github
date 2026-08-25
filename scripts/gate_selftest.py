@@ -68,6 +68,10 @@ FIXTURES = os.path.join(ROOT, "scripts", "gate-fixtures")
 #   'diff'   -> build a two-branch git repo; add pass/fail line (diff-based gate)
 #   'barrel' -> build two-branch git repo; test removal detection
 #   'rule84' -> 3-step dir fixture test (url, fallback, chat)
+#   'consolidated' -> a gate whose steps are byte-identical COPIES of predicates
+#               that already live in this directory: assert the equality (that is
+#               the coverage — each source predicate has its own fixture above),
+#               then red-proof one named step against a real pass/fail fixture
 #   'dead'   -> 0 callers org-wide: no behavioural test, needs an existence decision
 #   None     -> external: syntax-check only, with `reason`
 BEHAVIOUR = {
@@ -90,6 +94,38 @@ BEHAVIOUR = {
                 " $GITHUB_OUTPUT; both stay syntax-only. The tsc predicate itself is"
                 " behaviourally tested."},
     "reusable-rule84-flavor-fork-gate.yml":     {"kind": "rule84"},
+    # A2 consolidation, live on pkg_orbit_japa and pkg_orbit_client_core ONLY
+    # (fleet-wide A2 stays deferred). This gate holds no logic of its own: each of
+    # its seven mirrored steps is a BYTE-IDENTICAL copy of a predicate above, so
+    # that one billed job can do what four to seven separately-billed jobs did.
+    # `mirrors` asserts that equality, which is what makes the copies safe: the
+    # moment either side is edited alone, THIS harness goes red and names the pair.
+    # Equality IS the behavioural coverage here — every mirrored predicate already
+    # has its own fixture in this same map, and re-running them under a second name
+    # would assert nothing new. `redproof` still runs one of them against the real
+    # dart pass/fail fixture so this entry can never be green on a gate that has
+    # stopped catching anything.
+    # NOT mirrored, and deliberately so: the exact-pin, A1 and contrast steps have
+    # no reusable in THIS repo to compare against — their source of record is the
+    # consumer repo's own workflow — so no equality is assertable and none is
+    # claimed. They are still bash -n'd and actionlint'd by the generic loop.
+    "reusable-consolidated-gates.yml": {"kind": "consolidated",
+        "mirrors": {
+            "Rule 24 — colours safety (no hardcoded Colors.* additions)":
+                ("reusable-colors-safety-gate.yml", "Check for hardcoded colour additions"),
+            "Dart escaped string interpolation check":
+                ("reusable-dart-safety-gate.yml", "Check for escaped string interpolation"),
+            "Rule 66 — barrel & factory safety":
+                ("reusable-barrel-safety-gate.yml", "Detect barrel files and check for removals"),
+            "Rule 84 — base URLs live only in client_core flavor_config.dart":
+                ("reusable-rule84-flavor-fork-gate.yml", "Base URLs live only in client_core flavor_config.dart"),
+            "Rule 84 — no base-URL fallback (a missing URL must be a compile error)":
+                ("reusable-rule84-flavor-fork-gate.yml", "No base-URL fallback (a missing URL must be a compile error)"),
+            "Rule 84 — a flavor must not own another package's screens":
+                ("reusable-rule84-flavor-fork-gate.yml", "A flavor must not own another package's screens"),
+        },
+        "unmirrored": "exact-pin / A1 / contrast steps: source of record is the consumer repo, not this one",
+        "redproof": ("Dart escaped string interpolation check", "dart")},
     # `step`, not `dir`: the dir branch does not forward `expect`, and without one a
     # Python traceback exiting 1 scores as "violation caught". The predicate is pure
     # Python over a directory — no secrets, no network, no DB — so it earns a real
@@ -360,6 +396,47 @@ def behavioural_barrel(runs, label):
                               origin_ref=origin_ref, extras=extras)
             _assert_diff(script, label, case, want_zero, tmp, expect=expect)
 
+def behavioural_consolidated(named, beh, label):
+    """Assert every mirrored step is byte-identical to its source predicate, then
+    red-proof one of them against a real fixture.
+
+    A reusable WORKFLOW cannot be `uses:`d as a STEP, so a job that consolidates
+    several gates to save billed minutes has no choice but to copy their `run:`
+    blocks. Copies drift. This is what stops them: the equality is asserted against
+    the LIVE source predicate on every PR to this repo, so editing one side alone
+    reds here and says which pair disagrees. Nothing is duplicated silently.
+    """
+    for step_name, (src_file, src_step) in beh["mirrors"].items():
+        mine = named.get(step_name)
+        if mine is None:
+            fail(f"{label}: mirrored step {step_name!r} no longer exists in this gate — "
+                 "repoint or remove the mirror; do NOT let it silently stop asserting.")
+            continue
+        src_path = os.path.join(WF_DIR, src_file)
+        if not os.path.exists(src_path):
+            fail(f"{label}: mirror source {src_file} is gone — the consolidated copy is "
+                 "now the only copy and nothing can check it.")
+            continue
+        theirs = extract_named_runs(load_yaml(src_path)).get(src_step)
+        if theirs is None:
+            fail(f"{label}: source step {src_step!r} no longer exists in {src_file} — "
+                 "the single-purpose gate changed shape; repoint this mirror.")
+        elif mine != theirs:
+            fail(f"{label}: {step_name!r} has DRIFTED from {src_file}[{src_step!r}] — "
+                 "the consolidated copy and the single-purpose gate no longer agree. "
+                 "Edit both in one commit.")
+        else:
+            ok(f"{label}: {step_name!r} is byte-identical to {src_file}[{src_step!r}]")
+    if beh.get("unmirrored"):
+        print(f"  ⤳ PARTIAL: no equality assertion possible for — {beh['unmirrored']}")
+    rp_step, rp_key = beh["redproof"]
+    script = named.get(rp_step)
+    if script is None:
+        fail(f"{label}: red-proof step {rp_step!r} no longer exists — this entry would "
+             "be green on a gate proven to catch nothing.")
+    else:
+        behavioural_dir(script, rp_key, label + "[red-proof]")
+
 def behavioural_rule84(runs, label):
     """Test all 3 rule84 steps against their respective fixtures."""
     if len(runs) < 3:
@@ -600,6 +677,8 @@ def main():
             behavioural_barrel(runs, fn)
         elif beh["kind"] == "rule84":
             behavioural_rule84(runs, fn)
+        elif beh["kind"] == "consolidated":
+            behavioural_consolidated(named, beh, fn)
         print()
 
     actionlint_gate()

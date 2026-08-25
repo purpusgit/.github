@@ -1,0 +1,574 @@
+name: Reusable — Consolidated one-grep gates (A2)
+
+# A2, scoped to pkg_orbit_japa and pkg_orbit_client_core ONLY. Fleet-wide A2 stays
+# DEFERRED and nothing here is to be wired to a third repo without its own numbers.
+#
+# WHY ONE JOB. Actions bills per JOB, rounded UP to a whole minute. Four ~11-second
+# grep jobs bill four whole minutes, not 44 seconds. Collapsing them into one job of
+# four steps bills one minute. The saving is the rounding, not the runtime.
+#
+# WHY THE PREDICATES BELOW ARE COPIES, AND WHY THEY CANNOT DRIFT.
+# A reusable WORKFLOW cannot be `uses:`d as a STEP, so a single job structurally
+# cannot call reusable-colors-safety-gate.yml and friends. Converting those four into
+# composite actions would rewrite the gate path that every repo in the org resolves
+# `@main` — out of scope here, and exactly the fleet-wide change that stays deferred.
+# So each gate step below carries a BYTE-IDENTICAL copy of the `run:` block from its
+# single-purpose reusable in this same directory, and scripts/gate_selftest.py
+# asserts that equality on every PR to this repo (a REQUIRED context on `main`).
+# The two copies therefore go RED the moment they stop agreeing. The single-purpose
+# file remains the source of record; this file mirrors it. Edit both, in one commit.
+#
+# The exact-pin / A1 / contrast predicates have no reusable in this repo to mirror —
+# their source lives in the consumer repo — so no equality assertion is possible for
+# them and gate_selftest says so rather than pretending otherwise.
+#
+# WHY EVERY GATE STEP IS `continue-on-error: true`.
+# So that one red gate does not hide the other five. Each step still records its own
+# result in `steps.<id>.outcome`; the final Verdict step aggregates them, writes a
+# per-gate table to $GITHUB_STEP_SUMMARY, and exits 1 if any BLOCKING gate failed.
+# Job-level red therefore preserves each gate's current blocking semantics exactly,
+# and the Checks tab names the failing gate without anyone opening raw logs.
+# Every gate consolidated here is blocking today; none is advisory. If one ever
+# becomes advisory, drop its row out of the `fail=1` arm — per-step, never job-wide.
+
+on:
+  workflow_call:
+    inputs:
+      base_ref:
+        description: 'Base branch the diff-based gates compare against'
+        required: false
+        type: string
+        default: 'cwb'
+      run_colours:
+        description: 'Rule 24 — no hardcoded Colors.* / .withOpacity( / extension<X>()! additions'
+        required: false
+        type: boolean
+        default: false
+      run_dart:
+        description: 'Dart escaped string interpolation check'
+        required: false
+        type: boolean
+        default: false
+      run_barrel:
+        description: 'Rule 66 — barrel & factory safety'
+        required: false
+        type: boolean
+        default: false
+      run_rule84:
+        description: 'Rule 84 — config & flavor fork gate (3 checks)'
+        required: false
+        type: boolean
+        default: false
+      run_exact_pin:
+        description: 'No exact sdk:/flutter: pins in pubspec.yaml'
+        required: false
+        type: boolean
+        default: false
+      run_a1:
+        description: 'Rule A1 sizing-axis gate (needs tool/a1_sizing_axis_gate.py in the caller)'
+        required: false
+        type: boolean
+        default: false
+      run_contrast:
+        description: 'WCAG AA contrast gate (needs tool/contrast_check.py in the caller)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  # The check context this publishes is `<caller job id> / Consolidated gates (A2)`.
+  # Read it off an observed check run before anyone puts it in branch protection —
+  # never guess it from this YAML (see the note in pkg_orbit_client_core's
+  # a1-sizing-axis-gate.yml, where all three of GitHub's naming shapes are written out
+  # and all three were guessed wrong from the YAML on the same day).
+  consolidated-gates:
+    name: Consolidated gates (A2)
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 because the colours and barrel predicates both diff against a
+      # base ref. It is a superset of what the other gates need.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 3.11 exactly, because that is what a1-sizing-axis-gate.yml and
+      # contrast-check-gate.yml pin today and both are REQUIRED checks. Note this also
+      # becomes the `python3` the colours gate's comment-masker runs on, on any caller
+      # that enables A1 or contrast; the masker is plain stdlib and unaffected.
+      - name: Set up Python 3.11 (A1 + contrast detectors)
+        if: ${{ inputs.run_a1 || inputs.run_contrast }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # continue-on-error so a fetch failure does not abort the whole job and cost the
+      # other gates their verdicts. The colours predicate has its own base-ref guard
+      # and goes RED on an unresolvable ref, so the failure is still reported.
+      - name: Fetch base branch
+        if: ${{ inputs.run_colours }}
+        continue-on-error: true
+        run: git fetch origin ${{ inputs.base_ref || 'cwb' }}
+
+      - name: Rule 24 — colours safety (no hardcoded Colors.* additions)
+        id: colours
+        if: ${{ inputs.run_colours }}
+        continue-on-error: true
+        run: |
+          set +e
+          FAILED=0
+          BASE_REF="${{ inputs.base_ref || 'cwb' }}"
+
+          # Never pass vacuously. If the base ref cannot be resolved the diff below
+          # comes back EMPTY and the gate printed "No lib/ Dart files changed. Gate
+          # passed." — a silent pass on an uncomputable diff. Same guard shape as
+          # reusable-sql-typestring-safety-gate.yml.
+          if ! git rev-parse --verify --quiet "origin/${BASE_REF}" >/dev/null; then
+            echo "::error::Colours gate could not resolve base ref origin/${BASE_REF} — refusing to pass without diffing."
+            exit 1
+          fi
+
+          # Mask `//` line comments before matching. The gate used to match its own
+          # trigger strings inside prose: pkg_new_social PR #174 had to reword an
+          # accurate comment ("...instead of a raw Colors.green/grey.") for no reason
+          # other than to stop the regex firing — zero lines of code changed. A gate
+          # that rewards making comments less accurate is worse than no gate.
+          #
+          # Only an UNQUOTED `//` opens a comment. A `//` inside a string literal (a
+          # URL, say) is left alone, so real code after it on the same line is still
+          # scanned. `/* */` is deliberately NOT handled: same-line block comments are
+          # the sanctioned `/* intentional: <reason> */` stamp form and must keep
+          # working exactly as they do now. A quote left open at end of line (a
+          # multi-line string) masks nothing, which is the pre-existing behaviour.
+          # `if 1:` lets the whole script sit indented inside this YAML block scalar;
+          # unindented lines would terminate the block. \x27 / \x22 are a quote and a
+          # double quote, spelled that way so the script survives shell single-quoting.
+          mask_comments() {
+            python3 -c 'if 1:
+              import sys
+              for raw in sys.stdin:
+                  s = raw.rstrip("\n")
+                  q = ""
+                  i = 0
+                  while i < len(s):
+                      c = s[i]
+                      if q:
+                          if c == "\\":
+                              i += 2
+                              continue
+                          if c == q:
+                              q = ""
+                      elif c == "\x27" or c == "\x22":
+                          q = c
+                      elif c == "/" and s[i:i + 2] == "//":
+                          s = s[:i]
+                          break
+                      i += 1
+                  sys.stdout.write(s + "\n")
+              '
+          }
+
+          # lib/ Dart files changed in this PR (diff-only; excludes test/ to avoid false positives)
+          CHANGED=$(git diff "origin/${BASE_REF}...HEAD" --name-only -- '*.dart' 2>/dev/null | grep '^lib/')
+
+          if [ -z "$CHANGED" ]; then
+            echo "No lib/ Dart files changed. Gate passed."
+            exit 0
+          fi
+
+          while IFS= read -r FILE; do
+            # Skip deleted files
+            [ -f "$FILE" ] || continue
+
+            # Skip colour/theme definition files — these legitimately use Colors.*
+            # Pattern covers: theme/ directories, filenames with color/colour/palette, orbit_colors.dart
+            if echo "$FILE" | grep -qiE '(theme/|/colors?[_.]/|orbit_colors\.|_theme\.dart$|colors?\.dart$|colours?\.dart$)' ||                echo "$(basename "$FILE")" | grep -qiE '^(colors?|colours?|palette|.*_theme)\.dart$'; then
+              echo "Skipping colour/theme file: $FILE"
+              continue
+            fi
+
+            # B5b — file-level `fixed-stage` opt-out, SCOPED TO THE COLOUR-SOURCING
+            # CHECKS ONLY: hex literals and `Colors.*`.
+            # Some surfaces are a deliberately fixed dark stage that does not follow
+            # the theme (chant session, PiP, calibration wizard, wake overlay, voice
+            # lock, welcome screen). Their hex literals have no light-token match BY
+            # DESIGN, so B5 forced them to be suppressed one line at a time — one repo
+            # reached 505 `// intentional:` stamps, 415 of which suppressed nothing.
+            #
+            # `Colors.*` is the same statement in another spelling and honours the same
+            # header. It did not, and that asymmetry cost pkg_new_social PR #174 sixty-
+            # nine per-line `// intentional:` stamps layered ON TOP of a header that had
+            # already declared the file a fixed stage. B5b bans exactly that pairing:
+            # `// intentional:` is the suppression token, so a line carrying one is
+            # exempt forever — including a future edit that pastes a genuinely wrong
+            # colour onto it. One header, one decision, one thing to review.
+            #
+            # It must NOT skip the whole file. The first draft of this used `continue`,
+            # which ALSO disabled the `.withOpacity(` and `extension<X>()!` checks —
+            # and `extension<X>()!` is a null-assertion CRASH check with nothing to do
+            # with B5. One comment line would have opted a file out of a runtime-safety
+            # gate. A fixed stage is a statement about colour SOURCING, not a licence
+            # to crash.
+            FIXED_STAGE=0
+            if head -20 "$FILE" | grep -qE '^[[:space:]]*//[[:space:]]*fixed-stage:'; then
+              FIXED_STAGE=1
+              echo "fixed-stage (B5b): $FILE - hex + Colors.* skipped; withOpacity, extension<>()! still enforced"
+            fi
+
+            # Added lines only — lines starting with + but not the +++ file header
+            ADDED=$(git diff "origin/${BASE_REF}...HEAD" -- "$FILE" 2>/dev/null | grep '^+' | grep -v '^+++')
+
+            # The matching surface for every arm below: added lines, minus the ones
+            # carrying an `intentional:` stamp, with `//` comments masked.
+            # The `intentional:` filter runs FIRST and on the RAW line, exactly as each
+            # arm ran it before — masking first would have stripped trailing
+            # `// intentional: <reason>` stamps and turned them into new failures.
+            ADDED_CODE=$(echo "$ADDED" | grep -v 'intentional:' | mask_comments)
+
+            # Block any Colors.* except Colors.transparent
+            # Uses perl negative lookbehind (?<![a-zA-Z]) to avoid false-positives like gradientColors.map
+            # and negative lookahead (?!transparent) so Colors.transparent is permitted on the same line
+            # Also exclude constructor default parameters (this.<param> = Colors.<X>)
+            # BuildContext is unavailable at class-scope defaults — colorScheme tokens cannot be used there.
+            # Skipped entirely on a `fixed-stage` file (see B5b above).
+            COLOR_HITS=""
+            if [ "$FIXED_STAGE" -eq 0 ]; then
+              COLOR_HITS=$(echo "$ADDED_CODE" | grep -vP '\bthis\.[a-zA-Z_][a-zA-Z0-9_]* = Colors\.' | perl -ne 'print if /(?<![a-zA-Z])Colors\.(?!transparent\b)[a-zA-Z]/')
+            fi
+
+            if [ -n "$COLOR_HITS" ]; then
+              echo ""
+              echo "::error file=$FILE::Hardcoded Colors.* added — use semantic colour tokens instead."
+              echo "  Fix options:"
+              echo "    Success / verified / approved -> (Theme.of(context).extension<OrbitColors>())?.statusPositive ?? colorScheme.primary"
+              echo "    Error / danger               -> colorScheme.error"
+              echo "    Primary brand                -> colorScheme.primary"
+              echo "    WhatsApp brand               -> (Theme.of(context).extension<OrbitColors>())?.brandWhatsapp ?? colorScheme.secondary"
+              echo "    Whole surface ignores theme  -> declare '// fixed-stage: <why>' in the file header"
+              echo "    Suppress (last resort)       -> add '// intentional: <reason>' on the same line"
+              echo ""
+              echo "$COLOR_HITS" | head -10
+              FAILED=1
+            fi
+
+            # Block deprecated .withOpacity(); use .withValues(alpha:) — Flutter 3.27+
+            OPACITY_HITS=$(echo "$ADDED_CODE" | grep '\.withOpacity(')
+
+            if [ -n "$OPACITY_HITS" ]; then
+              echo ""
+              echo "::error file=$FILE::Deprecated .withOpacity() added — use .withValues(alpha: x) instead (Flutter 3.27+)."
+              echo "$OPACITY_HITS" | head -5
+              FAILED=1
+            fi
+
+
+            # Block non-null extension<X>()! assertions — crashes if host theme doesn't provide the extension
+            # (Dark_Mode_Architecture.md §17)
+            EXTENSION_BANG=$(echo "$ADDED_CODE" | grep 'extension<' | grep ')!')
+
+            if [ -n "$EXTENSION_BANG" ]; then
+              echo ""
+              echo "::error file=$FILE::Non-null extension<X>()! added — use nullable pattern: extension<X>()?.field ?? colorScheme.fallback (Dark_Mode_Architecture.md §17)."
+              echo "  Fix: final oc = Theme.of(context).extension<OrbitColors>();"
+              echo "       final color = oc?.statusPositive ?? colorScheme.primary;"
+              echo "$EXTENSION_BANG" | head -5
+              FAILED=1
+            fi
+
+
+            # B5 — hex literals at call sites. WARNING ONLY for now.
+            # B5 says call sites use tokens; hex is permitted only in the central
+            # theme files (already skipped above). Nothing has ever enforced this,
+            # which is how 583 call-site literals shipped in pkg_orbit_japa.
+            # Deliberately non-failing on introduction: flipping it to an error
+            # before every repo has its `fixed-stage` declarations in place would
+            # red-wall unrelated PRs. Promote to FAILED=1 once those have landed.
+            # {6,8} also matched 7 digits, which is not a valid Dart literal.
+            # Color.fromARGB(...) is the same defect in another spelling and was missed
+            # entirely - example/lib/main.dart already uses it.
+            HEX_HITS=""
+            if [ "$FIXED_STAGE" -eq 0 ]; then
+              HEX_HITS=$(echo "$ADDED_CODE" | grep -oP 'Color\(0x(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6})\)|Color\.fromARGB\(' | head -10)
+            fi
+            if [ -n "$HEX_HITS" ]; then
+              echo ""
+              echo "::warning file=$FILE::B5 — hex colour literal added at a call site. Use a semantic token, or declare the file '// fixed-stage: <why>' if this surface deliberately ignores the theme."
+              echo "$HEX_HITS"
+            fi
+
+          done <<< "$CHANGED"
+
+          if [ $FAILED -eq 1 ]; then
+            echo ""
+            echo "Gate: Flutter Colours Safety (Rule 24)"
+            echo "See: Dark_Mode_Architecture.md and Cross_Flavor_Shared_Widgets_Rules.md"
+            exit 1
+          fi
+
+          echo "Flutter colours safety gate passed."
+
+      - name: Dart escaped string interpolation check
+        id: dart
+        if: ${{ inputs.run_dart }}
+        continue-on-error: true
+        run: |
+          HITS=$(grep -rn '\\${' lib/ --include="*.dart" 2>/dev/null || true)
+          if [ -n "$HITS" ]; then
+            echo "ERROR: Dart interpolation safety gate FAILED"
+            echo "Escaped string interpolation found in Dart files."
+            echo "\\${variable} produces literal text on screen, not the variable value:"
+            echo ""
+            echo "$HITS"
+            echo ""
+            echo "Fix: remove the backslash. Use ${var} not \\${var}."
+            echo "See: Flutter_Coding_Rules.md §Dart String Interpolation Discipline"
+            exit 1
+          fi
+          echo "Dart interpolation safety gate passed."
+
+      - name: Rule 66 — barrel & factory safety
+        id: barrel
+        if: ${{ inputs.run_barrel }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          BASE="${{ github.base_ref }}"
+          echo "Checking diff against origin/$BASE ..."
+
+          # Pre-flight. Every check below is a diff against origin/$BASE, so if
+          # that ref will not resolve there is no diff to compute and "no removals
+          # found" would be a vacuous pass. A gate that cannot compute its diff
+          # goes RED.
+          if ! git rev-parse --verify --quiet "origin/$BASE" >/dev/null; then
+            echo "⛔  Barrel gate could not resolve base ref origin/$BASE — refusing to pass without diffing."
+            exit 1
+          fi
+
+          declare -a BARREL_FILES
+
+          # What makes an index.dart protected is REACHABILITY, not exports.
+          # Dart's convention: lib/src/ is private by definition, everything
+          # else under lib/ is importable by any downstream package. This gate
+          # is "Barrel & FACTORY safety" — 6 of the org's 7 nested index.dart
+          # files are lib/endpoints/*/index.dart holding *EndpointsFactory
+          # classes with ZERO export lines, and Rule 66 forbidden action #2 is
+          # removing a method from exactly those. So `^export ` is the WRONG
+          # discriminator here: it would drop all 6 factories, and the 7th
+          # (binder's) has zero exports too — so it would match NONE of the
+          # org's 7 nested index.dart files, i.e. protect nothing at all.
+          # lib/src/ is the right one: it excludes
+          # pkg_orbit_binder/lib/src/utils/index.dart (the Binder class — a
+          # private implementation file no downstream can import, whose lines
+          # this gate used to freeze, failing a REQUIRED check on legitimate
+          # refactors) while keeping every public barrel and factory frozen.
+          while IFS= read -r f; do
+            [[ -n "$f" ]] && BARREL_FILES+=("$f")
+          done < <(find lib/ -name "index.dart" -not -path "lib/src/*" 2>/dev/null | sort)
+
+          while IFS= read -r f; do
+            if grep -q "^export " "$f" 2>/dev/null; then
+              BARREL_FILES+=("$f")
+            fi
+          done < <(find lib/ -maxdepth 1 -name "*.dart" 2>/dev/null | sort)
+
+          if [ ${#BARREL_FILES[@]} -eq 0 ]; then
+            echo "No barrel files found in lib/ — nothing to check."
+            exit 0
+          fi
+
+          echo "Barrel files detected (${#BARREL_FILES[@]}):"
+          printf '  %s\n' "${BARREL_FILES[@]}"
+          echo ""
+
+          FAILED=0
+
+          for FILE in "${BARREL_FILES[@]}"; do
+            # Three cases, not two.
+            #   present at base   -> diff it
+            #   absent at base    -> a NEW barrel file in this PR; legitimate, skip
+            #   any other git err -> the diff is not computable; RED
+            # `git cat-file -e` returns non-zero for the last two alike, and its
+            # message text is not stable across git versions, so `git ls-tree` is
+            # what separates them: exit 0 with EMPTY output means "the ref resolves
+            # and the path simply is not in it"; non-zero means git itself failed.
+            if ! git cat-file -e "origin/$BASE:$FILE" 2>/dev/null; then
+              LS_OUT=$(git ls-tree --name-only "origin/$BASE" -- "$FILE" 2>&1)
+              LS_RC=$?
+              if [ "$LS_RC" -ne 0 ] || [ -n "$LS_OUT" ]; then
+                echo "⛔  Barrel gate could not read origin/$BASE:$FILE (git exit $LS_RC) — refusing to pass without diffing."
+                echo "$LS_OUT"
+                exit 1
+              fi
+              echo "  ℹ️  $FILE — new in this PR (absent at origin/$BASE), skipping"
+              continue
+            fi
+
+            REMOVED=$(git diff "origin/$BASE...HEAD" -- "$FILE" \
+              | grep '^-' \
+              | grep -v '^---' \
+              | grep -v '^-[[:space:]]*//' \
+              | grep -v '^-[[:space:]]*$' \
+              || true)
+
+            if [ -n "$REMOVED" ]; then
+              echo ""
+              echo "⛔  RULE 66 VIOLATION — removed lines in: $FILE"
+              echo "──────────────────────────────────────────────────────"
+              echo "$REMOVED"
+              echo "──────────────────────────────────────────────────────"
+              echo "  Downstream packages depend on every export here."
+              echo "  Removing lines = silent breaking change for dependents."
+              echo "  → Restore the removed lines, then re-push."
+              echo ""
+              FAILED=1
+            else
+              echo "  ✅ $FILE"
+            fi
+          done
+
+          echo ""
+          if [ "$FAILED" -eq 0 ]; then
+            echo "✅  All barrel files OK — no exports removed."
+          else
+            echo "See CLAUDE.md Rule 66 for policy details."
+            exit 1
+          fi
+
+      - name: Rule 84 — base URLs live only in client_core flavor_config.dart
+        id: rule84_url
+        if: ${{ inputs.run_rule84 }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          if grep -rnE "https?://[A-Za-z0-9.-]*(mypurpus\.com|bookmyorbit\.com)" lib/ --include=*.dart; then
+            echo "::error::Hardcoded service host in a flavor. Base URLs live ONLY in pkg_orbit_client_core/lib/flavor_config.dart as a per-flavor exhaustive switch. See '0 Coding RULES/Base_URL_And_Service_Endpoint_Architecture.md'."
+            exit 1
+          fi
+          echo "OK - no hardcoded service host."
+
+      - name: Rule 84 — no base-URL fallback (a missing URL must be a compile error)
+        id: rule84_fallback
+        if: ${{ inputs.run_rule84 }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          if grep -rnE "String\.fromEnvironment\([^)]*defaultValue" lib/ --include=*.dart | grep -iE "url|host|endpoint|base"; then
+            echo "::error::String.fromEnvironment(defaultValue:) used as a base-URL fallback. A missing base URL must be a compile error, never a silent sandbox default."
+            exit 1
+          fi
+          echo "OK - no base-URL fallback."
+
+      - name: Rule 84 — a flavor must not own another package's screens
+        id: rule84_chat
+        if: ${{ inputs.run_rule84 }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          M=$(find lib/screens/chat -type f -name '*.dart' 2>/dev/null | sort || true)
+          if [ -n "$M" ]; then
+            echo "::error::Rule 84 - this flavor holds chat screens owned by pkg_inapp_chat. Navigate by route instead."
+            printf '  %s\n' $M
+            exit 1
+          fi
+          echo "OK - no cross-package screens."
+
+      - name: Exact-pin check — no exact sdk/flutter pins in pubspec.yaml
+        id: exact_pin
+        if: ${{ inputs.run_exact_pin }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          fail=0
+          # ---- HARD FAIL: exact sdk:/flutter: in environment ----
+          # matches `sdk: '3.5.3'`, `flutter: "3.24.3"`, `sdk: 3.5.3` — but NOT `>=`, `^`, `<`, or `sdk: flutter`
+          if grep -nE "^[[:space:]]*(sdk|flutter):[[:space:]]*['\"]?[0-9]+\.[0-9]+\.[0-9]+['\"]?[[:space:]]*(#.*)?$" pubspec.yaml; then
+            echo "::error file=pubspec.yaml::Exact SDK/Flutter pin found. Use a range (>=X <Y or ^X), never an exact version — Flutter_Upgrade_Readiness A1. Exact pins collapse the constraint intersection and block every consumer on a toolchain bump."
+            fail=1
+          fi
+          # ---- WARN: exact dependency version pin (no ^, >=, <, git:, path:, sdk:) ----
+          # heuristic: `  name: 1.2.3` two-space-indented dep line with a bare semver value
+          awk '
+            /^dependencies:/{d=1} /^dev_dependencies:/{d=1} /^(flutter|environment|dependency_overrides):/{d=0}
+            d && /^  [a-z0-9_]+:[ \t]*["'\'']?[0-9]+\.[0-9]+\.[0-9]+["'\'']?[ \t]*$/ {
+              printf("::warning file=pubspec.yaml,line=%d::Exact dependency pin: %s — prefer ^X unless an incompatibility forces it (A1 warn tier).\n", NR, $0)
+            }' pubspec.yaml || true
+          exit $fail
+
+      - name: Rule A1 — sizing-axis detector self-test
+        id: a1_selftest
+        if: ${{ inputs.run_a1 }}
+        continue-on-error: true
+        run: python3 tool/a1_sizing_axis_gate.py --selftest
+
+      - name: Rule A1 — sizing-axis scan
+        id: a1_scan
+        if: ${{ inputs.run_a1 }}
+        continue-on-error: true
+        run: python3 tool/a1_sizing_axis_gate.py lib
+
+      - name: Contrast — checker self-test
+        id: contrast_selftest
+        if: ${{ inputs.run_contrast }}
+        continue-on-error: true
+        run: python3 tool/contrast_check.py --selftest
+
+      - name: Contrast — WCAG AA scan of OrbitColors
+        id: contrast_scan
+        if: ${{ inputs.run_contrast }}
+        continue-on-error: true
+        run: python3 tool/contrast_check.py
+
+      # One row per gate step above: label ~ outcome ~ the one-line reason a FAIL means.
+      # `outcome` (not `conclusion`) is what continue-on-error preserves.
+      - name: Verdict — per-gate summary
+        if: always()
+        env:
+          ROWS: |
+            Rule 24 colours safety~${{ steps.colours.outcome }}~a hardcoded Colors.*, a deprecated .withOpacity(, or a non-null extension<X>()! was added on a changed lib/ line
+            Dart escaped interpolation~${{ steps.dart.outcome }}~escaped string interpolation in lib/**.dart renders as literal text on screen
+            Rule 66 barrel and factory safety~${{ steps.barrel.outcome }}~a line was removed from a public barrel or factory index.dart, which is a silent breaking change for dependents
+            Rule 84 hardcoded service host~${{ steps.rule84_url.outcome }}~a mypurpus.com or bookmyorbit.com host is hardcoded in lib/ instead of client_core flavor_config.dart
+            Rule 84 base-URL fallback~${{ steps.rule84_fallback.outcome }}~String.fromEnvironment(defaultValue:) is used as a base-URL fallback; a missing base URL must be a compile error
+            Rule 84 cross-package screens~${{ steps.rule84_chat.outcome }}~this flavor holds chat screens owned by pkg_inapp_chat; navigate by route instead
+            Exact-pin check~${{ steps.exact_pin.outcome }}~an exact sdk: or flutter: pin was found in pubspec.yaml environment:; use a range
+            Rule A1 detector self-test~${{ steps.a1_selftest.outcome }}~the A1 detector failed its own fixtures, so the detector is broken and not the code under review
+            Rule A1 sizing-axis scan~${{ steps.a1_scan.outcome }}~a sizing or layout value branches on platform instead of on window width
+            Contrast checker self-test~${{ steps.contrast_selftest.outcome }}~the contrast checker failed its own fixtures, so the checker is broken and not the tokens under review
+            Contrast WCAG AA scan~${{ steps.contrast_scan.outcome }}~an OrbitColors token does not meet WCAG 2.1 AA against the surface it renders on
+        run: |
+          # errexit is ON before line 1 (/usr/bin/bash -e {0}) and `set -uo pipefail`
+          # does NOT clear it — only `set +e` does. Without this line the first
+          # non-zero below would kill the step and publish NO summary at all, which
+          # is the exact bug this step exists to prevent.
+          set +e
+          fail=0
+          {
+            echo "## Consolidated gates (A2)"
+            echo ""
+            echo "| Gate | Verdict | Why |"
+            echo "| --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          while IFS='~' read -r gate outcome reason; do
+            [ -z "$gate" ] && continue
+            case "$outcome" in
+              success)
+                printf '| %s | PASS | |\n' "$gate" >> "$GITHUB_STEP_SUMMARY"
+                ;;
+              skipped|"")
+                printf '| %s | not enabled for this repo | |\n' "$gate" >> "$GITHUB_STEP_SUMMARY"
+                ;;
+              *)
+                fail=1
+                printf '| %s | **FAIL** | %s |\n' "$gate" "$reason" >> "$GITHUB_STEP_SUMMARY"
+                echo "::error title=$gate::$reason"
+                ;;
+            esac
+          done <<< "$ROWS"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$fail" -ne 0 ]; then
+            echo "Every gate above is blocking today, so any FAIL row fails this job." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "All enabled gates passed." >> "$GITHUB_STEP_SUMMARY"
