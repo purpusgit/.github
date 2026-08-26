@@ -1,0 +1,50 @@
+# REAL FILE, NOT SYNTHETIC: purpusgit/pkg_orbit_nearyest pubspec.yaml at commit
+# 66cda62 — the exact manifest in force during the main_org_orbit#373 incident
+# (in place from 3c37cd9 / PR #8, 2026-07-07, until the fix on 2026-08-10).
+#
+# The offending line is `mapbox_maps_flutter: ^3.0.0-alpha.1` below. This repo
+# commits no pubspec.lock, so that caret re-resolved to 3.0.0-alpha.28 in this
+# package's own CI while main_org_orbit built alpha.1 from its committed lock.
+# The two disagree on where the style APIs live, so `analyze / flutter analyze`
+# certified code the host could not compile and both Japa lanes went red.
+#
+# Note which gate catches it: the PRE-RELEASE gate, not the upper-bound gate.
+# The caret is not the defect — `^3.0.0-alpha.1` is perfectly bounded at <4.0.0.
+# The defect is a caret ACROSS a pre-release channel, where every new build lands
+# inside the range. Widening the fixture's caret would not make the upper-bound
+# gate catch it, and narrowing that gate until it did would red the whole fleet.
+name: pkg_orbit_nearyest
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+  flutter: ">=3.10.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  orbit_client_core:
+    git:
+      url: git@github.com:purpusgit/pkg_orbit_client_core.git
+      ref: cwb
+  get: ^4.6.6
+  file_picker: ^8.0.0
+  http: ^1.2.0
+  url_launcher: ^6.3.0
+  http_parser: ^4.0.0
+  # mapbox_maps_flutter v3 (3.0.0-alpha.1) — founder-approved alpha (2026-07-06).
+  # v3 is the first web-capable line and the map code targets its API. Alpha is
+  # contained: mapbox is used only in this leaf package (not a shared/binder dep).
+  mapbox_maps_flutter: ^3.0.0-alpha.1
+
+dependency_overrides:
+  path: 1.9.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true

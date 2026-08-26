@@ -109,6 +109,139 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # ── pubspec constraint gates (added 2026-08-26) ──────────────────────────
+      #
+      # Both run here, before the toolchain installs, because they read one file
+      # and need nothing else — a violation costs ~2s instead of a Flutter setup.
+      #
+      # WHY THESE EXIST, from the incident that produced them:
+      # pkg_orbit_nearyest declared `mapbox_maps_flutter: ^3.0.0-alpha.1`
+      # (commit 3c37cd9, PR #8, 2026-07-07). It commits no pubspec.lock, so its
+      # own CI re-resolved that range to 3.0.0-alpha.28 while main_org_orbit
+      # built alpha.1 from its committed lock. alpha.28 made MapboxMap extend
+      # StyleManager and deprecated `.style`; alpha.1 did not. Commit 66cda62
+      # retyped one declaration from `_map!.style` to `_map!` — green under
+      # `analyze / flutter analyze` HERE, and a compile break on five unchanged
+      # call sites in the host. Both Japa lanes went red.
+      #   incident + forensics: main_org_orbit#373   fix: pkg_orbit_nearyest#54
+      #
+      # SCOPE, deliberately: the repo-root pubspec.yaml only. Vendored manifests
+      # under plugin/ (pkg_orbit_japa ships two) are third-party sources this repo
+      # does not author, and are not what it publishes.
+      #
+      # NOT FLAGGED, and each for a reason, not an oversight:
+      #   * `^x.y.z`     — a caret ALREADY carries an upper bound in Dart semver
+      #                    (`^1.2.3` == `>=1.2.3 <2.0.0`). Flagging it would be a
+      #                    false positive on nearly every line in the fleet.
+      #   * `environment:` — an unbounded `flutter: ">=3.24.3"` there is the
+      #                    idiomatic Dart form, not a defect. Five repos have it.
+      #                    Hence the section filter; a plain grep cannot make this
+      #                    distinction and would red those five on day one.
+      #   * `path:` deps — resolve out of THIS checkout, so they cannot drift
+      #                    between this CI and a consumer. Not the failure class.
+      #   * git deps carrying `ref:` — all 13 pkg_* track `ref: cwb` by ratified
+      #                    decision (2026-07-27, SHA pins removed). A git dep with
+      #                    NO ref at all is a different thing and IS flagged.
+      #
+      # KNOWN CEILING: two text scans, not a resolver. A `hosted:`-block dep whose
+      # constraint sits on a nested `version:` line is not read, and neither is a
+      # transitive constraint — nearyest#54 records that bounding the mapbox facade
+      # left its three federated implementation packages still on `^3.0.0-alpha.1`,
+      # which only a real solve can see. Upgrade path if that bites: a committed
+      # pubspec.lock plus a lock-diff gate.
+      #
+      # NOT A DUPLICATE of reusable-consolidated-gates.yml's "Exact-pin check"
+      # (standing invariant 1, checked before writing these): that one hard-fails
+      # only on exact `sdk:`/`flutter:` pins inside `environment:`, the one section
+      # both steps below skip, and its warn tier is about EXACT pins where these are
+      # about OPEN ones. No line can be flagged by both.
+      #
+      # Both steps are pinned BY NAME in scripts/gate_selftest.py against real
+      # pass/fail fixtures. Renaming either reds the harness.
+      - name: Dependency upper-bound check
+        run: |
+          set -euo pipefail
+          test -f pubspec.yaml || { echo "::error::no pubspec.yaml at the repo root"; exit 1; }
+          awk '
+          function flush() {
+            if (dep != "" && git && !ref) {
+              printf "pubspec.yaml:%d: %s: git dependency with no ref: — resolves whatever the default branch tip is at build time\n", dline, dep
+              bad = 1
+            }
+            dep = ""; git = 0; ref = 0
+          }
+          /^[^ \t#]/ { flush(); sec = $0; sub(/:.*/, "", sec); next }
+          sec !~ /^(dependencies|dev_dependencies|dependency_overrides)$/ { next }
+          /^  [^ \t#]/ {
+            flush()
+            line = $0; sub(/[ \t]*#.*/, "", line)
+            if (line !~ /^  [A-Za-z_][A-Za-z0-9_]*:/) next
+            name = line; sub(/^  /, "", name); sub(/:.*/, "", name)
+            val  = line; sub(/^  [A-Za-z_][A-Za-z0-9_]*:[ \t]*/, "", val)
+            gsub(/[ \t]+$/, "", val); gsub(/^["]|["]$/, "", val); gsub(/^'"'"'|'"'"'$/, "", val)
+            if (val == "") { dep = name; dline = NR; next }
+            if (val == "any") {
+              printf "pubspec.yaml:%d: %s: any — accepts every published version, present and future\n", NR, name
+              bad = 1
+            } else if (val ~ /(^|[ ,])>=?[0-9]/ && val !~ /</) {
+              printf "pubspec.yaml:%d: %s: %s — lower bound with no < upper bound\n", NR, name, val
+              bad = 1
+            }
+            next
+          }
+          /^ +/ { if (dep != "") { if ($0 ~ /^    git:/) git = 1; if ($0 ~ /^ +ref:/) ref = 1 } }
+          END { flush(); if (bad) exit 1 }
+          ' pubspec.yaml || {
+            echo "::error::ERROR: unbounded dependency constraint in pubspec.yaml. A constraint with no upper bound lets this package resolve a version its consumer never built against. Give it an explicit upper bound (a caret, or a < clause), or pin the git dependency with a ref."
+            exit 1
+          }
+          echo "OK: every dependency constraint has an upper bound."
+      # The allowlist is INLINE here, in purpusgit/.github, and not a file in the
+      # calling repo — on purpose. A per-caller allowlist would let the repo that
+      # introduces the pin also grant it, which is not a review. Adding a line
+      # means a PR against this workflow, which is the control.
+      #
+      # Entries are matched WHOLE: "name constraint", not name alone. That is what
+      # makes this catch the actual incident — mapbox IS allowlisted today, at the
+      # single bounded alpha the host builds, so widening it back to the unbounded
+      # `^3.0.0-alpha.1` that caused main_org_orbit#373 still reds.
+      - name: Pre-release allowlist check
+        run: |
+          set -euo pipefail
+          test -f pubspec.yaml || { echo "::error::no pubspec.yaml at the repo root"; exit 1; }
+          # Reviewed pre-release pins. pkg_orbit_nearyest#54, ratified 2026-08-10.
+          ALLOWLIST='mapbox_maps_flutter >=3.0.0-alpha.1 <3.0.0-alpha.2
+          mapbox_maps_flutter_platform_interface >=3.0.0-alpha.1 <3.0.0-alpha.2
+          mapbox_maps_flutter_mobile >=3.0.0-alpha.1 <3.0.0-alpha.2
+          mapbox_maps_flutter_web >=3.0.0-alpha.1 <3.0.0-alpha.2'
+          printf '%s\n' "$ALLOWLIST" > "${RUNNER_TEMP:-/tmp}/prerelease-allowlist.txt"
+          awk -v allow="${RUNNER_TEMP:-/tmp}/prerelease-allowlist.txt" '
+          BEGIN {
+            while ((getline l < allow) > 0) {
+              gsub(/[ \t]+/, " ", l); gsub(/^ | $/, "", l)
+              if (l != "") ok[l] = 1
+            }
+          }
+          /^[^ \t#]/ { sec = $0; sub(/:.*/, "", sec); next }
+          sec !~ /^(dependencies|dev_dependencies|dependency_overrides)$/ { next }
+          /^  [^ \t#]/ {
+            line = $0; sub(/[ \t]*#.*/, "", line)
+            if (line !~ /^  [A-Za-z_][A-Za-z0-9_]*:/) next
+            name = line; sub(/^  /, "", name); sub(/:.*/, "", name)
+            val  = line; sub(/^  [A-Za-z_][A-Za-z0-9_]*:[ \t]*/, "", val)
+            gsub(/["]/, "", val); gsub(/'"'"'/, "", val)
+            gsub(/[ \t]+/, " ", val); gsub(/^ | $/, "", val)
+            if (val !~ /[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z]/) next
+            if ((name " " val) in ok) next
+            printf "pubspec.yaml:%d: %s: %s — pre-release constraint not in the reviewed allowlist\n", NR, name, val
+            bad = 1
+          }
+          END { if (bad) exit 1 }
+          ' pubspec.yaml || {
+            echo "::error::ERROR: un-allowlisted pre-release dependency in pubspec.yaml. A pre-release channel keeps publishing under the same range, so this package can resolve a build its consumer never saw (pkg_orbit_nearyest / mapbox_maps_flutter, main_org_orbit#373). Pin it to a single pre-release and add the exact name-and-constraint line to the allowlist in reusable-flutter-analyze.yml by PR."
+            exit 1
+          }
+          echo "OK: no un-allowlisted pre-release dependency."
       # Credential migrated 2026-08-24. GH_PAT lost its permission on
       # purpusgit/pkg_orbit_client_core between 23:02:57 and 23:33:43 on
       # 2026-08-22, taking `analyze / flutter analyze` red on every caller

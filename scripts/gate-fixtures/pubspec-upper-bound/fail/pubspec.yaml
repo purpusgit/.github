@@ -1,0 +1,41 @@
+# SYNTHETIC — and labelled as such, because no live repo in this org has any of
+# these shapes today (verified 2026-08-26 against the root pubspec.yaml of all 20
+# Dart packages on their default branches: zero hits). Unlike the pre-release
+# fixture next door, this one has no real historical instance behind it. It is a
+# prevention gate, and this fixture is the honest statement of that.
+#
+# One shape per real risk the gate claims to cover:
+name: fixture_unbounded
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+  # Unbounded on purpose and MUST NOT be reported: an open flutter constraint in
+  # `environment:` is the idiomatic Dart form. If this line ever shows up in the
+  # gate's output, the section filter has broken and five live repos go red.
+  flutter: ">=3.10.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # 1. `any` — accepts every version ever published, including ones that do not
+  #    exist yet.
+  some_widget_pack: any
+  # 2. a lower bound with no `<` clause — same open-ended top end, spelled out.
+  some_http_client: ">=1.2.0"
+  # 3. a git dependency with no `ref:` — silently tracks the default branch tip,
+  #    so two builds a minute apart can be two different sources. Contrast the
+  #    ref-carrying dep below, which is the ratified fleet form and stays green.
+  orbit_unpinned:
+    git:
+      url: git@github.com:purpusgit/pkg_orbit_client_core.git
+  orbit_client_core:
+    git:
+      url: git@github.com:purpusgit/pkg_orbit_client_core.git
+      ref: cwb
+  get: ^4.6.6
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter

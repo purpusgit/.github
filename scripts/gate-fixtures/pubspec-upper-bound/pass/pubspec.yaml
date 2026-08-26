@@ -1,0 +1,71 @@
+# REAL FILE, NOT SYNTHETIC: purpusgit/pkg_orbit_nearyest pubspec.yaml at cwb HEAD
+# — i.e. the file AFTER pkg_orbit_nearyest#54 fixed the main_org_orbit#373
+# incident. Its fail-side twin in ../fail is the SAME file BEFORE that fix.
+#
+# Refreshed by copying the live file; do not hand-edit. It earns its place as the
+# pass fixture by carrying, deliberately, every shape both gates must NOT flag:
+#   environment: flutter: ">=3.10.0"   unbounded, but not a dependency section
+#   orbit_client_core git dep          carries ref: cwb (ratified 2026-07-27)
+#   dependency_overrides: path: 1.9.1  an exact pin
+#   get/http/... ^x.y.z                carets already carry an upper bound
+#   four mapbox pre-release pins       bounded AND on the reviewed allowlist
+# If any of those starts reding, the gate has acquired a false positive that
+# would have taken the whole fleet with it.
+name: pkg_orbit_nearyest
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+  flutter: ">=3.10.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  orbit_client_core:
+    git:
+      url: git@github.com:purpusgit/pkg_orbit_client_core.git
+      ref: cwb
+  get: ^4.6.6
+  file_picker: ^8.0.0
+  http: ^1.2.0
+  url_launcher: ^6.3.0
+  http_parser: ^4.0.0
+  # mapbox_maps_flutter v3 (3.0.0-alpha.1) — founder-approved alpha (2026-07-06).
+  # v3 is the first web-capable line and the map code targets its API. Alpha is
+  # contained: mapbox is used only in this leaf package (not a shared/binder dep).
+  #
+  # UPPER BOUND IS LOAD-BEARING — do not restore the caret. `^3.0.0-alpha.1`
+  # expands to `>=3.0.0-alpha.1 <4.0.0`, and this package commits no
+  # pubspec.lock, so CI re-resolved to whatever alpha mapbox had published
+  # that day (alpha.28) while main_org_orbit's lock builds alpha.1. The two
+  # SDKs disagree on where the style APIs live (alpha.28's MapboxMap IS a
+  # StyleManager and deprecates `.style`; alpha.1's is not and requires it),
+  # so this repo's analyze gate certified code the host could not compile.
+  # Bounding to the alpha.1 point range means a green gate here is evidence
+  # about the version the host actually builds. Widen only in a joint upgrade
+  # PR that moves main_org_orbit's lock in the same wave.
+  mapbox_maps_flutter: ">=3.0.0-alpha.1 <3.0.0-alpha.2"
+  # The three federated implementation packages are declared here for one
+  # reason: to carry the same bound. The facade depends on them with carets
+  # (`^3.0.0-alpha.1`), so bounding the facade alone still lets a host
+  # `pub upgrade` resolve facade alpha.1 against implementations alpha.28 — a
+  # mix nobody ships. A constraint is used rather than a committed lock
+  # because a lock would bind this repo's CI only; a constraint propagates to
+  # every consumer. All three are already transitive at 3.0.0-alpha.1 in
+  # main_org_orbit's lock, so nothing about today's resolved set changes.
+  # Move all four versions together, never one.
+  mapbox_maps_flutter_platform_interface: ">=3.0.0-alpha.1 <3.0.0-alpha.2"
+  mapbox_maps_flutter_mobile: ">=3.0.0-alpha.1 <3.0.0-alpha.2"
+  mapbox_maps_flutter_web: ">=3.0.0-alpha.1 <3.0.0-alpha.2"
+
+dependency_overrides:
+  path: 1.9.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
