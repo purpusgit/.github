@@ -9,6 +9,14 @@ name: Reusable SQL Execution Gate
 # LOGIC lives centrally (this file); the target is a thin caller (the convention that already
 # governs reusable-sql-safety-gate.yml and its siblings).
 #
+# INPUT HANDLING (2026-08-26): every caller input reaches the shell through `env:`, never
+# through an inline `${{ }}` splice in a `run:` body. An inline splice is textual — Actions
+# pastes the caller's string into the script BEFORE bash parses it, so `;`, `$(...)`, a
+# backtick or a newline in any input becomes shell SYNTAX and executes. `env:` values are
+# passed as process environment and are never re-parsed as syntax, which is what makes the
+# validation below meaningful rather than decorative. `harness` is therefore a repo-relative
+# script PATH invoked as `bash "$HARNESS"`, not a command line.
+#
 # Cost (Rule 86b — only runner wall-clock bills; this is ubuntu-latest, x1): MySQL 8 service
 # pull+boot is cached on the runner image and healthchecks green in ~10-20s; npm ci dominates
 # and is npm-cached; schema load + harness are seconds. Budget ~1-2 min on top of an existing
@@ -19,9 +27,9 @@ on:
       node_version:  { type: string, default: '20' }
       mysql_image:   { type: string, default: 'mysql:8.0' }
       db_name:       { type: string, default: 'orbit_japa' }
-      schema_files:  { type: string, required: true }   # newline-separated, applied IN ORDER
-      seed_files:    { type: string, default: '' }      # newline-separated, optional
-      harness:       { type: string, required: true }   # command, e.g. npx ts-node ci/x/run.ts
+      schema_files:  { type: string, required: true }   # newline-separated repo paths, applied IN ORDER
+      seed_files:    { type: string, default: '' }      # newline-separated repo paths, optional
+      harness:       { type: string, required: true }   # repo-relative script PATH, e.g. ci/x/run.sh
 
 jobs:
   sql-exec:
@@ -42,6 +50,63 @@ jobs:
       DB_DATABASE: ${{ inputs.db_name }}
     steps:
       - uses: actions/checkout@v4
+      # Runs FIRST, before npm ci and before anything touches MySQL: a rejected input must
+      # cost nothing and must never reach a step that could act on it.
+      - name: Validate gate inputs
+        env:
+          DB_NAME:      ${{ inputs.db_name }}
+          SCHEMA_FILES: ${{ inputs.schema_files }}
+          SEED_FILES:   ${{ inputs.seed_files }}
+          HARNESS:      ${{ inputs.harness }}
+        run: |
+          set -euo pipefail
+          reject() {
+            echo "ERROR: reusable-sql-execution-gate REFUSED an input — $*" >&2
+            exit 1
+          }
+
+          # A repo-relative path to a file that exists in the checked-out tree, restricted to
+          # an allowlist that contains no shell metacharacter: no ; | & ` $ ( ) < > quote,
+          # no whitespace, no newline. Rejection is loud and names the offending value.
+          check_path() {
+            local p="$1" what="$2" resolved
+            case "$p" in
+              -*) reject "$what begins with '-', which an invoked command would read as an option: '$p'" ;;
+              /*) reject "$what is an absolute path; it must be relative to the repo root: '$p'" ;;
+              ..|../*|*/..|*/../*) reject "$what contains a '..' path component: '$p'" ;;
+            esac
+            [[ "$p" =~ ^[A-Za-z0-9._/-]+$ ]] || reject "$what contains characters outside ^[A-Za-z0-9._/-]+\$ — shell metacharacters are not allowed: '$p'"
+            resolved="$(realpath -m -- "$p")"
+            case "$resolved" in
+              "$PWD"/*) ;;
+              *) reject "$what resolves outside the checked-out repo ($resolved): '$p'" ;;
+            esac
+            [ -f "$p" ] || reject "$what does not exist in the checked-out repo: '$p'"
+          }
+
+          # db_name goes into a MySQL statement, so it must be a bare identifier and nothing else.
+          [[ "$DB_NAME" =~ ^[A-Za-z0-9_]+$ ]] \
+            || reject "db_name is not a bare SQL identifier ^[A-Za-z0-9_]+\$: '$DB_NAME'"
+
+          # harness is a PATH, never a command line. It is invoked as `bash "$HARNESS"`.
+          check_path "$HARNESS" "harness"
+
+          schema_count=0
+          while IFS= read -r f; do
+            if [ -z "$f" ]; then continue; fi
+            check_path "$f" "schema_files entry"
+            schema_count=$((schema_count + 1))
+          done <<< "$SCHEMA_FILES"
+          [ "$schema_count" -gt 0 ] || reject "schema_files is required but resolved to zero entries"
+
+          seed_count=0
+          while IFS= read -r f; do
+            if [ -z "$f" ]; then continue; fi
+            check_path "$f" "seed_files entry"
+            seed_count=$((seed_count + 1))
+          done <<< "$SEED_FILES"
+
+          echo "inputs validated — db_name='$DB_NAME', harness='$HARNESS', ${schema_count} schema file(s), ${seed_count} seed file(s)"
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node_version }}
@@ -56,21 +121,29 @@ jobs:
             echo "waiting for mysql ($i)"; sleep 2
           done
       - name: Create database
-        run: mysql -h127.0.0.1 -uroot -pci_root_pw -e "CREATE DATABASE IF NOT EXISTS \`${{ inputs.db_name }}\`;"
+        env:
+          DB_NAME: ${{ inputs.db_name }}
+        run: mysql -h127.0.0.1 -uroot -pci_root_pw -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`;"
       - name: Load schema (in order)
+        env:
+          SCHEMA_FILES: ${{ inputs.schema_files }}
         run: |
           while IFS= read -r f; do
             [ -z "$f" ] && continue
             echo "-- loading schema: $f"
             mysql -h127.0.0.1 -uroot -pci_root_pw < "$f"
-          done <<< "${{ inputs.schema_files }}"
+          done <<< "$SCHEMA_FILES"
       - name: Load seed
         if: ${{ inputs.seed_files != '' }}
+        env:
+          SEED_FILES: ${{ inputs.seed_files }}
         run: |
           while IFS= read -r f; do
             [ -z "$f" ] && continue
             echo "-- loading seed: $f"
             mysql -h127.0.0.1 -uroot -pci_root_pw < "$f"
-          done <<< "${{ inputs.seed_files }}"
+          done <<< "$SEED_FILES"
       - name: Run SQL execution harness
-        run: ${{ inputs.harness }}
+        env:
+          HARNESS: ${{ inputs.harness }}
+        run: bash "$HARNESS"
