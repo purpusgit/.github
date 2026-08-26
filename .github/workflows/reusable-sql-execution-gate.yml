@@ -1,0 +1,76 @@
+name: Reusable SQL Execution Gate
+# Proves a query RUNS, not just that its text looks fine. Spins a MySQL service container
+# (needs no vendor, no external DB, no credential — the container is ephemeral and its root
+# password is set right here), builds the schema from the CALLER's own files in order, then
+# runs the caller's harness, which EXPLAINs and executes the SQL the code actually emits.
+#
+# This is the MECHANISM only. What SQL to run, and against which schema, is the caller's —
+# the harness lives in the caller repo because only that repo knows its own queries. Gate
+# LOGIC lives centrally (this file); the target is a thin caller (the convention that already
+# governs reusable-sql-safety-gate.yml and its siblings).
+#
+# Cost (Rule 86b — only runner wall-clock bills; this is ubuntu-latest, x1): MySQL 8 service
+# pull+boot is cached on the runner image and healthchecks green in ~10-20s; npm ci dominates
+# and is npm-cached; schema load + harness are seconds. Budget ~1-2 min on top of an existing
+# node job. If a caller's schema or harness pushes it past that, say so in the caller.
+on:
+  workflow_call:
+    inputs:
+      node_version:  { type: string, default: '20' }
+      mysql_image:   { type: string, default: 'mysql:8.0' }
+      db_name:       { type: string, default: 'orbit_japa' }
+      schema_files:  { type: string, required: true }   # newline-separated, applied IN ORDER
+      seed_files:    { type: string, default: '' }      # newline-separated, optional
+      harness:       { type: string, required: true }   # command, e.g. npx ts-node ci/x/run.ts
+
+jobs:
+  sql-exec:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: ${{ inputs.mysql_image }}
+        env:
+          MYSQL_ROOT_PASSWORD: ci_root_pw
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pci_root_pw --silent"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+    env:
+      DB_HOST: 127.0.0.1
+      DB_USER: root
+      DB_PASSWORD: ci_root_pw
+      DB_DATABASE: ${{ inputs.db_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+      - run: npm ci
+      - name: Ensure mysql client
+        run: mysql --version || (sudo apt-get update && sudo apt-get install -y mysql-client)
+      - name: Wait for MySQL
+        run: |
+          for i in $(seq 1 30); do
+            mysqladmin ping -h 127.0.0.1 -uroot -pci_root_pw --silent && break
+            echo "waiting for mysql ($i)"; sleep 2
+          done
+      - name: Create database
+        run: mysql -h127.0.0.1 -uroot -pci_root_pw -e "CREATE DATABASE IF NOT EXISTS \`${{ inputs.db_name }}\`;"
+      - name: Load schema (in order)
+        run: |
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            echo "-- loading schema: $f"
+            mysql -h127.0.0.1 -uroot -pci_root_pw < "$f"
+          done <<< "${{ inputs.schema_files }}"
+      - name: Load seed
+        if: ${{ inputs.seed_files != '' }}
+        run: |
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            echo "-- loading seed: $f"
+            mysql -h127.0.0.1 -uroot -pci_root_pw < "$f"
+          done <<< "${{ inputs.seed_files }}"
+      - name: Run SQL execution harness
+        run: ${{ inputs.harness }}
