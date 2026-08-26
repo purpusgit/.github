@@ -74,6 +74,24 @@ on:
         required: false
         type: boolean
         default: false
+      run_translation_keys:
+        description: >
+          Translation-key check. Folds in what translation-keys.yml runs as its own
+          billed job (context `check / check`) by calling
+          pkg_orbit_client_core/.github/workflows/translation-key-check.yml.
+          The steps below are that workflow's consumer path copied verbatim, not a
+          re-derivation. It mints a GitHub App installation token, so a caller that
+          enables this MUST pass `secrets: inherit` — without it
+          ORBIT_BOT_APP_ID / ORBIT_BOT_PRIVATE_KEY resolve empty and the
+          "Verify a token was minted" step fails loudly rather than letting
+          actions/checkout fall through to "Repository not found".
+          Only the consumer path is here. client_core's own `self_check: true` mode
+          is deliberately NOT ported — client_core keeps its dedicated workflow,
+          because that mode exists to judge a PR by its OWN checker and locale files,
+          which is meaningless for every other repo.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -99,7 +117,7 @@ jobs:
       # becomes the `python3` the colours gate's comment-masker runs on, on any caller
       # that enables A1 or contrast; the masker is plain stdlib and unaffected.
       - name: Set up Python 3.11 (A1 + contrast detectors)
-        if: ${{ inputs.run_a1 || inputs.run_contrast }}
+        if: ${{ inputs.run_a1 || inputs.run_contrast || inputs.run_translation_keys }}
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -520,6 +538,70 @@ jobs:
         continue-on-error: true
         run: python3 tool/contrast_check.py
 
+      # ── Translation keys ────────────────────────────────────────────────────
+      # Verbatim consumer path of
+      # pkg_orbit_client_core/.github/workflows/translation-key-check.yml.
+      # A reusable workflow cannot be `uses:`d as a STEP, so folding it in means
+      # copying its steps; every one below is byte-for-byte that workflow's, with
+      # only `continue-on-error: true` and an `id:` added so a failure reaches the
+      # Verdict table instead of aborting the job and costing the other gates their
+      # verdicts. The predicate itself — check_translations.py, run against
+      # client_core's assets/translations at `cwb` — is unchanged.
+      - name: Mint a short-lived installation token (translation source)
+        id: tk_token
+        if: ${{ inputs.run_translation_keys }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORBIT_BOT_APP_ID }}
+          private-key: ${{ secrets.ORBIT_BOT_PRIVATE_KEY }}
+          owner: purpusgit
+          # Least privilege: this token only ever needs to read one repo.
+          repositories: pkg_orbit_client_core
+          # @v2 is load-bearing: @v1 DECLARES every `permission-*` input and then
+          # silently ignores it — no error, no warning. Do not downgrade the pin.
+          permission-contents: read
+
+      - name: Verify a token was minted
+        id: tk_verify
+        if: ${{ inputs.run_translation_keys }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          if [ -z "${{ steps.tk_token.outputs.token }}" ]; then
+            echo "::error::No installation token was minted. Check the org secrets ORBIT_BOT_APP_ID / ORBIT_BOT_PRIVATE_KEY, that orbit-sessions-bot is installed on this repo, and that the CALLER passed secrets: inherit. Checking out pkg_orbit_client_core cannot proceed without it — failing loudly instead of letting actions/checkout fall through to an unauthenticated 'Repository not found'."
+            exit 1
+          fi
+
+      - name: Checkout pkg_orbit_client_core (translation source of truth)
+        id: tk_checkout
+        if: ${{ inputs.run_translation_keys }}
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: purpusgit/pkg_orbit_client_core
+          token: ${{ steps.tk_token.outputs.token }}
+          ref: cwb
+          # Its own subdirectory: the job root is already this repo's checkout
+          # (fetch-depth 0, needed by the colours and barrel predicates) and must
+          # not be clobbered.
+          path: .translation-source
+          sparse-checkout: |
+            assets/translations
+            scripts/check_translations.py
+
+      - name: Check translation keys
+        id: tk_check
+        if: ${{ inputs.run_translation_keys }}
+        continue-on-error: true
+        # base/head come from the PR event, exactly as translation-keys.yml passed
+        # them in as inputs. A reusable workflow sees the CALLER's event context, so
+        # github.event.pull_request.* resolves here identically — no new input needed.
+        run: |
+          python3 .translation-source/scripts/check_translations.py \
+            "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" \
+            --translations-dir .translation-source/assets/translations
+
       # One row per gate step above: label ~ outcome ~ the one-line reason a FAIL means.
       # `outcome` (not `conclusion`) is what continue-on-error preserves.
       - name: Verdict — per-gate summary
@@ -537,6 +619,10 @@ jobs:
             Rule A1 sizing-axis scan~${{ steps.a1_scan.outcome }}~a sizing or layout value branches on platform instead of on window width
             Contrast checker self-test~${{ steps.contrast_selftest.outcome }}~the contrast checker failed its own fixtures, so the checker is broken and not the tokens under review
             Contrast WCAG AA scan~${{ steps.contrast_scan.outcome }}~an OrbitColors token does not meet WCAG 2.1 AA against the surface it renders on
+            Translation source token~${{ steps.tk_token.outcome }}~the GitHub App installation token for reading pkg_orbit_client_core could not be minted; check that the caller passes secrets: inherit
+            Translation source token present~${{ steps.tk_verify.outcome }}~no installation token was minted, so the translation source could not be checked out
+            Translation source checkout~${{ steps.tk_checkout.outcome }}~pkg_orbit_client_core assets/translations could not be checked out, so translation keys were never compared
+            Translation keys~${{ steps.tk_check.outcome }}~a translation key added or changed in this PR is missing from one or more locales in pkg_orbit_client_core assets/translations
         run: |
           # errexit is ON before line 1 (/usr/bin/bash -e {0}) and `set -uo pipefail`
           # does NOT clear it — only `set +e` does. Without this line the first
