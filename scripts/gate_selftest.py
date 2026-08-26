@@ -151,7 +151,18 @@ BEHAVIOUR = {
                 " gated `if: ${{ inputs.run_data }}` (default false), so it resolves"
                 " SKIPPED rather than running -- a job-level condition, tracked"
                 " separately; not something a fixture here can prove."},
-    "reusable-sql-execution-gate.yml": {"kind": None, "reason": "delegates to a per-repo harness (ts-node) run against a live MySQL service container; its exit code cannot be asserted here without a DB and the consumer repo's harness. bash -n + actionlint still cover its run: scripts."},
+    # STILL syntax-only, but the reason narrowed 2026-08-26: the gate now has a
+    # self-contained "Validate gate inputs" step (pure bash over the checked-out tree,
+    # no DB, no secrets) that COULD carry a real pass/fail fixture. It does not yet,
+    # because this harness reads a step's `run:` only -- it does not forward the step's
+    # `env:`, and every value that step validates arrives via `env:` with no declared
+    # default (`harness`/`schema_files` are `required: true`), so a fixture here would
+    # run it with unset variables under `set -u` and red for the wrong reason. Forwarding
+    # per-fixture `env:` is the follow-up; it is a change to THIS harness, not to the gate.
+    # Until then the input validation is red-proofed only by the PR that introduced it
+    # (payload refused / clean input passed on a live consumer run), which is a one-time
+    # proof, not a standing one. Do not read this entry as "nothing here is testable".
+    "reusable-sql-execution-gate.yml": {"kind": None, "reason": "the schema-load/seed/harness steps delegate to a per-repo harness run against a live MySQL service container; their exit codes cannot be asserted here without a DB and the consumer repo's harness. The 'Validate gate inputs' step IS self-contained and behaviourally testable, but needs per-fixture `env:` forwarding this harness does not have yet -- see the note above. bash -n + actionlint still cover every run: script."},
     # STALE AS OF 2026-08-26 and corrected here: it is no longer 0 callers.
     # service_orbit_orgs/.github/workflows/taxo-contract-lint.yml calls this gate,
     # publishing `taxo-contract-lint / taxo-lint / G4 wrong-concept / wrong-level check`.
