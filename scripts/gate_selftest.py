@@ -152,7 +152,14 @@ BEHAVIOUR = {
                 " SKIPPED rather than running -- a job-level condition, tracked"
                 " separately; not something a fixture here can prove."},
     "reusable-sql-execution-gate.yml": {"kind": None, "reason": "delegates to a per-repo harness (ts-node) run against a live MySQL service container; its exit code cannot be asserted here without a DB and the consumer repo's harness. bash -n + actionlint still cover its run: scripts."},
-    "reusable-taxo-contract-lint.yml": {"kind": "dead", "reason": "0 callers org-wide (independently confirmed via a sweep of all 59 repos / 218 workflow files, 2026-08-13) -- not yet wired to any consumer. checker.py offline-tested by taxo-contract/test_checker.py."},
+    # STALE AS OF 2026-08-26 and corrected here: it is no longer 0 callers.
+    # service_orbit_orgs/.github/workflows/taxo-contract-lint.yml calls this gate,
+    # publishing `taxo-contract-lint / taxo-lint / G4 wrong-concept / wrong-level check`.
+    # That context is NOT required on any branch protection, so the gate is wired but
+    # not enforcing. Left `dead` for behavioural purposes -- checkout of the contract
+    # needs a cross-repo token -- but the reason must not keep saying "0 callers":
+    # that sentence is exactly the evidence someone would cite to unwire a live gate.
+    "reusable-taxo-contract-lint.yml": {"kind": "dead", "reason": "1 caller (service_orbit_orgs), context published but NOT required on any protection as of 2026-08-26. Behavioural test needs a cross-repo checkout token; checker.py is offline-tested by taxo-contract/test_checker.py, which self-test-gates.yml runs."},
     "taxo-data-lint-nightly.yml":    {"kind": None, "reason": "DB-backed scheduled job; needs TAXO_DB_* MySQL secrets"},
 }
 

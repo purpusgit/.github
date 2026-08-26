@@ -18,4 +18,12 @@ routerApi.post('/searchUsersByFullName', (req, res) => {
   controller.search();
 });
 
+// THE PLANTED VIOLATION — a new route added with no auth middleware and no
+// auth-exceptions.json entry. This is how the defect actually arrives: a PR adds
+// a handler and nobody notices the missing middleware.
+routerApi.patch("/organizations/org-dimension", (req, res) => {
+  const validator = new OrgDimensionValidator(req, res);
+  validator.apply();
+});
+
 export default routerApi;
