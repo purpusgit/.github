@@ -82,12 +82,33 @@ BEHAVIOUR = {
         "pass": "  AND type = 'org_department'", "fail": "  AND type = 'Org_Department'"},
     "reusable-colors-safety-gate.yml":          {"kind": "colors"},
     "reusable-barrel-safety-gate.yml":          {"kind": "barrel"},
+    # `also`: this gate has THREE self-contained predicates, not one. Each gets its
+    # own pass/fail fixture pair under its own key, pinned BY STEP NAME like the
+    # primary — a renamed step reds here rather than quietly asserting nothing.
     "reusable-flutter-analyze.yml":  {"kind": "step", "step": "Analyze (lib only)",
         "key": "flutter-analyze", "prep": "dart pub get --no-example",
         "expect": "unused_element",
+        "also": [
+            # FAIL fixture is SYNTHETIC and says so in its own header: no live repo
+            # in the org carries `any`, a bare `>=`, or a ref-less git dep (verified
+            # across all 20 Dart packages, 2026-08-26). PASS fixture is the real
+            # pkg_orbit_nearyest manifest, which carries an unbounded
+            # `environment: flutter: ">=3.10.0"` — so the pass side is what proves
+            # the section filter still holds and the gate has not gone greedy.
+            {"step": "Dependency upper-bound check", "key": "pubspec-upper-bound",
+             "expect": "unbounded dependency constraint"},
+            # Both fixtures are REAL and are the SAME FILE either side of one fix:
+            # pkg_orbit_nearyest pubspec.yaml at 66cda62 (the main_org_orbit#373
+            # incident manifest) vs. at cwb HEAD (after pkg_orbit_nearyest#54).
+            # This is the org's actual "one package resolved a different version in
+            # its CI than in the app that consumes it" case, not a reconstruction.
+            {"step": "Pre-release allowlist check", "key": "pubspec-prerelease",
+             "expect": "un-allowlisted pre-release dependency"},
+        ],
         "note": "checkout/git-config + `dart pub get` against private org deps need the"
                 " GH_PAT secret; the Test step needs a consumer test suite. Those stay"
-                " syntax-only. The analyze predicate itself is behaviourally tested."},
+                " syntax-only. The analyze predicate and both pubspec constraint"
+                " predicates are behaviourally tested."},
     "reusable-tsc-check.yml":       {"kind": "step", "step": "TypeScript type-check",
         "key": "tsc", "expect": "error TS2322",
         "note": "`npm ci` needs the consumer repo's lockfile and the detect step writes to"
@@ -771,6 +792,19 @@ def main():
                                 expect=beh.get("expect"))
                 if beh["key"] == "flutter-analyze":
                     analyze_script = script
+            # Additional self-contained predicates in the same gate file. Pinned by
+            # name for the same reason the primary is: positional selection would
+            # silently retarget the moment a step is added above it.
+            for extra in beh.get("also", []):
+                xscript = named.get(extra["step"])
+                if xscript is None:
+                    fail(f"{fn}: behavioural step {extra['step']!r} no longer exists in "
+                         "this gate — the gate changed shape. Repoint or remove the "
+                         "fixture; do NOT let it fall back to a positional guess.")
+                    continue
+                behavioural_dir(sub_inputs(xscript, input_defaults(doc)),
+                                extra["key"], f"{fn}[{extra['step']}]",
+                                expect=extra["expect"])
             if beh.get("note"):
                 print(f"  ⤳ PARTIAL: {beh['note']}")
         elif beh["kind"] == "colors":
