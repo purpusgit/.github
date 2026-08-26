@@ -18,7 +18,14 @@ on:
         default: "src"
         type: string
       run_data:
-        description: "Run the DB-backed --data validation job (needs DB secrets)."
+        description: >-
+          Run the DB-backed --data validation job (needs DB secrets).
+          DECISION (ratified 2026-08-27): do NOT set this true in any caller. The
+          nightly taxo-data-lint-nightly.yml already runs this exact check
+          (taxo_lint.py --data, same TAXO_DB_* secrets) and takes no repo input, so
+          per-PR and scheduled runs assert the identical thing. Turning it on would
+          add a live-DB dependency to every PR while proving nothing new. Kept wired
+          and defaulted false so it can be enabled if that equivalence stops holding.
         default: false
         type: boolean
       advisory:

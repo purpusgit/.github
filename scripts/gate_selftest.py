@@ -171,7 +171,13 @@ BEHAVIOUR = {
         "note": "the --data job needs live MySQL secrets and stays syntax-only. It is also"
                 " gated `if: ${{ inputs.run_data }}` (default false), so it resolves"
                 " SKIPPED rather than running -- a job-level condition, tracked"
-                " separately; not something a fixture here can prove."},
+                " separately; not something a fixture here can prove."
+                " RATIFIED 2026-08-27: run_data stays false in EVERY caller -- the"
+                " nightly taxo-data-lint-nightly.yml asserts the identical thing on a"
+                " schedule (same checker, same secrets, no repo input), so there is no"
+                " per-PR coverage gap here to close and this entry should not be re-read"
+                " as one. Rationale lives on the input's own description in"
+                " reusable-taxo-lint.yml."},
     # STILL syntax-only, but the reason narrowed 2026-08-26: the gate now has a
     # self-contained "Validate gate inputs" step (pure bash over the checked-out tree,
     # no DB, no secrets) that COULD carry a real pass/fail fixture. It does not yet,
