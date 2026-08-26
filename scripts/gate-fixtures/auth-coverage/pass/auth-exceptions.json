@@ -1,0 +1,6 @@
+{
+  "src/api/index.ts:POST /searchUsersByFullName": {
+    "status": "tracked-gap",
+    "reason": "Fixture entry. Mirrors the file-scoped key shape used by the 765 real entries in service_orbit_orgs/auth-exceptions.json."
+  }
+}

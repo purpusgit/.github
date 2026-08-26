@@ -134,7 +134,23 @@ BEHAVIOUR = {
         "step": "Check every .sql file has a matching journal entry",
         "key": "drizzle-journal",
         "expect": "ERROR: Drizzle journal completeness gate FAILED"},
-    "reusable-taxo-lint.yml":        {"kind": None, "reason": "delegates to scripts/taxo_lint.py; --data needs live MySQL secrets"},
+    # `--code` and `--data` were being scored as one thing, and they are not.
+    # --data needs live TAXO_DB_* MySQL secrets and genuinely cannot run here.
+    # --code is pure Python over a directory -- no DB, no network, no token -- and it
+    # is the half that carries a REQUIRED context (`taxo-lint / Taxonomy code scan
+    # (*.sql.ts)` on service_orbit_orgs). It had no red-proof of any kind: zero failed
+    # runs across all four callers, and no fixture. `prep` copies the LIVE
+    # scripts/taxo_lint.py into the `gate/` path the predicate checks out, so this
+    # exercises the checker that actually ships rather than a duplicate of it.
+    "reusable-taxo-lint.yml": {"kind": "step",
+        "step": "Run taxonomy code gate (--code, no DB)",
+        "key": "taxo-lint-code",
+        "prep": "mkdir -p gate/scripts && cp {ROOT}/scripts/taxo_lint.py gate/scripts/",
+        "expect": "RESULT: FAIL",
+        "note": "the --data job needs live MySQL secrets and stays syntax-only. It is also"
+                " gated `if: ${{ inputs.run_data }}` (default false), so it resolves"
+                " SKIPPED rather than running -- a job-level condition, tracked"
+                " separately; not something a fixture here can prove."},
     "reusable-sql-execution-gate.yml": {"kind": None, "reason": "delegates to a per-repo harness (ts-node) run against a live MySQL service container; its exit code cannot be asserted here without a DB and the consumer repo's harness. bash -n + actionlint still cover its run: scripts."},
     "reusable-taxo-contract-lint.yml": {"kind": "dead", "reason": "0 callers org-wide (independently confirmed via a sweep of all 59 repos / 218 workflow files, 2026-08-13) -- not yet wired to any consumer. checker.py offline-tested by taxo-contract/test_checker.py."},
     "taxo-data-lint-nightly.yml":    {"kind": None, "reason": "DB-backed scheduled job; needs TAXO_DB_* MySQL secrets"},
@@ -172,6 +188,31 @@ def extract_named_runs(doc):
             if isinstance(step, dict) and step.get("run") and step.get("name"):
                 named[step["name"]] = step["run"]
     return named
+
+def input_defaults(doc):
+    """{input name: declared default} from a workflow's `on.workflow_call.inputs`
+    or a composite action's `inputs`.
+
+    sub_gha below replaces EVERY `${{ ... }}` with the sentinel 'cwb'. For a
+    base_ref that is harmless (cwb is the real default). For a path input it is
+    not: `--code "caller/${{ inputs.code_dir }}"` becomes `caller/cwb`, a
+    directory no fixture can have, and the predicate then reds for the wrong
+    reason. Resolving the DECLARED default instead means the fixture follows the
+    gate if that default is ever changed, rather than testing a dead path.
+    """
+    on = doc.get("on", doc.get(True)) or {}
+    ins = {}
+    if isinstance(on, dict) and isinstance(on.get("workflow_call"), dict):
+        ins = on["workflow_call"].get("inputs") or {}
+    ins = ins or doc.get("inputs") or {}
+    return {k: v["default"] for k, v in ins.items()
+            if isinstance(v, dict) and v.get("default") is not None}
+
+def sub_inputs(script, defaults):
+    """Apply input_defaults BEFORE sub_gha gets to them."""
+    for k, v in defaults.items():
+        script = re.sub(r"\$\{\{\s*inputs\." + re.escape(k) + r"\s*\}\}", str(v), script)
+    return script
 
 def sub_gha(script):
     """Actions expands ${{ ... }} before the shell runs. Mirror that so the
@@ -625,6 +666,47 @@ def actionlint_gate():
     print()
 
 
+# ── the M34 auth-coverage gate ───────────────────────────────────────────────
+# Required on four repos (service_auth, service_mongo_social, service_orbit_orgs,
+# service_org_broadcast) and deliberately a COMPOSITE ACTION rather than a reusable
+# workflow -- see action.yml for why. The side effect is that main()'s loop over
+# .github/workflows/ structurally cannot see it, so the org's most-required
+# non-Flutter gate had no coverage here at all.
+#
+# It also had no red-proof in the wild: every failed run on the `auth-coverage`
+# context across all four repos failed in a DIFFERENT step of the same job (a
+# secret-scan step), never in the predicate. Green forever on the thing it is
+# actually for. That is the shape this harness exists to break.
+AUTH_COVERAGE_DIR = os.path.join(ROOT, ".github", "actions", "auth-coverage")
+
+def auth_coverage_gate():
+    print("── .github/actions/auth-coverage (composite action; required on 4 repos)")
+    action = os.path.join(AUTH_COVERAGE_DIR, "action.yml")
+    if not os.path.exists(action):
+        fail("auth-coverage: action.yml is missing — a gate four repos require has "
+             "no predicate on disk")
+        return
+    doc = load_yaml(action)
+    named = {st["name"]: st["run"] for st in ((doc.get("runs") or {}).get("steps") or [])
+             if isinstance(st, dict) and st.get("run") and st.get("name")}
+    script = named.get("Auth coverage")
+    if script is None:
+        fail("auth-coverage: step 'Auth coverage' no longer exists in action.yml — the "
+             "action changed shape. Repoint the fixture BY NAME; do not let it fall "
+             "back to a positional guess.")
+        return
+    if bash_n(script, "auth-coverage"):
+        ok("auth-coverage: bash -n clean")
+    # $GITHUB_ACTION_PATH is injected by the runner, not by us. Pointing it at the
+    # real action directory is what makes this run the checker that actually ships
+    # instead of a copy that can drift.
+    script = sub_inputs(script, input_defaults(doc)).replace(
+        "$GITHUB_ACTION_PATH", AUTH_COVERAGE_DIR)
+    behavioural_dir(script, "auth-coverage", "auth-coverage",
+                    expect="M34 auth-coverage gate FAILED")
+    print()
+
+
 def main():
     files = sorted(os.path.basename(p) for p in glob.glob(os.path.join(WF_DIR, "*.yml")))
     files = [f for f in files if f != "self-test-gates.yml"]
@@ -664,8 +746,11 @@ def main():
                      "gate — the gate changed shape. Repoint or remove the fixture; "
                      "do NOT let it fall back to a positional guess.")
             else:
+                script = sub_inputs(script, input_defaults(doc))
+                prep = beh.get("prep")
                 behavioural_dir(script, beh["key"], fn,
-                                prep=beh.get("prep"), expect=beh.get("expect"))
+                                prep=prep and prep.replace("{ROOT}", ROOT),
+                                expect=beh.get("expect"))
                 if beh["key"] == "flutter-analyze":
                     analyze_script = script
             if beh.get("note"):
@@ -683,6 +768,8 @@ def main():
         print()
 
     actionlint_gate()
+
+    auth_coverage_gate()
 
     print("── canary (negative test of the test)")
     if dart_script:
