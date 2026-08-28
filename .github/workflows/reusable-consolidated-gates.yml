@@ -1,7 +1,13 @@
 name: Reusable — Consolidated one-grep gates (A2)
 
-# A2, scoped to pkg_orbit_japa and pkg_orbit_client_core ONLY. Fleet-wide A2 stays
-# DEFERRED and nothing here is to be wired to a third repo without its own numbers.
+# A2 is ROLLED OUT fleet-wide across the Flutter package repos. The earlier "scoped to
+# japa and client_core ONLY / fleet-wide DEFERRED" restriction is LIFTED (founder-authorised)
+# and must not be reinstated by anyone reading a stale copy of this header.
+#
+# Wiring a further repo still requires that repo's OWN numbers, and that requirement is not
+# a formality: read the repo's live required contexts and its workflow files, set the run_*
+# flags from those rather than copying another caller, and record the before/after billed
+# job count. A caller copied wholesale enables a gate the repo never ran, or misses one it did.
 #
 # WHY ONE JOB. Actions bills per JOB, rounded UP to a whole minute. Four ~11-second
 # grep jobs bill four whole minutes, not 44 seconds. Collapsing them into one job of
