@@ -11,6 +11,22 @@ on:
         required: false
         type: string
         default: .github/workflows/sql-safety-gate.yml
+      code_root:
+        description: >-
+          Directory under the caller repo to scan for *.sql.ts / *.sql.v[0-9]*.ts.
+          Defaults to `src`, which is where every caller's TypeScript lived when this
+          gate was written.
+
+          A monorepo whose sources sit under workspace packages
+          (packages/server/src, packages/services/*/src) must pass the directory that
+          CONTAINS them — `packages` — because the scan is ROOTED here, not discovered.
+          Getting it wrong is SILENT: the glob matches nothing, no violation is found,
+          and the gate reports the same green as a repo that genuinely passed. The
+          summary line names the resolved root and the file count so that case is at
+          least readable in the log.
+        required: false
+        type: string
+        default: src
 
 jobs:
   sql-safety-gate:
@@ -67,13 +83,29 @@ jobs:
           python3 - <<'PYEOF'
           import re, glob, sys
 
+          # code_root is SPLICED into this body rather than passed through `env:`, and
+          # that is deliberate. scripts/gate_selftest.py exercises this predicate offline
+          # by reading the step's `run:` text and substituting the DECLARED input
+          # defaults; it does not forward a step's `env:`. An env-borne value would be
+          # invisible to the harness, so the fixture could only ever test the default —
+          # i.e. exactly the path that already worked. Same mechanism
+          # reusable-taxo-lint.yml uses for `code_dir`.
+          #
+          # The r'''...''' wrapper is also load-bearing: it keeps this line valid Python
+          # BEFORE substitution, which is what lets the harness py_compile the raw
+          # heredoc body.
+          code_root = r'''${{ inputs.code_root }}'''.strip() or 'src'
+          if not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_./-]*', code_root):
+              print(f'ERROR: code_root {code_root!r} is not a plain relative path.')
+              sys.exit(1)
+
           errors = []
           # Match both plain (foo.sql.ts) and versioned (foo.sql.v1.ts /
           # foo.sql.v2.ts) SQL template files. Versioned files were previously
           # skipped by the bare *.sql.ts glob (Rule 86 CI-gate fix).
           files = sorted(set(
-              glob.glob('src/**/*.sql.ts', recursive=True)
-              + glob.glob('src/**/*.sql.v[0-9]*.ts', recursive=True)
+              glob.glob(f'{code_root}/**/*.sql.ts', recursive=True)
+              + glob.glob(f'{code_root}/**/*.sql.v[0-9]*.ts', recursive=True)
           ))
           for path in files:
               try:
@@ -97,5 +129,11 @@ jobs:
               print('See: TypeScript_Backend_Coding_Rules.md §SQL Template Literal Discipline')
               sys.exit(1)
 
-          print(f'SQL template literal safety gate passed — {len(files)} .sql.ts files scanned, 0 issues.')
+          print(f'SQL template literal safety gate passed — {len(files)} .sql.ts file(s) scanned under {code_root!r}, 0 issues.')
+          if not files:
+              print()
+              print(f'WARNING: zero files matched under {code_root!r}.')
+              print('This gate is green because it found NOTHING TO CHECK, which is not')
+              print('the same as passing. If this repo keeps its TypeScript somewhere')
+              print('else, pass code_root: <dir> from the caller workflow.')
           PYEOF

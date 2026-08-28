@@ -48,6 +48,12 @@ behavioural step is not the last one:
     exit-code assertion would happily score as "violation caught" — a green
     harness proving nothing.
 
+A third rule, added with the sql gate's `code_root` input: a fixture that
+exercises a NON-DEFAULT input value must be accompanied by proof that the fixture
+depends on that value. Passing under `code_root: packages` is scored identically
+by a gate that reads the input and by one that hardcodes `packages`. See
+canary_sql_code_root.
+
 Exit 0 = all checks passed (green). Exit 1 = a predicate broke or a fixture
 assertion failed (red).
 """
@@ -62,7 +68,8 @@ FIXTURES = os.path.join(ROOT, "scripts", "gate-fixtures")
 #   'dir'    -> copy fixtures/<key>/{pass,fail} to a temp dir, run predicate there
 #   'step'   -> same, but pick the predicate by STEP NAME instead of runs[-1];
 #               optional 'prep' runs first (e.g. dependency resolution), optional
-#               'expect' asserts a substring in the FAIL fixture's output, and
+#               'expect' asserts a substring in the FAIL fixture's output, optional
+#               'inputs' overrides declared input defaults for this fixture, and
 #               optional 'note' records which steps remain syntax-only
 #   'colors' -> build a two-branch git repo at runtime (gate is diff-based)
 #   'diff'   -> build a two-branch git repo; add pass/fail line (diff-based gate)
@@ -76,7 +83,26 @@ FIXTURES = os.path.join(ROOT, "scripts", "gate-fixtures")
 #   None     -> external: syntax-check only, with `reason`
 BEHAVIOUR = {
     "reusable-dart-safety-gate.yml":            {"kind": "dir", "key": "dart"},
-    "reusable-sql-safety-gate.yml":             {"kind": "dir", "key": "sql-semicolon"},
+    # `step`, not `dir`, since the code_root input landed. The `dir` branch runs the
+    # predicate with only sub_gha applied, and sub_gha rewrites EVERY `${{ }}` to the
+    # sentinel 'cwb' -- so `code_root` would resolve to a directory no fixture has,
+    # the glob would match nothing, and the FAIL fixture would exit 0. That is the
+    # very silent-pass shape this input exists to fix, so it must not be how the
+    # harness runs. `step` resolves the DECLARED default and carries `expect`.
+    "reusable-sql-safety-gate.yml": {"kind": "step",
+        "step": "Check for stray semicolons in SQL template literals",
+        "key": "sql-semicolon",
+        "expect": "SQL template literal safety gate FAILED",
+        "also": [
+            # Same predicate, NON-default code_root, fixture rooted at packages/.
+            # This is the orbit_masterdata_scripts shape: template files under
+            # packages/*/src with no root src/ at all. Paired with
+            # canary_sql_code_root, which proves this fixture depends on the input.
+            {"step": "Check for stray semicolons in SQL template literals",
+             "key": "sql-semicolon-code-root",
+             "inputs": {"code_root": "packages"},
+             "expect": "SQL template literal safety gate FAILED"},
+        ]},
     "reusable-sql-typestring-safety-gate.yml":  {"kind": "diff", "fpath": "src/x.sql.ts",
         "base": "export const q = `SELECT id FROM taxo.master WHERE is_deleted = 0`;\n",
         "pass": "  AND type = 'org_department'", "fail": "  AND type = 'Org_Department'"},
@@ -252,6 +278,17 @@ def input_defaults(doc):
     ins = ins or doc.get("inputs") or {}
     return {k: v["default"] for k, v in ins.items()
             if isinstance(v, dict) and v.get("default") is not None}
+
+def fixture_inputs(doc, spec):
+    """Declared defaults, with any per-fixture `inputs` override applied on top.
+
+    Without the override a fixture can only ever exercise the DEFAULT value of an
+    input — which, for a path input, is the code path that already worked. The
+    interesting case is always the non-default one, and it needs its own fixture
+    tree plus a canary proving the tree depends on the override (see
+    canary_sql_code_root).
+    """
+    return {**input_defaults(doc), **(spec.get("inputs") or {})}
 
 def sub_inputs(script, defaults):
     """Apply input_defaults BEFORE sub_gha gets to them."""
@@ -581,6 +618,48 @@ def canary_analyze(analyze_script):
         fail(f"canary[analyze]: weakened predicate still exited {code}; the FAIL "
              "fixture is red for some reason other than the planted warning")
 
+def canary_sql_code_root(default_script):
+    """Third canary: proves the code_root fixture depends on the code_root INPUT.
+
+    The `also` fixture above runs the packages/-rooted tree with
+    `code_root: packages` and asserts the violation is caught. On its own that
+    proves very little — a predicate that IGNORED the input and hardcoded
+    `packages` would score exactly the same, and so would one that scanned the
+    whole tree recursively from the repo root.
+
+    So run the SAME violating tree at the DEFAULT root and require the opposite
+    outcome: green, having scanned zero files. That is the live defect this input
+    exists to fix (orbit_masterdata_scripts, whose SQL template files sit under
+    packages/*/src with no root src/ at all — the gate passed there having read
+    nothing). Reproducing it here is what makes the pair a test rather than a
+    coincidence.
+
+    `default_script` is the predicate with DECLARED defaults substituted, i.e.
+    code_root='src'.
+    """
+    fixture = os.path.join(FIXTURES, "sql-semicolon-code-root", "fail")
+    if not os.path.isdir(fixture):
+        fail("canary[sql-code_root]: the packages/-rooted FAIL fixture is missing — "
+             "the code_root assertion above has nothing to depend on")
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        work = os.path.join(tmp, "repo")
+        shutil.copytree(fixture, work)
+        code, out = run_predicate(default_script, work)
+    if code != 0:
+        fail(f"canary[sql-code_root]: the packages/-rooted FAIL fixture exited {code} at "
+             "the DEFAULT root, but nothing there is reachable from src/. Either the "
+             "fixture is not actually rooted under packages/, or the predicate no "
+             "longer honours code_root — either way the code_root assertion above "
+             f"proves nothing.\n{out}")
+    elif "0 .sql.ts file(s) scanned" not in out:
+        fail(f"canary[sql-code_root]: exited 0 at the default root but did not report "
+             f"scanning zero files, so the silent-pass shape is not confirmed\n{out}")
+    else:
+        ok("canary[sql-code_root]: the same violating tree goes GREEN having scanned 0 "
+           "files at the default root — the silent pass code_root exists to fix is "
+           "reproduced, so the packages/ assertion genuinely depends on the input")
+
 # ── actionlint: workflow-validity check ──────────────────────────────────────
 # Added 2026-08-10 after notify-host-tip-moved.yml was fanned out to 13 repos
 # carrying a literal empty `${{ }}` inside what reads as a shell comment in a
@@ -759,6 +838,7 @@ def main():
 
     dart_script = None
     analyze_script = None
+    sql_default_script = None
     for fn in files:
         print(f"── {fn}")
         doc = load_yaml(os.path.join(WF_DIR, fn))
@@ -791,16 +871,20 @@ def main():
                      "gate — the gate changed shape. Repoint or remove the fixture; "
                      "do NOT let it fall back to a positional guess.")
             else:
-                script = sub_inputs(script, input_defaults(doc))
+                script = sub_inputs(script, fixture_inputs(doc, beh))
                 prep = beh.get("prep")
                 behavioural_dir(script, beh["key"], fn,
                                 prep=prep and prep.replace("{ROOT}", ROOT),
                                 expect=beh.get("expect"))
                 if beh["key"] == "flutter-analyze":
                     analyze_script = script
+                if beh["key"] == "sql-semicolon":
+                    sql_default_script = script
             # Additional self-contained predicates in the same gate file. Pinned by
             # name for the same reason the primary is: positional selection would
-            # silently retarget the moment a step is added above it.
+            # silently retarget the moment a step is added above it. An entry may
+            # also carry `inputs` to exercise a NON-default input value — see
+            # fixture_inputs.
             for extra in beh.get("also", []):
                 xscript = named.get(extra["step"])
                 if xscript is None:
@@ -808,7 +892,7 @@ def main():
                          "this gate — the gate changed shape. Repoint or remove the "
                          "fixture; do NOT let it fall back to a positional guess.")
                     continue
-                behavioural_dir(sub_inputs(xscript, input_defaults(doc)),
+                behavioural_dir(sub_inputs(xscript, fixture_inputs(doc, extra)),
                                 extra["key"], f"{fn}[{extra['step']}]",
                                 expect=extra["expect"])
             if beh.get("note"):
@@ -838,6 +922,10 @@ def main():
         canary_analyze(analyze_script)
     else:
         fail("canary[analyze]: analyze predicate not found")
+    if sql_default_script:
+        canary_sql_code_root(sql_default_script)
+    else:
+        fail("canary[sql-code_root]: sql predicate not found")
     print()
 
     if FAILURES:
