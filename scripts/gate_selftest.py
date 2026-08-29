@@ -152,10 +152,17 @@ BEHAVIOUR = {
     # would assert nothing new. `redproof` still runs one of them against the real
     # dart pass/fail fixture so this entry can never be green on a gate that has
     # stopped catching anything.
-    # NOT mirrored, and deliberately so: the exact-pin, A1 and contrast steps have
-    # no reusable in THIS repo to compare against — their source of record is the
-    # consumer repo's own workflow — so no equality is assertable and none is
-    # claimed. They are still bash -n'd and actionlint'd by the generic loop.
+    # NOT mirrored, and deliberately so, for two different reasons:
+    #   * exact-pin / A1 / contrast — no reusable in THIS repo to compare against;
+    #     their source of record is the consumer repo's own workflow.
+    #   * base_url_host / base_url_default / base_url_fallback and the two
+    #     tk_self_* steps — there is NOTHING to mirror because these steps are the
+    #     ONLY copy. pkg_orbit_client_core's base_url_discipline.yml is now a thin
+    #     push-only caller of this same workflow rather than a second inline copy,
+    #     and its self-mode translation caller was deleted outright. An equality
+    #     assertion needs two copies; the right fix for a duplicate is to not have
+    #     one, and that is what was done here.
+    # All of them are still bash -n'd and actionlint'd by the generic loop.
     "reusable-consolidated-gates.yml": {"kind": "consolidated",
         "mirrors": {
             "Rule 24 — colours safety (no hardcoded Colors.* additions)":
@@ -171,7 +178,7 @@ BEHAVIOUR = {
             "Rule 84 — a flavor must not own another package's screens":
                 ("reusable-rule84-flavor-fork-gate.yml", "A flavor must not own another package's screens"),
         },
-        "unmirrored": "exact-pin / A1 / contrast steps: source of record is the consumer repo, not this one",
+        "unmirrored": "exact-pin / A1 / contrast steps: source of record is the consumer repo, not this one. base-URL and self-mode-translation steps: this file is the ONLY copy, so there is no second copy to assert equality against",
         "redproof": ("Dart escaped string interpolation check", "dart")},
     # `step`, not `dir`: the dir branch does not forward `expect`, and without one a
     # Python traceback exiting 1 scores as "violation caught". The predicate is pure

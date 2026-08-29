@@ -52,6 +52,35 @@ name: Flutter Analyze — reusable (pkg_* packages)
 
 on:
   workflow_call:
+    inputs:
+      run_web_build:
+        description: >
+          Build example/ for web with dart2js in THIS job, as a step, instead of as a
+          separate billed job in the caller's own flutter-web-build.yml (Rule 88:
+          `flutter analyze` is structurally blind to what dart2js catches — unbalanced
+          brackets from conflict resolution, CardTheme -> CardThemeData breakage).
+
+          WHY HERE AND NOT IN reusable-consolidated-gates.yml. The consolidated job is
+          a static-grep job: checkout plus, conditionally, Python 3.11. It has no
+          Flutter toolchain at all. `flutter build web` is not a grep — it needs the
+          SDK, the private-sibling git credential and a resolved pub cache, and this
+          job has already paid for all three (subosito/flutter-action with .fvmrc and
+          cache: true, the App-token mint, the insteadOf config, `dart pub get`).
+          Putting the build in the consolidated job would install a second Flutter SDK
+          per PR event, which is the opposite of what A2 consolidation is for. Here the
+          marginal cost is the build itself and nothing else.
+
+          ⚠️ ENABLING THIS WIDENS `analyze / flutter analyze`. That context is required
+          on every consumer's trunk, so a dart2js failure now blocks merges. Both repos
+          enabling it on day one were verified green on cwb HEAD first (japa run over
+          b6b633f, client_core over 2fc2735, both `success`) so this reds nothing on
+          arrival. Default false: no other caller changes behaviour.
+
+          Requires example/ to exist in the caller. There is no fallback, deliberately —
+          a silently-skipped build is a gate that has gone quiet.
+        required: false
+        type: boolean
+        default: false
     secrets:
       ORBIT_BOT_APP_ID:
         # Declared so ${{ secrets.ORBIT_BOT_APP_ID }} resolves inside the
@@ -314,4 +343,32 @@ jobs:
       # only fixture-backed assertion this gate has.
       - name: Analyze (lib only)
         run: flutter analyze lib/ --no-fatal-infos --no-pub
+
+      # ── Rule 88 web build (opt-in) ──────────────────────────────────────────
+      # Predicate carried over verbatim from the two flutter-web-build.yml files this
+      # replaces. japa's explicitly ran `flutter pub get` in example/ before building
+      # and then asserted main.dart.js exists; client_core's relied on the implicit
+      # pub get and asserted nothing. Both are kept — the union is the STRONGER of the
+      # two on each axis, never the weaker, so neither repo loses a check.
+      #
+      # `.fvmrc` (from the flutter-action step above) is now the version for both.
+      # japa's standalone file hardcoded `flutter-version: '3.41.9'`; its .fvmrc says
+      # 3.41.9 too, so this is a like-for-like move today AND removes the exact pin
+      # that would have drifted at the next toolchain bump.
+      - name: pub get (example)
+        if: ${{ inputs.run_web_build }}
+        working-directory: example
+        run: flutter pub get
+
+      - name: flutter build web --release (example)
+        if: ${{ inputs.run_web_build }}
+        working-directory: example
+        run: flutter build web --release
+
+      - name: Confirm bundle produced
+        if: ${{ inputs.run_web_build }}
+        working-directory: example
+        run: |
+          test -f build/web/main.dart.js || { echo "::error::dart2js produced no main.dart.js"; exit 1; }
+          echo "web bundle OK ($(du -h build/web/main.dart.js | cut -f1))"
 
