@@ -91,10 +91,40 @@ on:
           ORBIT_BOT_APP_ID / ORBIT_BOT_PRIVATE_KEY resolve empty and the
           "Verify a token was minted" step fails loudly rather than letting
           actions/checkout fall through to "Repository not found".
-          Only the consumer path is here. client_core's own `self_check: true` mode
-          is deliberately NOT ported — client_core keeps its dedicated workflow,
-          because that mode exists to judge a PR by its OWN checker and locale files,
-          which is meaningless for every other repo.
+          Only the CONSUMER path is here. client_core's own self-check mode is a
+          separate input (`run_translation_keys_self`) rather than a mode flag on
+          this one, because the two share no steps at all: the consumer path mints
+          a token and checks out another repo, the self path runs neither.
+        required: false
+        type: boolean
+        default: false
+      run_translation_keys_self:
+        description: >
+          Translation-key check, SELF mode — for pkg_orbit_client_core only, the repo
+          that IS the translation source of truth. Runs the PR's own
+          scripts/check_translations.py against the PR's own assets/translations, so a
+          PR that edits the checker is judged by the edited checker and a PR that adds
+          a key has that key read (the bug `self_check: true` was added to
+          translation-key-check.yml to fix; the same reasoning, not a re-derivation).
+          Needs no token and no second checkout — which is exactly why it folds in
+          cleanly where the consumer path needed six steps. Enabling this on a repo
+          with no scripts/check_translations.py is a hard error, by design.
+        required: false
+        type: boolean
+        default: false
+      run_base_url:
+        description: >
+          Base-URL discipline (3 checks) — pkg_orbit_client_core's variant of Rule 84,
+          NOT a duplicate of `run_rule84`. Two of the three predicates genuinely differ
+          and a caller must not substitute one for the other:
+            * the host-literal grep EXCLUDES lib/flavor_config.dart and commented lines,
+              because in client_core that file is where the hosts are SUPPOSED to live —
+              run_rule84's copy excludes nothing, which is correct for a flavor repo and
+              would red the source of truth for being the source of truth;
+            * the `default:`-clause check has no run_rule84 equivalent at all.
+          Only the String.fromEnvironment predicate is shared, and it is copied here
+          byte-for-byte from base_url_discipline.yml, which is now a thin push-only
+          caller of THIS workflow — so there is exactly one copy of all three, not two.
         required: false
         type: boolean
         default: false
@@ -123,7 +153,7 @@ jobs:
       # becomes the `python3` the colours gate's comment-masker runs on, on any caller
       # that enables A1 or contrast; the masker is plain stdlib and unaffected.
       - name: Set up Python 3.11 (A1 + contrast detectors)
-        if: ${{ inputs.run_a1 || inputs.run_contrast || inputs.run_translation_keys }}
+        if: ${{ inputs.run_a1 || inputs.run_contrast || inputs.run_translation_keys || inputs.run_translation_keys_self }}
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -498,6 +528,56 @@ jobs:
           fi
           echo "OK - no cross-package screens."
 
+      # ── Base-URL discipline (client_core) ───────────────────────────────────
+      # These three are the ONLY copy of base_url_discipline.yml's predicates. That
+      # file still exists in pkg_orbit_client_core and still carries `push:
+      # branches: [cwb]` — the trunk-push coverage this pull_request-only workflow
+      # cannot replace — but its job is now a thin caller of THIS workflow with
+      # run_base_url: true and everything else off. That is deliberate and is why
+      # there is no second copy to drift: the three greps read the working tree and
+      # need no base-ref diff, so unlike the colours and barrel predicates they are
+      # perfectly safe on a push event where github.base_ref is empty.
+      - name: Base URL — service hosts live ONLY in lib/flavor_config.dart
+        id: base_url_host
+        if: ${{ inputs.run_base_url }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          HITS=$(grep -rnE "https?://[A-Za-z0-9.-]*(mypurpus\.com|bookmyorbit\.com)" lib/ --include=*.dart \
+                 | grep -v "^lib/flavor_config.dart:" \
+                 | grep -vE ":[0-9]+:[[:space:]]*//" || true)
+          if [ -n "$HITS" ]; then
+            echo "::error::Service host literal outside lib/flavor_config.dart:"
+            echo "$HITS"
+            echo "Base URLs are declared once, per flavor, in flavor_config.dart. See '0 Coding RULES/Base_URL_And_Service_Endpoint_Architecture.md'."
+            exit 1
+          fi
+          echo "OK - no host literal outside flavor_config.dart."
+
+      - name: Base URL — no 'default:' clause in flavor_config.dart
+        id: base_url_default
+        if: ${{ inputs.run_base_url }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          if grep -nE "^[[:space:]]*default:" lib/flavor_config.dart; then
+            echo "::error::A 'default:' clause defeats switch exhaustiveness. Adding a new AppFlavor MUST be a compile error, not a silent fallback to whatever the default returns (usually sandbox). That is exactly how a production build ends up pointed at the sandbox database."
+            exit 1
+          fi
+          echo "OK - every base-URL switch stays exhaustive."
+
+      - name: Base URL — no fallback via String.fromEnvironment
+        id: base_url_fallback
+        if: ${{ inputs.run_base_url }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          if grep -rnE "String\.fromEnvironment\([^)]*defaultValue" lib/ --include=*.dart | grep -iE "url|host|endpoint|base"; then
+            echo "::error::String.fromEnvironment(defaultValue:) used as a base-URL fallback. A missing base URL must be a compile error, never a silent default."
+            exit 1
+          fi
+          echo "OK - no base-URL fallback."
+
       - name: Exact-pin check — no exact sdk/flutter pins in pubspec.yaml
         id: exact_pin
         if: ${{ inputs.run_exact_pin }}
@@ -608,6 +688,30 @@ jobs:
             "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" \
             --translations-dir .translation-source/assets/translations
 
+      # ── Translation keys, SELF mode (client_core only) ──────────────────────
+      # No token and no second checkout: the repo under test IS the source of truth,
+      # so the checker and the locale files are already at the job root from the
+      # fetch-depth-0 checkout above. This is the whole reason the self path folds in
+      # where the consumer path needed six steps.
+      #
+      # The `--demo` self-test runs FIRST and reports as its own row, so a broken
+      # CHECKER stays legible as a separate red from a real missing-key violation —
+      # the same separation the A1 and contrast detectors get.
+      - name: Translation checker self-test (--demo)
+        id: tk_self_demo
+        if: ${{ inputs.run_translation_keys_self }}
+        continue-on-error: true
+        run: python3 scripts/check_translations.py --demo
+
+      - name: Check translation keys (self)
+        id: tk_self_check
+        if: ${{ inputs.run_translation_keys_self }}
+        continue-on-error: true
+        run: |
+          python3 scripts/check_translations.py \
+            "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" \
+            --translations-dir assets/translations
+
       # One row per gate step above: label ~ outcome ~ the one-line reason a FAIL means.
       # `outcome` (not `conclusion`) is what continue-on-error preserves.
       - name: Verdict — per-gate summary
@@ -620,6 +724,9 @@ jobs:
             Rule 84 hardcoded service host~${{ steps.rule84_url.outcome }}~a mypurpus.com or bookmyorbit.com host is hardcoded in lib/ instead of client_core flavor_config.dart
             Rule 84 base-URL fallback~${{ steps.rule84_fallback.outcome }}~String.fromEnvironment(defaultValue:) is used as a base-URL fallback; a missing base URL must be a compile error
             Rule 84 cross-package screens~${{ steps.rule84_chat.outcome }}~this flavor holds chat screens owned by pkg_inapp_chat; navigate by route instead
+            Base URL hardcoded service host~${{ steps.base_url_host.outcome }}~a mypurpus.com or bookmyorbit.com host literal was found in lib/ outside lib/flavor_config.dart
+            Base URL switch exhaustiveness~${{ steps.base_url_default.outcome }}~a 'default:' clause in lib/flavor_config.dart defeats switch exhaustiveness, so a new AppFlavor silently falls back instead of failing to compile
+            Base URL fallback~${{ steps.base_url_fallback.outcome }}~String.fromEnvironment(defaultValue:) is used as a base-URL fallback; a missing base URL must be a compile error
             Exact-pin check~${{ steps.exact_pin.outcome }}~an exact sdk: or flutter: pin was found in pubspec.yaml environment:; use a range
             Rule A1 detector self-test~${{ steps.a1_selftest.outcome }}~the A1 detector failed its own fixtures, so the detector is broken and not the code under review
             Rule A1 sizing-axis scan~${{ steps.a1_scan.outcome }}~a sizing or layout value branches on platform instead of on window width
@@ -629,6 +736,8 @@ jobs:
             Translation source token present~${{ steps.tk_verify.outcome }}~no installation token was minted, so the translation source could not be checked out
             Translation source checkout~${{ steps.tk_checkout.outcome }}~pkg_orbit_client_core assets/translations could not be checked out, so translation keys were never compared
             Translation keys~${{ steps.tk_check.outcome }}~a translation key added or changed in this PR is missing from one or more locales in pkg_orbit_client_core assets/translations
+            Translation checker self-test~${{ steps.tk_self_demo.outcome }}~this repo's own scripts/check_translations.py failed its --demo assertions, so the checker is broken and not the locale files under review
+            Translation keys (self)~${{ steps.tk_self_check.outcome }}~a translation key added or changed in this PR is missing from one or more locales in this repo's OWN assets/translations
         run: |
           # errexit is ON before line 1 (/usr/bin/bash -e {0}) and `set -uo pipefail`
           # does NOT clear it — only `set +e` does. Without this line the first
