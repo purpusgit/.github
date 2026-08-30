@@ -128,6 +128,18 @@ on:
         required: false
         type: boolean
         default: false
+      run_secret_scan:
+        description: >-
+          Diff-scoped secret scan. DEFAULTS TRUE, unlike every other input in this
+          file, and deliberately so: org-level GitHub push protection / secret
+          scanning was switched off org-wide for cost, and the replacement control
+          has to apply everywhere by default rather than wait for 20-odd callers to
+          opt in one at a time. Every existing caller picks it up with no caller-side
+          edit. Set it false only to quarantine a repo that is mid-rotation, and say
+          why in the caller.
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -712,6 +724,156 @@ jobs:
             "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" \
             --translations-dir assets/translations
 
+      # ── Diff-scoped secret scan ───────────────────────────────────────
+      # Stands in for the org-level push-protection / secret-scanning product, which
+      # was switched off org-wide for cost. It is NOT equivalent to it and must not be
+      # described as such: push protection rejects at PUSH time and scans all history;
+      # this runs at PR REVIEW time over this PR's own diff only. The step says so in
+      # its own output on every run, pass or fail, so nobody reads a green here as
+      # "this repo has no committed secrets".
+      #
+      # A STEP, not a job. Actions bills per job rounded up to a whole minute, so a
+      # separate secret-scan job would cost a billed minute per PR event on every repo
+      # in the fleet; folded in here it costs seconds of an already-billed minute.
+      #
+      # DIFF-SCOPED, not history-scoped, and that is load-bearing rather than lazy.
+      # Repos in this org already carry known committed credentials predating the
+      # current rotation work. A full-tree scan would red every PR on those findings
+      # forever, and an always-red gate is un-requireable and gets switched off inside
+      # a week - which is how you end up with no control at all. Pre-existing findings
+      # are the founder-paced rotation queue's job, not this step's.
+      #
+      # The base-sha diff shape is service_mongo_admin's js-syntax-gate.yml secrets
+      # step, reused rather than re-derived: `github.event.pull_request.base.sha` via
+      # env, three-dot against HEAD. Three-dot matches the colours and barrel
+      # predicates above; on a pull_request checkout HEAD is the merge commit, so
+      # base.sha is already the merge base and two-dot happens to agree - three-dot
+      # keeps agreeing if that ever stops being true.
+      #
+      # FAILS CLOSED. Every path where the diff cannot be computed - empty base sha,
+      # unresolvable ref, git itself erroring - exits non-zero with a message saying
+      # it is a SCANNER failure and not a clean tree. "The scanner broke so nothing
+      # was found" must never publish as green; that is the vacuous-pass shape the
+      # colours and barrel guards above exist to kill, and it does not get to come
+      # back in through this step.
+      - name: Secret scan - no new secret-shaped string added by this PR
+        id: secret_scan
+        if: ${{ inputs.run_secret_scan }}
+        continue-on-error: true
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          # UNCONDITIONAL and FIRST, so it is in the log on the pass path, the
+          # violation path and the scanner-broke path alike.
+          echo "This check runs at PR review time, not push time. Anything already on a branch is already in git history and still needs rotating through the founder-paced rotation queue - this step only stops NEW secrets from being added going forward."
+          echo ""
+
+          python3 <<'PYEOF'
+          import os
+          import re
+          import subprocess
+          import sys
+
+          # A list, not one unreadable regex: adding a vendor shape is a new row, and
+          # the label is what the reviewer reads in the annotation. This is a
+          # lightweight shape guard, NOT an entropy scanner - it will not catch a
+          # bare high-entropy blob assigned to a variable named `x`, and it is not
+          # meant to. Do not grow it into one; reach for a real scanner if that is
+          # ever the requirement.
+          PATTERNS = [
+              ("private key header",
+               r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----"),
+              ("AWS access key id",
+               r"\bAKIA[0-9A-Z]{16}\b"),
+              ("Stripe secret key",
+               r"\bsk_(?:live|test)_[A-Za-z0-9]{16,}"),
+              ("GitHub token",
+               r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}"),
+              ("GitHub fine-grained PAT",
+               r"\bgithub_pat_[A-Za-z0-9_]{20,}"),
+              ("Slack token",
+               r"\bxox[baprs]-[A-Za-z0-9-]{10,}"),
+              ("JWT",
+               r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
+              ("hardcoded credential assignment",
+               r"(?i)(?:api[_-]?key|secret|token|password)\s*[:=]\s*"
+               r"[\"'][A-Za-z0-9+/_-]{20,}[\"']"),
+          ]
+
+          # Same-line escape hatch, same idea as the colours gate's `intentional:`
+          # stamp. Without one, the first false positive on the generic assignment
+          # pattern means an emergency PR to this org-wide file while somebody is
+          # trying to ship - which is exactly when a gate gets disabled instead.
+          ALLOW = "notasecret"
+
+          def git(*args):
+              """Run git or die. A non-zero git here means the diff is NOT computable,
+              which is a scanner failure and must never be reported as a clean tree."""
+              p = subprocess.run(("git",) + args, capture_output=True, text=True)
+              if p.returncode != 0:
+                  print("::error::Secret scan could not run 'git " + " ".join(args) +
+                        "' (exit " + str(p.returncode) + "). The diff is not computable, "
+                        "so this gate refuses to pass. This is a SCANNER failure, not a "
+                        "clean tree - do not merge on the strength of it.")
+                  sys.stderr.write(p.stderr)
+                  sys.exit(1)
+              return p.stdout
+
+          base = os.environ.get("BASE_SHA", "").strip()
+          if not base:
+              print("::error::Secret scan could not resolve the PR base sha "
+                    "(github.event.pull_request.base.sha is empty - this workflow is "
+                    "pull_request-only by design). The diff is not computable, so this "
+                    "gate refuses to pass. This is a SCANNER failure, not a clean tree.")
+              sys.exit(1)
+
+          # Resolve before diffing, so an unresolvable base reds here with a base-ref
+          # message rather than further down with a confusing one.
+          git("rev-parse", "--verify", "--quiet", base + "^{commit}")
+
+          # Added/modified/copied/renamed only; -U0 so the only '+' lines are real
+          # additions and no unchanged context line can trip a pattern.
+          diff = git("diff", "--diff-filter=ACMR", "-U0", base + "...HEAD")
+
+          hits = []
+          path = "(unknown)"
+          for line in diff.splitlines():
+              if line.startswith("+++ "):
+                  path = line[4:]
+                  if path.startswith("b/"):
+                      path = path[2:]
+                  continue
+              if not line.startswith("+") or line.startswith("+++"):
+                  continue
+              text = line[1:]
+              if ALLOW in text:
+                  continue
+              for label, rx in PATTERNS:
+                  if re.search(rx, text):
+                      hits.append((path, label))
+                      break
+
+          print("Diff scoped to " + base[:12] + "...HEAD, added lines only.")
+
+          if hits:
+              # The matched text is NEVER echoed. Printing it would copy the
+              # credential into a log that is readable by anyone who can read the
+              # run, which is a second disclosure on top of the commit.
+              for path, label in hits:
+                  print("::error file=" + path + "::Secret scan - a line added by this "
+                        "PR matches the shape of a " + label + ". Remove it and rotate "
+                        "the credential; secrets belong in GitHub Actions secrets or "
+                        "the deploy env file, never in the tree. False positive? Put "
+                        "'notasecret' on the same line with a reason.")
+              print("")
+              print(str(len(hits)) + " secret-shaped line(s) added by this PR.")
+              sys.exit(1)
+
+          print("Secret scan passed: this PR adds no secret-shaped line.")
+          PYEOF
+
       # One row per gate step above: label ~ outcome ~ the one-line reason a FAIL means.
       # `outcome` (not `conclusion`) is what continue-on-error preserves.
       - name: Verdict — per-gate summary
@@ -737,6 +899,7 @@ jobs:
             Translation source checkout~${{ steps.tk_checkout.outcome }}~pkg_orbit_client_core assets/translations could not be checked out, so translation keys were never compared
             Translation keys~${{ steps.tk_check.outcome }}~a translation key added or changed in this PR is missing from one or more locales in pkg_orbit_client_core assets/translations
             Translation checker self-test~${{ steps.tk_self_demo.outcome }}~this repo's own scripts/check_translations.py failed its --demo assertions, so the checker is broken and not the locale files under review
+            Secret scan (diff-scoped)~${{ steps.secret_scan.outcome }}~a line added by this PR matches a credential shape (private-key header, AKIA, sk_live/sk_test, ghp_/github_pat_, xox*, JWT, or a quoted api_key/secret/token/password assignment) - OR the scanner could not compute the PR diff and refused to pass on an uncomputable diff
             Translation keys (self)~${{ steps.tk_self_check.outcome }}~a translation key added or changed in this PR is missing from one or more locales in this repo's OWN assets/translations
         run: |
           # errexit is ON before line 1 (/usr/bin/bash -e {0}) and `set -uo pipefail`
