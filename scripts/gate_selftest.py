@@ -178,7 +178,7 @@ BEHAVIOUR = {
             "Rule 84 — a flavor must not own another package's screens":
                 ("reusable-rule84-flavor-fork-gate.yml", "A flavor must not own another package's screens"),
         },
-        "unmirrored": "exact-pin / A1 / contrast steps: source of record is the consumer repo, not this one. base-URL and self-mode-translation steps: this file is the ONLY copy, so there is no second copy to assert equality against",
+        "unmirrored": "exact-pin / A1 / contrast steps: source of record is the consumer repo, not this one. base-URL and self-mode-translation steps: this file is the ONLY copy, so there is no second copy to assert equality against. secret_scan: likewise the only copy, and it is additionally NOT fixture-covered here -- its predicate needs BASE_SHA forwarded as env plus a two-branch git fixture, neither of which this harness does yet (same gap as reusable-sql-execution-gate.yml's input validation). It was red-proofed live instead, both ways, on pkg_orbit_nearyest at introduction: that is a one-time proof, not a standing one. Do not read the silence here as coverage.",
         "redproof": ("Dart escaped string interpolation check", "dart")},
     # `step`, not `dir`: the dir branch does not forward `expect`, and without one a
     # Python traceback exiting 1 scores as "violation caught". The predicate is pure
