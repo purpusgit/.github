@@ -82,7 +82,8 @@ FIXTURES = os.path.join(ROOT, "scripts", "gate-fixtures")
 #   'dead'   -> 0 callers org-wide: no behavioural test, needs an existence decision
 #   None     -> external: syntax-check only, with `reason`
 BEHAVIOUR = {
-    "reusable-dart-safety-gate.yml":            {"kind": "dir", "key": "dart"},
+    "reusable-dart-safety-gate.yml":            {"kind": "dir", "key": "dart",
+        "expect": "ERROR: Dart interpolation safety gate FAILED"},
     # `step`, not `dir`, since the code_root input landed. The `dir` branch runs the
     # predicate with only sub_gha applied, and sub_gha rewrites EVERY `${{ }}` to the
     # sentinel 'cwb' -- so `code_root` would resolve to a directory no fixture has,
@@ -105,7 +106,8 @@ BEHAVIOUR = {
         ]},
     "reusable-sql-typestring-safety-gate.yml":  {"kind": "diff", "fpath": "src/x.sql.ts",
         "base": "export const q = `SELECT id FROM taxo.master WHERE is_deleted = 0`;\n",
-        "pass": "  AND type = 'org_department'", "fail": "  AND type = 'Org_Department'"},
+        "pass": "  AND type = 'org_department'", "fail": "  AND type = 'Org_Department'",
+        "expect": "PascalCase taxo.master type string"},
     "reusable-colors-safety-gate.yml":          {"kind": "colors"},
     "reusable-barrel-safety-gate.yml":          {"kind": "barrel"},
     # `also`: this gate has THREE self-contained predicates, not one. Each gets its
@@ -178,8 +180,7 @@ BEHAVIOUR = {
             "Rule 84 — a flavor must not own another package's screens":
                 ("reusable-rule84-flavor-fork-gate.yml", "A flavor must not own another package's screens"),
         },
-        "unmirrored": "exact-pin / A1 / contrast steps: source of record is the consumer repo, not this one. base-URL and self-mode-translation steps: this file is the ONLY copy, so there is no second copy to assert equality against. secret_scan: likewise the only copy, and it is additionally NOT fixture-covered here -- its predicate needs BASE_SHA forwarded as env plus a two-branch git fixture, neither of which this harness does yet (same gap as reusable-sql-execution-gate.yml's input validation). It was red-proofed live instead, both ways, on pkg_orbit_nearyest at introduction: that is a one-time proof, not a standing one. Do not read the silence here as coverage.",
-        "redproof": ("Dart escaped string interpolation check", "dart")},
+        "unmirrored": "exact-pin / A1 / contrast steps: source of record is the consumer repo, not this one. base-URL and self-mode-translation steps: this file is the ONLY copy, so there is no second copy to assert equality against. secret_scan is ALSO the only copy and therefore has no equality assertion either -- but it IS now fixture-covered behaviourally, below, in four assertions including that the matched text is never echoed. Do not re-add it to this list."},
     # `step`, not `dir`: the dir branch does not forward `expect`, and without one a
     # Python traceback exiting 1 scores as "violation caught". The predicate is pure
     # Python over a directory — no secrets, no network, no DB — so it earns a real
@@ -222,7 +223,23 @@ BEHAVIOUR = {
     # Until then the input validation is red-proofed only by the PR that introduced it
     # (payload refused / clean input passed on a live consumer run), which is a one-time
     # proof, not a standing one. Do not read this entry as "nothing here is testable".
-    "reusable-sql-execution-gate.yml": {"kind": None, "reason": "the schema-load/seed/harness steps delegate to a per-repo harness run against a live MySQL service container; their exit codes cannot be asserted here without a DB and the consumer repo's harness. The 'Validate gate inputs' step IS self-contained and behaviourally testable, but needs per-fixture `env:` forwarding this harness does not have yet -- see the note above. bash -n + actionlint still cover every run: script."},
+    "reusable-sql-execution-gate.yml": {"kind": "step",
+        # The schema-load / seed / harness steps still cannot run here: they need a
+        # live MySQL service and the consumer repo's own harness. "Validate gate
+        # inputs" always could — it is pure bash over the checked-out tree — and was
+        # uncovered ONLY because this harness did not forward `env:`. It does now,
+        # so that reason no longer applies to this step.
+        "step": "Validate gate inputs",
+        "key": "sql-exec-inputs",
+        "env": {"DB_NAME": "orbit_japa", "HARNESS": "ci/x/run.sh",
+                "SCHEMA_FILES": "db/schema.sql", "SEED_FILES": ""},
+        # The two fixture trees are BYTE-IDENTICAL. The fail case differs only by
+        # environment, so what is being asserted is unambiguously the input check
+        # and not a missing file. ';' falls outside the step's allowlist.
+        "env_fail": {"HARNESS": "ci/x/run.sh;id"},
+        "expect": "REFUSED an input",
+        "note": "the schema-load / seed / Run-harness steps still need a live MySQL"
+                " service and the consumer repo's own harness, and stay syntax-only."},
     # STALE AS OF 2026-08-26 and corrected here: it is no longer 0 callers.
     # service_orbit_orgs/.github/workflows/taxo-contract-lint.yml calls this gate,
     # publishing `taxo-contract-lint / taxo-lint / G4 wrong-concept / wrong-level check`.
@@ -330,13 +347,20 @@ def pycompile_heredocs(script, label):
         finally:
             os.unlink(tmp)
 
-def run_predicate(script, workdir):
-    """Run the (gha-substituted) predicate in workdir, return exit code."""
+def run_predicate(script, workdir, env=None):
+    """Run the (gha-substituted) predicate in workdir, return exit code.
+
+    `env` is the fixture's environment. sub_gha rewrites every `${{ }}` to a
+    sentinel, so a step that reads its inputs through `env:` sees nothing unless
+    the harness forwards them — which is the single structural reason secret_scan
+    and the sql-execution input validation were uncoverable here."""
     r = subprocess.run(["bash", "-c", sub_gha(script)], cwd=workdir,
-                       text=True, capture_output=True)
+                       text=True, capture_output=True,
+                       env={**os.environ, **env} if env else None)
     return r.returncode, r.stdout + r.stderr
 
-def behavioural_dir(script, key, label, prep=None, expect=None):
+def behavioural_dir(script, key, label, prep=None, expect=None,
+                    env=None, env_fail=None):
     src = os.path.join(FIXTURES, key)
     for case, want_zero in (("pass", True), ("fail", False)):
         with tempfile.TemporaryDirectory() as tmp:
@@ -350,7 +374,13 @@ def behavioural_dir(script, key, label, prep=None, expect=None):
                          f"(exit {p.returncode}) — cannot assert on the predicate\n"
                          f"{p.stdout}{p.stderr}")
                     continue
-            code, out = run_predicate(script, work)
+            # A fail case may differ from its pass case ONLY by environment —
+            # that is the whole demonstration for the input-validation fixture,
+            # whose two trees are byte-identical.
+            case_env = dict(env or {})
+            if not want_zero:
+                case_env.update(env_fail or {})
+            code, out = run_predicate(script, work, env=case_env or None)
             if want_zero and code != 0:
                 fail(f"{label}: PASS fixture unexpectedly RED (exit {code})\n{out}")
             elif not want_zero and code == 0:
@@ -460,7 +490,8 @@ def behavioural_diff(script, spec, label):
     for case, want_zero in (("pass", True), ("fail", False)):
         with tempfile.TemporaryDirectory() as tmp:
             build_diff_repo(tmp, spec["fpath"], spec["base"], spec[case])
-            _assert_diff(script, label, case, want_zero, tmp)
+            _assert_diff(script, label, case, want_zero, tmp,
+                         expect=None if want_zero else spec.get("expect"))
 
 def behavioural_barrel(runs, label):
     """Barrel removal detection, plus the two cases R1 separates.
@@ -560,22 +591,79 @@ def behavioural_consolidated(named, beh, label):
             ok(f"{label}: {step_name!r} is byte-identical to {src_file}[{src_step!r}]")
     if beh.get("unmirrored"):
         print(f"  ⤳ PARTIAL: no equality assertion possible for — {beh['unmirrored']}")
-    rp_step, rp_key = beh["redproof"]
+    rp_step, rp_key, rp_expect = beh["redproof"]
     script = named.get(rp_step)
     if script is None:
         fail(f"{label}: red-proof step {rp_step!r} no longer exists — this entry would "
              "be green on a gate proven to catch nothing.")
     else:
-        behavioural_dir(script, rp_key, label + "[red-proof]")
+        behavioural_dir(script, rp_key, label + "[red-proof]", expect=rp_expect)
+
+    # The secret scan defaults TRUE, so it is live on every consumer of this gate,
+    # and it is fail-closed. Until env forwarding existed it could not be covered
+    # here at all. It must never go back to being silently uncovered.
+    ss = named.get(beh["secretscan_step"])
+    if ss is None:
+        fail(f"{label}: secret-scan step {beh['secretscan_step']!r} no longer exists — "
+             "a fail-closed step live on every consumer would go uncovered silently.")
+    else:
+        behavioural_secretscan(ss, label + "[secret-scan]")
+
+
+def behavioural_secretscan(script, label):
+    """Three runs, four assertions.
+
+    BASE_SHA is a commit sha that exists only once the fixture repo is built, so
+    this cannot be a `dir` fixture — the value is not knowable before the run.
+    """
+    # AWS's own published example key: matches the AKIA pattern, is not a credential.
+    AKIA = "AKIA" + "IOSFODNN7EXAMPLE"
+    CLEAN = 'const greeting = "hello";'
+    for case, line, sha, want_zero, expect in (
+        ("pass",                 CLEAN,                  None, True,
+         "Secret scan passed: this PR adds no secret-shaped line."),
+        ("fail",                 f'const k = "{AKIA}";', None, False,
+         "secret-shaped line(s) added by this PR"),
+        # A scanner that cannot compute its diff must RED, never report a clean tree.
+        ("fail[base-sha-empty]", CLEAN,                  "",   False,
+         "could not resolve the PR base sha"),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            build_diff_repo(tmp, "lib/x.dart", "class X {}\n", line)
+            base = subprocess.run(["git", "rev-parse", "cwb"], cwd=tmp,
+                                  text=True, capture_output=True).stdout.strip()
+            code, out = run_predicate(
+                script, tmp, env={"BASE_SHA": base if sha is None else sha})
+            if want_zero and code != 0:
+                fail(f"{label}: {case} unexpectedly RED (exit {code})\n{out}")
+            elif not want_zero and code == 0:
+                fail(f"{label}: {case} NOT caught (exit 0) — the gate is asleep\n{out}")
+            elif expect not in out:
+                fail(f"{label}: {case} exited {code} but did not report {expect!r} — "
+                     f"red for the WRONG reason\n{out}")
+            else:
+                ok(f"{label}: {case} behaves (reports {expect!r})")
+            # The step's own comment promises the matched text is NEVER echoed:
+            # printing it would be a second disclosure on top of the commit. Nothing
+            # asserted that, and a helpful refactor would pass every check above.
+            if case == "fail":
+                if AKIA in out:
+                    fail(f"{label}: fail[secret-not-echoed] — the matched secret WAS "
+                         "echoed into the run log.")
+                else:
+                    ok(f"{label}: fail[secret-not-echoed] — matched text absent from output")
 
 def behavioural_rule84(runs, label):
     """Test all 3 rule84 steps against their respective fixtures."""
     if len(runs) < 3:
         fail(f"{label}: expected 3 run: steps, got {len(runs)}")
         return
-    behavioural_dir(runs[0], "rule84-url",      label + "[url]")
-    behavioural_dir(runs[1], "rule84-fallback",  label + "[fallback]")
-    behavioural_dir(runs[2], "rule84-chat",      label + "[chat]")
+    behavioural_dir(runs[0], "rule84-url",      label + "[url]",
+                    expect="Hardcoded service host in a flavor")
+    behavioural_dir(runs[1], "rule84-fallback",  label + "[fallback]",
+                    expect="used as a base-URL fallback")
+    behavioural_dir(runs[2], "rule84-chat",      label + "[chat]",
+                    expect="holds chat screens owned by pkg_inapp_chat")
 
 def canary(dart_script):
     """Negative test of the test: weaken the dart predicate (strip its `exit 1`)
@@ -868,7 +956,7 @@ def main():
         elif beh["kind"] is None:
             print(f"  ⤳ SKIP-BEHAVIOURAL: {beh['reason']}")
         elif beh["kind"] == "dir":
-            behavioural_dir(runs[-1], beh["key"], fn)
+            behavioural_dir(runs[-1], beh["key"], fn, expect=beh.get("expect"))
             if beh.get("key") == "dart":
                 dart_script = runs[-1]
         elif beh["kind"] == "step":
@@ -882,7 +970,8 @@ def main():
                 prep = beh.get("prep")
                 behavioural_dir(script, beh["key"], fn,
                                 prep=prep and prep.replace("{ROOT}", ROOT),
-                                expect=beh.get("expect"))
+                                expect=beh.get("expect"),
+                                env=beh.get("env"), env_fail=beh.get("env_fail"))
                 if beh["key"] == "flutter-analyze":
                     analyze_script = script
                 if beh["key"] == "sql-semicolon":
@@ -901,7 +990,8 @@ def main():
                     continue
                 behavioural_dir(sub_inputs(xscript, fixture_inputs(doc, extra)),
                                 extra["key"], f"{fn}[{extra['step']}]",
-                                expect=extra["expect"])
+                                expect=extra["expect"],
+                                env=extra.get("env"), env_fail=extra.get("env_fail"))
             if beh.get("note"):
                 print(f"  ⤳ PARTIAL: {beh['note']}")
         elif beh["kind"] == "colors":
