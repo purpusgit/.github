@@ -377,12 +377,29 @@ def run_predicate(script, workdir, env=None):
     return r.returncode, r.stdout + r.stderr
 
 def behavioural_dir(script, key, label, prep=None, expect=None,
-                    env=None, env_fail=None):
+                    env=None, env_fail=None, resolve=None):
+    """`resolve`, when given, is called with the prepared fixture directory and
+    returns {"<expression>": "<value>"} for `${{ <expression> }}` occurrences the
+    plain input substitution cannot reach — a step OUTPUT, for instance, whose
+    value only exists once an earlier step has run. Without it sub_gha rewrites
+    those to a sentinel and the predicate is invoked with arguments no fixture
+    ever meant it to have."""
     src = os.path.join(FIXTURES, key)
     for case, want_zero in (("pass", True), ("fail", False)):
         with tempfile.TemporaryDirectory() as tmp:
             work = os.path.join(tmp, "repo")
             shutil.copytree(os.path.join(src, case), work)
+            case_script = script
+            if resolve:
+                resolved = resolve(work, case)
+                if resolved is None:
+                    fail(f"{label}: could not resolve the {case} fixture's "
+                         "configuration — cannot assert on the predicate")
+                    continue
+                for expr, value in resolved.items():
+                    case_script = re.sub(
+                        r"\$\{\{\s*" + re.escape(expr) + r"\s*\}\}",
+                        value.replace("\\", "\\\\"), case_script)
             if prep:
                 p = subprocess.run(["bash", "-c", prep], cwd=work,
                                    text=True, capture_output=True)
@@ -397,7 +414,7 @@ def behavioural_dir(script, key, label, prep=None, expect=None,
             case_env = dict(env or {})
             if not want_zero:
                 case_env.update(env_fail or {})
-            code, out = run_predicate(script, work, env=case_env or None)
+            code, out = run_predicate(case_script, work, env=case_env or None)
             if want_zero and code != 0:
                 fail(f"{label}: PASS fixture unexpectedly RED (exit {code})\n{out}")
             elif not want_zero and code == 0:
@@ -923,6 +940,41 @@ def actionlint_gate():
 # actually for. That is the shape this harness exists to break.
 AUTH_COVERAGE_DIR = os.path.join(ROOT, ".github", "actions", "auth-coverage")
 
+# Both looked up BY NAME, so a rename in action.yml fails loudly here rather than
+# silently degrading into a sentinel.
+CONFIG_STEP_NAME = "Resolve the scan configuration from the BASE branch"
+
+# The route planted in scripts/gate-fixtures/auth-coverage/fail. Asserting on this
+# rather than on the gate's banner is what stops the FAIL case being satisfied by
+# any other kind of refusal.
+PLANTED_ROUTE = "src/api/index.ts:PATCH /organizations/org-dimension"
+
+
+def canary_auth_coverage(script, resolve):
+    """Fourth canary. Weakens the auth-coverage predicate and confirms the FAIL
+    fixture stops being caught — proving the behavioural assertion above depends on
+    the predicate rather than on anything incidental. There was no canary on this
+    gate, and it is the one every route closure in the estate is measured against."""
+    weak = script.rstrip() + " || true\n"
+    with tempfile.TemporaryDirectory() as tmp:
+        work = os.path.join(tmp, "repo")
+        shutil.copytree(os.path.join(FIXTURES, "auth-coverage", "fail"), work)
+        resolved = resolve(work, "fail")
+        if resolved is None:
+            fail("canary[auth-coverage]: could not resolve the fixture's "
+                 "configuration — canary is inert")
+            return
+        for expr, value in resolved.items():
+            weak = re.sub(r"\$\{\{\s*" + re.escape(expr) + r"\s*\}\}", value, weak)
+        code, _ = run_predicate(weak, work)
+    if code == 0:
+        ok("canary[auth-coverage]: weakened predicate goes green on the FAIL "
+           "fixture — the behavioural assertion genuinely exercises it")
+    else:
+        fail(f"canary[auth-coverage]: weakened predicate still exited {code}; the "
+             "FAIL fixture does not actually depend on the predicate")
+
+
 def auth_coverage_gate():
     print("── .github/actions/auth-coverage (composite action; required on 4 repos)")
     action = os.path.join(AUTH_COVERAGE_DIR, "action.yml")
@@ -941,13 +993,62 @@ def auth_coverage_gate():
         return
     if bash_n(script, "auth-coverage"):
         ok("auth-coverage: bash -n clean")
-    # $GITHUB_ACTION_PATH is injected by the runner, not by us. Pointing it at the
-    # real action directory is what makes this run the checker that actually ships
-    # instead of a copy that can drift.
+
+    # The scan roots and the allowlist path are no longer action INPUTS. They are
+    # OUTPUTS of an earlier step, which reads them from the pull request's BASE
+    # branch so the branch under review cannot choose what gets scanned. sub_inputs
+    # cannot see a step output and sub_gha rewrites it to a sentinel, so the fixture
+    # would invoke the predicate with a directory that does not exist — and the
+    # predicate would refuse, correctly, having been asked the wrong question.
+    #
+    # So the harness runs the resolving step instead of guessing what it produces.
+    # That is strictly more coverage than the input substitution it replaces: the
+    # step's own shell, its JSON parsing and validation, and the wiring between the
+    # two steps are all now exercised, and the fixtures carry the same
+    # .github/auth-coverage.json a real repository must commit to its base branch.
+    config_step = named.get(CONFIG_STEP_NAME)
+    if config_step is None:
+        fail(f"auth-coverage: step {CONFIG_STEP_NAME!r} no longer exists in "
+             "action.yml — the action changed shape. Repoint this BY NAME; do not "
+             "let the fixture fall back to a sentinel, which is how both fixtures "
+             "silently started asserting nothing about routes.")
+        return
+
     script = sub_inputs(script, input_defaults(doc)).replace(
         "$GITHUB_ACTION_PATH", AUTH_COVERAGE_DIR)
+
+    def resolve_config(work, _case):
+        """Run the action's own configuration step in the fixture and read its
+        outputs. GITHUB_BASE_REF is deliberately unset: that is the step's
+        not-a-pull-request path, which reads the checked-out file, so the fixture
+        needs no git remote. The base-versus-head distinction is what the step is
+        FOR and cannot be exercised offline — it is asserted in the action's own
+        self-test, which runs as its own step of the same job."""
+        outfile = os.path.join(work, "_gha_output")
+        open(outfile, "w").close()
+        env = {k: v for k, v in os.environ.items() if k != "GITHUB_BASE_REF"}
+        env.update({"GITHUB_OUTPUT": outfile, "RUNNER_TEMP": work})
+        r = subprocess.run(["bash", "-c", sub_gha(config_step)], cwd=work,
+                           text=True, capture_output=True, env=env)
+        if r.returncode != 0:
+            print(f"    (config step exited {r.returncode})\n{r.stdout}{r.stderr}")
+            return None
+        out = {}
+        for line in open(outfile):
+            if "=" in line:
+                k, v = line.rstrip("\n").split("=", 1)
+                out[f"steps.config.outputs.{k}"] = v
+        return out if {"steps.config.outputs.roots",
+                       "steps.config.outputs.allowlist"} <= set(out) else None
+
+    # The assertion names the planted route, NOT the generic banner. The banner is
+    # emitted by every refusal this predicate has — including the empty-root one —
+    # so asserting on it cannot tell "caught the ungated route" from "could not
+    # find the directory". If the fixture's route is ever renamed, this must be
+    # renamed with it, and failing loudly is the correct outcome.
     behavioural_dir(script, "auth-coverage", "auth-coverage",
-                    expect="M34 auth-coverage gate FAILED")
+                    expect=PLANTED_ROUTE, resolve=resolve_config)
+    canary_auth_coverage(script, resolve_config)
     print()
 
 
