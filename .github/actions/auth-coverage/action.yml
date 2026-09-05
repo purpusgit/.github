@@ -14,34 +14,163 @@ description: >-
 # job, so the reported name is whatever the caller's job is called and nothing
 # moves underneath protection.
 #
-# ── What this action does and does not own ──────────────────────────────────
-# The predicate below is Session B's, copied verbatim from the converged copy
-# (blob e5bac9ab46, after the win32 path-separator fix landed on both branches).
-# This action packages it. It does not change its logic, and adopting it does NOT
-# fix the open defects in it — those land in the predicate, wherever it lives.
+# ⛔ DO NOT convert this to a reusable workflow. Nine services have branch
+# protection requiring the bare context `auth-coverage`, with admin enforcement
+# on. Every one of them would sit blocked on a context nothing reports, which is
+# absence rather than failure and cannot be cleared by re-running.
+#
+# ── WHAT COMES FROM WHERE, AND WHY IT IS THE WHOLE POINT ────────────────────
+# On a `pull_request` event, every file in the checkout — including the caller's
+# own workflow — comes from the PULL REQUEST'S BRANCH. So anything this gate
+# takes from the caller is chosen by the diff it is judging.
+#
+# That was not a theoretical hole. The predicate used to read its accepted-token
+# list from `process.env.AUTH_TOKENS`. Two lines of `env:` in the workflow file,
+# in the same pull request, appended a new handler's name to the list and turned
+# an ungated route green — with every other route still matching, so nothing else
+# looked different. The self-test did not catch it: it runs as another step of the
+# same job, inherits the same environment, and all of its cases still pass because
+# the default names are all still present.
+#
+#   FROM THIS REPOSITORY (the branch under review cannot reach it):
+#     · the predicate script          check-route-auth-coverage.js
+#     · the accepted-token list       a constant inside that script
+#     · the self-test                 run as a step below, before the gate
+#
+#   FROM THE BASE BRANCH of the pull request (not the head):
+#     · which directories to scan     .github/auth-coverage.json  →  roots
+#     · where the allowlist lives     .github/auth-coverage.json  →  allowlist
+#
+#   FROM THE HEAD BRANCH, deliberately:
+#     · the source being scanned      — that IS the change under review
+#     · the CONTENTS of auth-exceptions.json
+#
+# The last one is not an oversight. Adding an allowlist entry is the sanctioned
+# way to declare a route public, and it appears in the diff as an added entry with
+# a written reason for a reviewer to accept or reject. That is a change that
+# announces itself. Redefining what "authenticated" means, or narrowing what gets
+# scanned, changes the MEANING of a green tick without changing any claim about a
+# route — which is why those two moved to the base branch.
+#
+# ── WHAT THIS STILL DOES NOT CLOSE ─────────────────────────────────────────
+# The head branch owns its own workflow file, so it still owns the `uses:`
+# reference, the job's name, and the steps in that job. A branch can point at an
+# older commit of this action, or replace the job body with something that exits
+# zero under the same job name, and the required context reports green either way.
+# Pinning callers by commit does NOT fix this: pinning defends against this
+# repository moving under a tag, not against branch authorship.
+#
+# The half that closes it is organisational, not technical, and is not in this
+# file: a CODEOWNERS entry over each service's .github/workflows/ requiring review
+# from someone other than the author, and/or an organisation ruleset requiring the
+# gate be evaluated from a pinned organisation reference. No repository in this
+# estate currently has a CODEOWNERS file.
 
-inputs:
-  roots:
-    description: >-
-      Space-separated directories to scan. Repos with more than one API surface
-      pass more than one — service_orbit_orgs has src/api (442 registrations)
-      and src/api-admin (176), and scanning only the first reports green over
-      the admin surface.
-    required: false
-    default: src/api
-  allowlist:
-    description: Path to the repo's auth-exceptions.json. Stays per-repo — it is data, not logic.
-    required: false
-    default: auth-exceptions.json
+inputs: {}
+# ⛔ `roots` and `allowlist` USED to be inputs here and have been REMOVED, because
+# an input is supplied by the caller's workflow, which on a pull request is the
+# pull request's own file. They now come from the base branch. The config path
+# itself is fixed and deliberately NOT an input — an input would just move the
+# same problem one level out.
 
 runs:
   using: composite
   steps:
+    - name: Resolve the scan configuration from the BASE branch
+      id: config
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        CONFIG=".github/auth-coverage.json"
+
+        # A caller that still passes the removed inputs must fail loudly rather
+        # than have them silently ignored — otherwise someone repoints a service,
+        # leaves `with: roots: src/api src/api-admin` in place, sees green, and
+        # believes a second surface is being scanned when it may not be.
+        if [ -n "${INPUT_ROOTS:-}" ] || [ -n "${INPUT_ALLOWLIST:-}" ]; then
+          echo "::error::This action no longer accepts 'roots' or 'allowlist' inputs."
+          echo "They were removed because a caller's workflow comes from the pull"
+          echo "request's own branch. Delete the 'with:' block and commit ${CONFIG}"
+          echo "to the BASE branch instead. See the header of action.yml."
+          exit 1
+        fi
+
+        if [ -n "${GITHUB_BASE_REF:-}" ]; then
+          # Pull request: read the config from the base branch, never the head.
+          git fetch --depth=1 origin "+refs/heads/${GITHUB_BASE_REF}:refs/remotes/origin/${GITHUB_BASE_REF}"
+          SOURCE="origin/${GITHUB_BASE_REF}"
+          if ! RAW="$(git show "${SOURCE}:${CONFIG}" 2>/dev/null)"; then
+            echo "::error::${CONFIG} is missing on the base branch (${GITHUB_BASE_REF})."
+            echo ""
+            echo "This action reads the scan roots from the BASE branch so that the"
+            echo "branch under review cannot change what gets scanned. Commit this"
+            echo "to ${GITHUB_BASE_REF} before repointing this service:"
+            echo ""
+            echo '  { "roots": ["src/api"], "allowlist": "auth-exceptions.json" }'
+            echo ""
+            echo "A service with more than one API surface lists all of them —"
+            echo "service_orbit_orgs has src/api AND src/api-admin, and scanning"
+            echo "only the first reports green over the admin surface."
+            echo ""
+            echo "There is deliberately NO default. Defaulting to src/api here would"
+            echo "silently halve the coverage of any repo with a second surface, and"
+            echo "the failure would look exactly like success."
+            exit 1
+          fi
+        else
+          # Not a pull request (push, workflow_dispatch, schedule). There is no
+          # head-versus-base distinction to defend, so the checked-out file is the
+          # only one there is. Stated rather than silent: this path is weaker by
+          # nature, and the pull_request path is the one protection relies on.
+          SOURCE="the working tree (not a pull_request event)"
+          if ! RAW="$(cat "${CONFIG}" 2>/dev/null)"; then
+            echo "::error::${CONFIG} not found in the checkout."
+            exit 1
+          fi
+        fi
+
+        printf '%s' "$RAW" > "${RUNNER_TEMP}/auth-coverage.json"
+
+        # Parsed with node rather than jq: node is already required by the step
+        # below, jq is one more thing to depend on being present.
+        node -e '
+          const fs = require("fs");
+          let cfg;
+          try { cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); }
+          catch (e) { console.error("::error::auth-coverage.json is not valid JSON: " + e.message); process.exit(1); }
+          const roots = cfg.roots;
+          if (!Array.isArray(roots) || roots.length === 0 || !roots.every(r => typeof r === "string" && r.trim())) {
+            console.error("::error::auth-coverage.json must set \"roots\" to a non-empty array of strings.");
+            process.exit(1);
+          }
+          const allowlist = cfg.allowlist === undefined ? "auth-exceptions.json" : cfg.allowlist;
+          if (typeof allowlist !== "string" || !allowlist.trim()) {
+            console.error("::error::\"allowlist\", when present, must be a non-empty string.");
+            process.exit(1);
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, "roots=" + roots.join(" ") + "\n");
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, "allowlist=" + allowlist + "\n");
+        ' "${RUNNER_TEMP}/auth-coverage.json"
+
+        echo "scan configuration read from: ${SOURCE}"
+        cat "${RUNNER_TEMP}/auth-coverage.json"
+
+    # The self-test runs BEFORE the gate, as its own step, and lives in this
+    # repository rather than the service's. It proves the predicate can still
+    # fail — on an empty scan root, on an optional-authentication helper, on an
+    # allowlist entry sitting over a route that is already gated, on a
+    # commented-out registration, and on an environment variable trying to widen
+    # the accepted-token list. A gate nobody has watched fail is
+    # indistinguishable from a gate that cannot.
+    - name: Predicate self-test (proves the gate can still fail)
+      shell: bash
+      run: node "$GITHUB_ACTION_PATH/check-route-auth-coverage.selftest.js"
+
     - name: Auth coverage
       shell: bash
       run: |
         set -euo pipefail
-        for root in ${{ inputs.roots }}; do
-          echo "── scanning $root ──"
-          node "$GITHUB_ACTION_PATH/check-route-auth-coverage.js" "$root" "${{ inputs.allowlist }}"
-        done
+        node "$GITHUB_ACTION_PATH/check-route-auth-coverage.js" \
+          "${{ steps.config.outputs.roots }}" \
+          "${{ steps.config.outputs.allowlist }}"
