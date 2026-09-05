@@ -55,6 +55,24 @@ on:
         required: false
         type: boolean
         default: false
+      run_b9_text_decoration:
+        description: >-
+          Rule B9 — a TextStyle adopted from DefaultTextStyle.of(context) must
+          neutralise `decoration` on the same statement. Text decoration INHERITS
+          down a span tree, so a root span that adopts the ambient style paints
+          the ambient's underline or strike through every child that sets only
+          size, weight and colour. DEFAULTS FALSE, unlike run_secret_scan: this
+          file's own header requires a repo's OWN numbers before a gate is wired,
+          and a default-true would be exactly the wholesale copy it forbids.
+          Fleet baseline measured 2026-09-05 (GitHub code search across
+          org:purpusgit language:Dart, positive-controlled against "RichText" ->
+          27 files and "Text.rich" -> 10 files, so the index is not blind):
+          2 findings org-wide, BOTH in pkg_orbit_japa, both fixed in the change
+          that introduced this gate. Every other Dart repo is at zero, so wiring
+          one costs a caller line and nothing else.
+        required: false
+        type: boolean
+        default: false
       run_barrel:
         description: 'Rule 66 — barrel & factory safety'
         required: false
@@ -393,6 +411,113 @@ jobs:
             exit 1
           fi
           echo "Dart interpolation safety gate passed."
+
+      # ── Rule B9 — an adopted ambient TextStyle must neutralise decoration ──
+      # THE DEFECT THIS EXISTS FOR ARRIVED IN NO DIFF. pkg_orbit_japa shipped
+      # yellow underlines under the Chant History day-card headline, in dark mode,
+      # in production. The word "yellow" appears nowhere in that repo's lib/ —
+      # nobody typed a colour. The headline is a RichText whose root span adopted
+      # `DefaultTextStyle.of(context).style`, text decoration inherits down a span
+      # tree, and the child spans set size, weight and colour but never reset
+      # `decoration`. The ambient in question is Flutter's OWN MaterialApp fallback
+      # style (material/app.dart, debugLabel "fallback style; consider putting your
+      # text in a Material"), whose decorationColor is 0xFFFFFF00.
+      #
+      # WHY A GATE AND NOT A LINT. Rule 24 greps the DIFF, and there was no diff to
+      # grep. The WCAG scan reads the declared OrbitColors tokens, and this colour
+      # is not a token. `analyze` sees a valid TextStyle. The repo's History tests
+      # read the .dart file AS A STRING and the source text was correct. No gate
+      # failed and none could — see Flutter_UX_Rendering_Rules F22.
+      #
+      # SCOPE, HONESTLY: this is a keyhole, not a window. It catches the EXPLICIT
+      # adoption form and nothing else. `Text.rich(TextSpan(children: [...]))`
+      # inherits the ambient identically and contains none of the text below, and
+      # a captured-context bug in general is invisible here. It is in this job
+      # because it costs seconds of an already-billed minute, not because it closes
+      # the class.
+      - name: Rule B9 — an adopted ambient TextStyle must neutralise decoration
+        id: b9_text_decoration
+        if: ${{ inputs.run_b9_text_decoration }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          python3 <<'PYEOF'
+          import os
+          import re
+          import sys
+
+          # A Dart package always has a lib/. This gate is a TEXT scan of that
+          # tree, so the one way it can lie is by scanning a tree that is not
+          # there and publishing the empty result as clean. Both arms are
+          # therefore explicit, and the "not applicable" arm says out loud that
+          # it read nothing rather than printing a pass.
+          files = []
+          for d, _, names in os.walk("lib"):
+              files += [os.path.join(d, n) for n in sorted(names)
+                        if n.endswith(".dart")]
+
+          if not files:
+              if os.path.exists("pubspec.yaml"):
+                  print("::error::Rule B9 gate found no .dart file under lib/ in a "
+                        "repo that HAS a pubspec.yaml. That is a wrong scan root, "
+                        "not a clean tree, and this gate refuses to publish green "
+                        "having read nothing.")
+                  sys.exit(1)
+              print("No pubspec.yaml and no lib/*.dart: not a Dart package, so "
+                    "Rule B9 does not apply here. Nothing was scanned, and that is "
+                    "stated rather than reported as a pass.")
+              sys.exit(0)
+
+          ADOPT = re.compile(r"DefaultTextStyle\s*\.\s*of\s*\([^()]*\)\s*\.\s*style")
+
+          # Its OWN token, deliberately not the colours gate's `intentional:` —
+          # B5c: two gates sharing one suppression word blinds each of them to
+          # the other's exceptions, permanently and silently.
+          ALLOW = "b9-ok:"
+
+          # The neutraliser must sit within the match line + 2. A statement spread
+          # wider than that reds and gets reformatted. That is a cheap ceiling
+          # chosen over parsing Dart, and it is the ceiling on purpose: the
+          # upgrade path is a real parser and a two-site rule does not earn one.
+          WINDOW = 3
+
+          hits = []
+          for path in files:
+              with open(path, encoding="utf-8", errors="replace") as fh:
+                  raw = fh.read().splitlines()
+              # Rule B9 is QUOTED in the prose of the very files it governs, and a
+              # comment saying "never do X" must not be scored as doing X.
+              code = ["" if ln.lstrip().startswith("//") else ln for ln in raw]
+              for i, ln in enumerate(code):
+                  if not ADOPT.search(ln):
+                      continue
+                  if "decoration" in " ".join(code[i:i + WINDOW]):
+                      continue
+                  if ALLOW in " ".join(raw[max(0, i - 1):i + WINDOW]):
+                      continue
+                  hits.append((path, i + 1))
+
+          print("Scanned " + str(len(files)) + " .dart file(s) under lib/.")
+
+          if hits:
+              for path, line in hits:
+                  print("::error file=" + path + ",line=" + str(line) + "::Rule B9 "
+                        "- this adopts the ambient TextStyle without neutralising "
+                        "`decoration`. Text decoration INHERITS down a span tree, "
+                        "so a child span that sets only fontSize, fontWeight and "
+                        "color still draws whatever underline or strike the "
+                        "ambient carried - and the ambient may be Flutter's own "
+                        "MaterialApp fallback style, a yellow double underline "
+                        "nobody typed. Fix: append `.copyWith(decoration: "
+                        "TextDecoration.none)` on the same statement. Deliberate? "
+                        "Put `b9-ok: <reason>` beside it.")
+              print("")
+              print(str(len(hits)) + " unneutralised ambient-TextStyle adoption(s).")
+              sys.exit(1)
+
+          print("Rule B9 passed: every adopted ambient TextStyle neutralises "
+                "decoration.")
+          PYEOF
 
       - name: Rule 66 — barrel & factory safety
         id: barrel
@@ -882,6 +1007,7 @@ jobs:
           ROWS: |
             Rule 24 colours safety~${{ steps.colours.outcome }}~a hardcoded Colors.*, a deprecated .withOpacity(, or a non-null extension<X>()! was added on a changed lib/ line
             Dart escaped interpolation~${{ steps.dart.outcome }}~escaped string interpolation in lib/**.dart renders as literal text on screen
+            Rule B9 ambient TextStyle decoration~${{ steps.b9_text_decoration.outcome }}~a TextStyle adopted from DefaultTextStyle.of(context) is handed to a span tree without neutralising `decoration`, so an ambient underline or strike paints through every child span that only set size, weight and colour - OR the gate found no lib/**.dart in a repo that has a pubspec.yaml, which is a wrong scan root and not a clean tree
             Rule 66 barrel and factory safety~${{ steps.barrel.outcome }}~a line was removed from a public barrel or factory index.dart, which is a silent breaking change for dependents
             Rule 84 hardcoded service host~${{ steps.rule84_url.outcome }}~a mypurpus.com or bookmyorbit.com host is hardcoded in lib/ instead of client_core flavor_config.dart
             Rule 84 base-URL fallback~${{ steps.rule84_fallback.outcome }}~String.fromEnvironment(defaultValue:) is used as a base-URL fallback; a missing base URL must be a compile error
