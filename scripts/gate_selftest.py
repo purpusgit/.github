@@ -57,7 +57,7 @@ canary_sql_code_root.
 Exit 0 = all checks passed (green). Exit 1 = a predicate broke or a fixture
 assertion failed (red).
 """
-import os, re, sys, shutil, subprocess, tempfile, py_compile, glob
+import os, re, sys, json, shutil, subprocess, tempfile, py_compile, glob
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WF_DIR = os.path.join(ROOT, ".github", "workflows")
@@ -180,8 +180,9 @@ BEHAVIOUR = {
             "Rule 84 — a flavor must not own another package's screens":
                 ("reusable-rule84-flavor-fork-gate.yml", "A flavor must not own another package's screens"),
         },
-        "unmirrored": "exact-pin / A1 / contrast steps: source of record is the consumer repo, not this one. base-URL and self-mode-translation steps: this file is the ONLY copy, so there is no second copy to assert equality against. secret_scan is ALSO the only copy and so has no equality assertion either -- but it IS now fixture-covered behaviourally, in four assertions including that the matched text is never echoed. The Rule B9 step is likewise the only copy, and is likewise fixture-covered below, in two pairs. Do not re-add either to this list.",
+        "unmirrored": "exact-pin / A1 / contrast steps: source of record is the consumer repo, not this one. base-URL and self-mode-translation steps: this file is the ONLY copy, so there is no second copy to assert equality against. secret_scan is ALSO the only copy and so has no equality assertion either -- but it IS now fixture-covered behaviourally, in four assertions including that the matched text is never echoed. The Rule B9 step is likewise the only copy, and is likewise fixture-covered below, in two pairs. Do not re-add either to this list. The already-shipped VERDICT step is likewise the only copy and is fixture-covered below in five assertions; its sibling FETCH step is NOT covered here and cannot be -- it needs a token and the network. What guards the fetch is that the verdict step refuses to pass when the fetch produced no file, which IS asserted.",
         "secretscan_step": "Secret scan - no new secret-shaped string added by this PR",
+        "already_shipped_step": "Already-shipped check - refuse a branch whose tip has already merged",
         # Rule B9. Two fixture pairs, because the step makes two separate promises
         # and one of them is the promise the org has already been burned on.
         #   * b9-text-decoration -- does it catch the violation. Both trees are the
@@ -650,6 +651,82 @@ def behavioural_consolidated(named, beh, label):
              "a fail-closed step live on every consumer would go uncovered silently.")
     else:
         behavioural_secretscan(ss, label + "[secret-scan]")
+
+    # Defaults TRUE, so it is live on every consumer, and it is fail-closed. Same
+    # standing requirement as the secret scan: it must never go back to uncovered.
+    ash = named.get(beh["already_shipped_step"])
+    if ash is None:
+        fail(f"{label}: already-shipped step {beh['already_shipped_step']!r} no longer "
+             "exists - a fail-closed step live on every consumer would go uncovered "
+             "silently.")
+    else:
+        behavioural_already_shipped(ash, label + "[already-shipped]")
+
+
+def behavioural_already_shipped(script, label):
+    """Five runs, five assertions.
+
+    The step is a pure function over the JSON its sibling fetch step writes, so it
+    needs no repo, no token and no network -- only a file. Every case below is a
+    distinct way to get this check wrong, and four of the five are PASS cases:
+    a gate that refuses correct work gets widened by whoever needs to ship, so the
+    ways it must NOT fire are worth more assertions than the way it must.
+    """
+    # pkg_inapp_chat#126's real head commit, and the real #121 that had already
+    # shipped it. Using the actual incident rather than an invented sha keeps the
+    # fixture honest about what this gate is for.
+    HEAD = "e8e5d998d4922929a4f1caa8e163c929fdaefea8"
+    OTHER = "1111111111111111111111111111111111111111"
+    SHIPPED = {"number": 121, "merged_at": "2026-09-02T12:49:02Z",
+               "head": {"sha": HEAD}, "base": {"ref": "cwb"}}
+    FAILED = "ERROR: Already-shipped branch gate FAILED"
+    PASSED = "Already-shipped check passed"
+
+    for case, rows, want_zero, expect in (
+        # The incident itself: this exact tip already merged into this exact base.
+        ("fail", [SHIPPED], False, FAILED),
+        # A merged PR on a DIFFERENT tip. Not this branch; must not fire.
+        ("pass[other-tip]", [dict(SHIPPED, head={"sha": OTHER})], True, PASSED),
+        # Same tip, merged into a DIFFERENT base. Promoting dev -> cwb is legitimate
+        # and common here; firing on it would red correct work every release.
+        ("pass[other-base]", [dict(SHIPPED, base={"ref": "dev"})], True, PASSED),
+        # /commits/{sha}/pulls returns THIS pull request too. Matching self would red
+        # every pull request in the org the moment this shipped.
+        ("pass[self]", [dict(SHIPPED, number=126)], True, PASSED),
+        # Same tip and base, but never merged: a duplicate to close, not shipped work.
+        ("pass[not-merged]", [dict(SHIPPED, number=999, merged_at=None)], True, PASSED),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            fp = os.path.join(tmp, "assoc.json")
+            with open(fp, "w") as f:
+                json.dump(rows, f)
+            code, out = run_predicate(script, tmp, env={
+                "ASSOC_FILE": fp, "HEAD_SHA": HEAD, "BASE_REF": "cwb",
+                "PR_NUMBER": "126"})
+            _score_shipped(label, case, want_zero, expect, code, out)
+
+    # The fetch step cannot be exercised here, so what stands in for it is this:
+    # if it produced nothing, the verdict step must RED rather than report a clean
+    # branch. Without this assertion a broken fetch would look exactly like a clean
+    # result, which is the failure mode every gate in this file is written against.
+    with tempfile.TemporaryDirectory() as tmp:
+        code, out = run_predicate(script, tmp, env={
+            "ASSOC_FILE": os.path.join(tmp, "does-not-exist.json"),
+            "HEAD_SHA": HEAD, "BASE_REF": "cwb", "PR_NUMBER": "126"})
+        _score_shipped(label, "fail[no-association-data]", False,
+                       "CHECKER failure, not a clean branch", code, out)
+
+
+def _score_shipped(label, case, want_zero, expect, code, out):
+    if want_zero and code != 0:
+        fail(f"{label}: {case} unexpectedly RED (exit {code})\n{out}")
+    elif not want_zero and code == 0:
+        fail(f"{label}: {case} NOT caught (exit 0) - the gate is asleep\n{out}")
+    elif expect not in out:
+        fail(f"{label}: {case} exited {code} but did not report {expect!r} - "
+             f"{'red' if not want_zero else 'green'} for the WRONG reason\n{out}")
+    else:
+        ok(f"{label}: {case} behaves (reports {expect!r})")
 
 
 def behavioural_secretscan(script, label):
