@@ -1,0 +1,5 @@
+{
+  "_comment": "The per-repository scan configuration, in the shape every consumer must commit to its BASE branch. It lives in the fixture because the harness now runs the action's own configuration step here rather than guessing what that step produces — so this file is exercised, not merely described. service_orbit_orgs is the reason the real thing takes a LIST: it has src/api and src/api-admin, and a single-root default would report green over the admin surface.",
+  "roots": ["src/api"],
+  "allowlist": "auth-exceptions.json"
+}
