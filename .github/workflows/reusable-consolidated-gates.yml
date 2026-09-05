@@ -146,19 +146,6 @@ on:
         required: false
         type: boolean
         default: false
-      run_already_shipped:
-        description: >-
-          Refuse a pull request whose head commit has ALREADY been merged into the
-          same base by an earlier pull request. DEFAULTS TRUE, like run_secret_scan
-          and for the same reason: it closes a defect that has already nearly shipped
-          once, and a control that waits for 20-odd callers to opt in one at a time
-          is not a control. Every existing caller picks it up with no caller-side
-          edit. Set it false only if a repo deliberately re-proposes merged tips, and
-          say why in the caller.
-        required: false
-        type: boolean
-        default: true
-
       run_secret_scan:
         description: >-
           Diff-scoped secret scan. DEFAULTS TRUE, unlike every other input in this
@@ -174,9 +161,6 @@ on:
 
 permissions:
   contents: read
-  # /repos/{o}/{r}/commits/{sha}/pulls, read by the already-shipped check. Additive:
-  # no existing step loses anything, and the token still cannot write.
-  pull-requests: read
 
 jobs:
   # The check context this publishes is `<caller job id> / Consolidated gates (A2)`.
@@ -1015,144 +999,6 @@ jobs:
           print("Secret scan passed: this PR adds no secret-shaped line.")
           PYEOF
 
-      # ── Already-shipped branch check ─────────────────────────────────────────
-      # WHY THIS EXISTS: pkg_inapp_chat#126. Its head commit e8e5d998d4 had ALREADY
-      # been squash-merged as #121. A squash writes a NEW commit onto the base, so the
-      # branch's own commits never become ancestors of it and git reports the branch as
-      # carrying unmerged work forever. #126 therefore presented as ordinary work with
-      # a few conflicts, and resolving those in favour of the branch - the normal
-      # instinct - would have reverted the features shipped in #124.
-      #
-      # NO OTHER GATE IN THIS FILE CAN SEE IT. Every other step reads the DIFF for rule
-      # violations; the reverted code is valid, formatted, and passes every test that
-      # existed when it was written. `delete_branch_on_merge` (now on across the org)
-      # closes the same defect by removing the branch - but that control works by
-      # removing the EVIDENCE rather than the ambiguity, and it does not fire when a
-      # pull request is CLOSED rather than merged, nor when a branch is re-created.
-      # This step is the half that survives forgetting.
-      #
-      # SCOPE, DELIBERATELY NARROW. It fires only when this PR's head sha is EXACTLY
-      # the head sha of an already-merged pull request into the SAME base. Backtested
-      # against 310 merged pull requests across 8 repositories: ONE hit, and that hit
-      # is a real duplicate - service_orbit_orgs#693 and #692 share head b6cc911801 and
-      # both merged into sandbox, so the second merged nothing. Zero false positives.
-      # A looser rule ("any commit in this PR belongs to a merged PR") was tried first
-      # and produced three hits, two of them artefacts of /commits/{sha}/pulls returning
-      # pull requests that merely CONTAIN the commit rather than being headed by it.
-      # A gate that fires on correct work gets widened by whoever needs to ship; this
-      # one is scoped so that it never has to be.
-      #
-      # WHY TWO STEPS. The fetch needs a token and the network; the decision does not.
-      # Splitting them makes the decision a pure function over a JSON file, which is
-      # the only reason gate_selftest.py can red-proof it at all. It costs nothing:
-      # Actions bills per JOB, not per step.
-      - name: Already-shipped check - fetch pull requests associated with this head
-        id: shipped_fetch
-        if: ${{ inputs.run_already_shipped }}
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          ASSOC_FILE: ${{ runner.temp }}/already_shipped_assoc.json
-        run: |
-          set -euo pipefail
-          if [ -z "${HEAD_SHA:-}" ]; then
-            echo "::error::Already-shipped check could not resolve the PR head sha (github.event.pull_request.head.sha is empty - this workflow is pull_request-only by design). Nothing was fetched, so nothing can be checked."
-            exit 1
-          fi
-          # -f so an API error is a non-zero exit rather than an error document written
-          # into the file and parsed as an empty result. A gate must not pass because
-          # its input was a 404 body.
-          curl -sS -f \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${REPO}/commits/${HEAD_SHA}/pulls?per_page=100" \
-            > "${ASSOC_FILE}"
-          echo "Fetched $(wc -c < "${ASSOC_FILE}") bytes of pull-request association data for ${HEAD_SHA}."
-
-      - name: Already-shipped check - refuse a branch whose tip has already merged
-        id: already_shipped
-        if: ${{ inputs.run_already_shipped }}
-        continue-on-error: true
-        env:
-          ASSOC_FILE: ${{ runner.temp }}/already_shipped_assoc.json
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          python3 <<'PYEOF'
-          import json
-          import os
-          import sys
-
-          path = os.environ.get("ASSOC_FILE", "").strip()
-          head = os.environ.get("HEAD_SHA", "").strip()
-          base = os.environ.get("BASE_REF", "").strip()
-          me = os.environ.get("PR_NUMBER", "").strip()
-
-          def checker_failed(why):
-              """Fail CLOSED. A gate that could not read its own input must never
-              report a clean result: that is a checker failure, not an absence of
-              violations, and the two must never look alike in a log."""
-              print("::error::Already-shipped check " + why + " Nothing was checked. "
-                    "This is a CHECKER failure, not a clean branch - do not merge on "
-                    "the strength of it.")
-              print("")
-              print("ERROR: Already-shipped branch gate FAILED")
-              sys.exit(1)
-
-          if not path or not os.path.exists(path):
-              checker_failed("could not read the association data (ASSOC_FILE is unset "
-                             "or the fetch step did not produce it).")
-          if not head or not base:
-              checker_failed("could not resolve the PR head sha or base ref (this "
-                             "workflow is pull_request-only by design).")
-          try:
-              with open(path) as f:
-                  assoc = json.load(f)
-          except Exception as e:
-              checker_failed("could not parse the association data (" +
-                             type(e).__name__ + ").")
-          if not isinstance(assoc, list):
-              checker_failed("expected a JSON list from /commits/{sha}/pulls and got " +
-                             type(assoc).__name__ + ".")
-
-          # Four conditions, every one load-bearing:
-          #   merged_at        - an OPEN or closed-unmerged pull request on the same tip
-          #                      is a duplicate to close, not shipped work to refuse.
-          #   head.sha == head - EXACT tip equality. Relaxing this to "contains" is what
-          #                      produced the two false positives described above.
-          #   base.ref == base - a branch merged into `dev` may legitimately be proposed
-          #                      to `cwb` afterwards. That is promotion, not a re-merge.
-          #   number != me     - /commits/{sha}/pulls returns this pull request too.
-          hits = [p for p in assoc
-                  if p.get("merged_at")
-                  and (p.get("head") or {}).get("sha") == head
-                  and (p.get("base") or {}).get("ref") == base
-                  and str(p.get("number")) != me]
-
-          if not hits:
-              print("Already-shipped check passed: this branch's tip is not the head of "
-                    "any pull request already merged into " + base + ".")
-              sys.exit(0)
-
-          for p in hits:
-              print("::error title=Branch already shipped::This branch's tip " +
-                    head[:10] + " is the head of #" + str(p.get("number")) +
-                    ", already merged into " + base + " on " +
-                    str(p.get("merged_at")) + ". Merging this pull request re-applies "
-                    "work that is already live, and resolving its conflicts in favour "
-                    "of the branch REVERTS whatever landed on " + base + " afterwards. "
-                    "Close this pull request and delete the branch; if you need "
-                    "something from it, start a new branch from " + base + ".")
-          print("")
-          print("ERROR: Already-shipped branch gate FAILED")
-          sys.exit(1)
-          PYEOF
-
       # One row per gate step above: label ~ outcome ~ the one-line reason a FAIL means.
       # `outcome` (not `conclusion`) is what continue-on-error preserves.
       - name: Verdict — per-gate summary
@@ -1181,8 +1027,6 @@ jobs:
             Translation checker self-test~${{ steps.tk_self_demo.outcome }}~this repo's own scripts/check_translations.py failed its --demo assertions, so the checker is broken and not the locale files under review
             Secret scan (diff-scoped)~${{ steps.secret_scan.outcome }}~a line added by this PR matches a credential shape (private-key header, AKIA, sk_live/sk_test, ghp_/github_pat_, xox*, JWT, or a quoted api_key/secret/token/password assignment) - OR the scanner could not compute the PR diff and refused to pass on an uncomputable diff
             Translation keys (self)~${{ steps.tk_self_check.outcome }}~a translation key added or changed in this PR is missing from one or more locales in this repo's OWN assets/translations
-            Already-shipped fetch~${{ steps.shipped_fetch.outcome }}~the pull requests associated with this head commit could not be fetched, so the already-shipped check had no input and refused to pass on it
-            Already-shipped branch~${{ steps.already_shipped.outcome }}~this branch's tip commit is the head of a pull request ALREADY merged into this base; merging it re-applies live work and resolving its conflicts reverts whatever landed afterwards
         run: |
           # errexit is ON before line 1 (/usr/bin/bash -e {0}) and `set -uo pipefail`
           # does NOT clear it — only `set +e` does. Without this line the first
