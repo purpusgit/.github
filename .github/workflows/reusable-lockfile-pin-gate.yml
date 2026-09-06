@@ -111,11 +111,16 @@ jobs:
               else:
                   return None
               parts = rest.split("#")[0].split("/")
-              return parts[0] if parts and parts[0] else None
+              # Lowercased on both sides: GitHub owners are case-insensitive, so
+              # `github:PurpusGit/...` installs identically and must not slip past. An
+              # owner match that misses is indistinguishable from a repo with no internal
+              # dependencies -- it prints "0 internal git dependencies checked" and exits
+              # 0. That is how the first draft of this gate passed its own fail fixture.
+              return parts[0].lower() if parts and parts[0] else None
 
           internal = {}
           for name, spec in deps.items():
-              if isinstance(spec, str) and owner_of(spec) == org:
+              if isinstance(spec, str) and owner_of(spec) == org.lower():
                   internal[name] = spec
 
           sha_re = re.compile(r"#([0-9a-f]{40})$")
