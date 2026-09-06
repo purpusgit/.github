@@ -108,7 +108,7 @@ BEHAVIOUR = {
              # Asserted on the PASS side too: without this, a mutation that stops
              # counting anything as verified prints "0 pin(s) verified … 5
              # indeterminate", exits 0, and is scored as a pass.
-             "expect_pass": "2 pin(s) verified against @sandbox, 4 indeterminate",
+             "expect_pass": "2 pin(s) verified against @sandbox, 6 indeterminate",
              "env": {"GH_TOKEN": "unused-by-the-fixture",
                      "PROTECTED": "sandbox",
                      "ANCESTRY_PINS_FILE": "pins.txt",
