@@ -1,0 +1,50 @@
+{
+ "/repos/purpusgit/repo_a": [
+  200,
+  {
+   "name": "repo_a"
+  }
+ ],
+ "/repos/purpusgit/repo_a/compare/sandbox...1111111111111111111111111111111111111111": [
+  200,
+  {
+   "ahead_by": 0,
+   "behind_by": 0,
+   "status": "identical"
+  }
+ ],
+ "/repos/purpusgit/repo_a/compare/sandbox...2222222222222222222222222222222222222222": [
+  200,
+  {
+   "ahead_by": 0,
+   "behind_by": 7,
+   "status": "behind"
+  }
+ ],
+ "/repos/purpusgit/repo_a/compare/sandbox...5555555555555555555555555555555555555555": [
+  502,
+  null
+ ],
+ "/repos/purpusgit/repo_forbidden": [
+  403,
+  null
+ ],
+ "/repos/purpusgit/repo_invisible": [
+  404,
+  null
+ ],
+ "/repos/purpusgit/repo_nobranch": [
+  200,
+  {
+   "name": "repo_nobranch"
+  }
+ ],
+ "/repos/purpusgit/repo_nobranch/branches/sandbox": [
+  404,
+  null
+ ],
+ "/repos/purpusgit/repo_nobranch/compare/sandbox...4444444444444444444444444444444444444444": [
+  404,
+  null
+ ]
+}
