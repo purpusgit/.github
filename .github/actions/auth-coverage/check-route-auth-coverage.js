@@ -171,7 +171,16 @@ for (const ROOT of ROOTS) {
       if (!HAS_FURTHER_ARG.test(rest)) continue;                               // no handler follows: not a registration
       if (CONSUMED.test(src.slice(Math.max(0, m.index - 40), m.index))) continue; // its value is consumed: a call
       checked++; here++;
-      const hasAuthToken = AUTH_TOKENS.some(t => rest.includes(t));
+      // The comment mask is applied to the REGISTRATION above; it must also be applied to the
+      // ARGUMENTS. `rest` is raw source, so a middleware someone commented out inside the
+      // registration still reads as present — `router.post('/x', mw, /* verifyAuthToken, */ h)`
+      // scores as GATED while serving unauthenticated traffic. That is the worst direction a
+      // coverage gate can fail in: a missed route is a hole you can see, a route reported as
+      // protected is a hole that closes the investigation. Reuse the mask already computed for
+      // this file rather than parsing comments a second time.
+      const restStart = m.index + m[0].length - rest.length;
+      const liveRest = rest.split('').filter((_, i) => !masked[restStart + i]).join('');
+      const hasAuthToken = AUTH_TOKENS.some(t => liveRest.includes(t));
       const bareKey = `${verb.toUpperCase()} ${routePath}`;
       const fileKey = `${file}:${bareKey}`;
       const allowed = allowlist[fileKey] || allowlist[bareKey];
