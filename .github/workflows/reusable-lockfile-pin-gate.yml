@@ -266,10 +266,45 @@ jobs:
           python3 - <<'PY'
           import json, os, urllib.request, urllib.error
 
+          # ⭐ THREE OUTCOMES, NOT TWO -- and this is the same contract the shared auth
+          # package reaches for token introspection: verified / refused / INDETERMINATE,
+          # where indeterminate is never cached and never reported as a refusal. The two
+          # were arrived at independently, for one underlying reason: a control that
+          # cannot tell "I could not check" from "the check failed" reports outages as
+          # violations. That is why this step spends a second API call to separate a
+          # missing commit from an unreachable repository or a missing base ref. If you
+          # are reading this because you want to collapse it back into one `compare`
+          # call: that version returns 404 for all three, and the day it matters is the
+          # day someone is told a force-push orphaned a commit that is perfectly fine.
+
           token = os.environ["GH_TOKEN"]
           protected = os.environ["PROTECTED"]
 
+          # TEST SEAM, and not part of the supported interface. When
+          # ANCESTRY_FIXTURE_RESPONSES names a readable JSON file, `api()` reads canned
+          # {path: [status, body]} pairs from it instead of the network. It exists so the
+          # self-test can drive every API shape this step classifies -- 200/identical,
+          # 200/behind, 200/diverged, 404-then-branch-200, 404-then-branch-404, 403, and
+          # a 5xx -- offline and deterministically. A gate whose battery needs a token
+          # and a network is a battery that goes red when GitHub does, which is the
+          # failure mode the self-test harness exists to keep out.
+          #
+          # It cannot fire by accident: the variable must be set AND name a file that
+          # exists. Production callers set neither.
+          _fixture = os.environ.get("ANCESTRY_FIXTURE_RESPONSES")
+          _canned = None
+          if _fixture and os.path.isfile(_fixture):
+              with open(_fixture, encoding="utf-8") as fh:
+                  _canned = json.load(fh)
+
           def api(path):
+              if _canned is not None:
+                  if path not in _canned:
+                      # An unlisted path is a hole in the fixture, not a 404 from GitHub.
+                      # Saying so loudly beats silently scoring it as a finding.
+                      raise SystemExit(f"FIXTURE INCOMPLETE: no canned response for {path}")
+                  code, body = _canned[path]
+                  return code, body
               req = urllib.request.Request("https://api.github.com" + path)
               req.add_header("Authorization", f"Bearer {token}")
               req.add_header("Accept", "application/vnd.github+json")
@@ -278,8 +313,9 @@ jobs:
               except urllib.error.HTTPError as e:
                   return e.code, None
 
+          pins_file = os.environ.get("ANCESTRY_PINS_FILE", "/tmp/internal-pins.txt")
           try:
-              lines = [l.rstrip("\n") for l in open("/tmp/internal-pins.txt") if l.strip()]
+              lines = [l.rstrip("\n") for l in open(pins_file) if l.strip()]
           except FileNotFoundError:
               lines = []
 

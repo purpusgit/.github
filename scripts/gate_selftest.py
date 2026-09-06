@@ -94,15 +94,23 @@ BEHAVIOUR = {
         "step": "Check internal pins and lockfile agreement",
         "key": "lockfile-pin",
         "expect": "has an EMPTY pin",
-        # The second step ("Check each pinned SHA is still on a protected branch") is
-        # NOT behaviourally tested here and must not be scored as if it were: it makes
-        # GitHub API calls, so a fixture would need a token and would go red whenever
-        # the network did — the failure mode this harness exists to keep out. It is
-        # `if: inputs.check_ancestry`, default FALSE, so no caller runs it today. Its
-        # three cases were exercised by hand against real commits before merge: a
-        # nonexistent SHA fails, a squash-merged PR head fails as "diverged", and an
-        # unreachable repository is reported and does NOT fail.
-        "note": "step 2 (ancestry) is syntax-only: it needs network + a token"},
+        # The ancestry step IS behaviourally tested, against canned API responses rather
+        # than the live network. Its pass fixture carries every shape that must not fail
+        # -- identical, behind, an unreadable repo (403), a missing base ref (404 then a
+        # 404 branch probe), and an upstream 5xx -- and its fail fixture carries the two
+        # that must: a commit that is gone (404 then a 200 branch probe) and a `diverged`
+        # squash-merged head. A live battery would go red whenever GitHub did, which is
+        # the failure mode this harness exists to keep out.
+        "also": [
+            {"step": "Check each pinned SHA is still on a protected branch",
+             "key": "ancestry",
+             "expect": "is not an ancestor of",
+             "env": {"GH_TOKEN": "unused-by-the-fixture",
+                     "PROTECTED": "sandbox",
+                     "ANCESTRY_PINS_FILE": "pins.txt",
+                     "ANCESTRY_FIXTURE_RESPONSES": "responses.json"}},
+        ],
+        },
     # `step`, not `dir`, since the code_root input landed. The `dir` branch runs the
     # predicate with only sub_gha applied, and sub_gha rewrites EVERY `${{ }}` to the
     # sentinel 'cwb' -- so `code_root` would resolve to a directory no fixture has,
