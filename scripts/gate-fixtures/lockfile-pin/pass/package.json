@@ -1,0 +1,8 @@
+{
+  "name": "fixture-pass",
+  "private": true,
+  "dependencies": {
+    "@purpusgit/service-auth-client": "github:purpusgit/bc_service_auth_client#9d40731de2d2e7d0201bceaa57b17cac3d64aa80",
+    "express": "^4.18.2"
+  }
+}

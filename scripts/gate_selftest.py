@@ -84,6 +84,16 @@ FIXTURES = os.path.join(ROOT, "scripts", "gate-fixtures")
 BEHAVIOUR = {
     "reusable-dart-safety-gate.yml":            {"kind": "dir", "key": "dart",
         "expect": "ERROR: Dart interpolation safety gate FAILED"},
+    # `step`, not `dir`: `dir` runs the LAST run: step, and this gate's own predicate
+    # is its only one today -- but pinning by name means adding a step above it reds
+    # with "step no longer exists" rather than silently retargeting the assertion.
+    # The FAIL fixture is the real bug this gate was built for: an EMPTY pin
+    # (`...client#`) whose lockfile still holds a good ref, which is why it merged
+    # once with CI green.
+    "reusable-lockfile-pin-gate.yml": {"kind": "step",
+        "step": "Check internal pins and lockfile agreement",
+        "key": "lockfile-pin",
+        "expect": "has an EMPTY pin"},
     # `step`, not `dir`, since the code_root input landed. The `dir` branch runs the
     # predicate with only sub_gha applied, and sub_gha rewrites EVERY `${{ }}` to the
     # sentinel 'cwb' -- so `code_root` would resolve to a directory no fixture has,
