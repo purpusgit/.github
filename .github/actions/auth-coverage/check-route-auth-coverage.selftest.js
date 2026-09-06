@@ -185,6 +185,19 @@ r = run(['src/mount', 'auth-exceptions.json']);
 t('DEFECT 12: .use() is not counted, for either mounting or an inline handler', r.code === 0 && /1 live route/.test(r.out), r.out);
 
 
+// ── DEFECT 13: a commented-out middleware is not a middleware ────────────────
+// Found in the field, not invented. Two live registrations on the largest social surface in the
+// estate read `// verifyAuthToken,` inside their argument list, and the gate scored both as GATED
+// because it tested the RAW argument text. A missed route is a hole you can see; a route reported
+// as PROTECTED while serving anonymous traffic is a hole that closes the investigation.
+w('src/ghost/routes.ts', "router.post('/looks-gated',\n  multipart,\n  // authenticate,\n  handler\n);\nrouter.post('/really-gated',\n  multipart,\n  authenticate,\n  handler\n);\n");
+fs.writeFileSync(path.join(tmp, 'auth-exceptions.json'), JSON.stringify({}, null, 1));
+r = run(['src/ghost', 'auth-exceptions.json']);
+t('DEFECT 13: auth commented out INSIDE the registration does not count as gated', r.code === 1 && /looks-gated/.test(r.out), r.out);
+t('DEFECT 13: the identical registration with it live is still gated', !/really-gated/.test(r.out), r.out);
+t('DEFECT 13: both multi-line registrations were counted at all', /2 route/.test(r.out), r.out);
+
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(failures ? `\n${failures} self-test failure(s)` : '\nall self-tests passed');
 process.exit(failures ? 1 : 0);
