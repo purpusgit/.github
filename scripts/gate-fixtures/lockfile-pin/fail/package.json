@@ -1,0 +1,8 @@
+{
+  "name": "fixture-fail",
+  "private": true,
+  "dependencies": {
+    "@purpusgit/service-auth-client": "github:purpusgit/bc_service_auth_client#",
+    "express": "^4.18.2"
+  }
+}

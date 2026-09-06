@@ -1,0 +1,227 @@
+name: Reusable — Lockfile & Internal Pin Gate
+
+# Why this gate exists, and what it deliberately does NOT check.
+#
+# Several repos in this org run `npm install` in CI rather than `npm ci`. The
+# difference matters: `npm ci` REFUSES a lockfile that disagrees with
+# package.json, while `npm install` silently reconciles it and reports success.
+# So for those repos a lockfile-only pull request — a pin bump, exactly the kind
+# this org makes constantly for its internal `github:purpusgit/...` packages —
+# is verified by nothing at all. A green run proves the resolver could reach
+# agreement, not that the committed lockfile is the one that was reviewed.
+#
+# ⛔ THIS GATE DOES NOT CHECK `integrity`, ON PURPOSE. npm prints
+# `npm warn skipping integrity check for git dependency` on every install of a
+# git-hosted package: the field is recorded and never verified. A gate that
+# asserted on it for exactly the dependencies this org pins by SHA would be a
+# control that looks present and binds nothing — the failure class these gates
+# exist to remove. The commit SHA in `resolved` is the real pin, so that is what
+# is checked.
+#
+# Three checks, all pure file inspection — no network, no install, no toolchain:
+#   1. Every internal git dependency is pinned to a full 40-hex commit SHA.
+#      Catches an EMPTY pin (`...client#`, which resolves to the default branch
+#      and floats), a branch pin, and a tag pin. The empty-pin case is not
+#      hypothetical: it merged into this org once, and CI stayed green because
+#      the lockfile happened to have resolved correctly beforehand.
+#   2. The lockfile's recorded ref for each such dependency equals the
+#      package.json pin. Catches a lockfile that was never regenerated after the
+#      pin moved — which `npm install`-based CI will not catch either.
+#   3. The repo has exactly one lockfile and it matches its package manager.
+#      Catches an npm lockfile committed to a pnpm repo, which is not cosmetic:
+#      `pnpm install --frozen-lockfile` then fails, and a Dockerfile running
+#      `npm ci` in such a repo builds against a tree nothing else uses.
+
+on:
+  workflow_call:
+    inputs:
+      org:
+        description: >-
+          Org prefix whose git dependencies must be SHA-pinned. Dependencies
+          outside it (public registry packages, other orgs) are not this gate's
+          business and are ignored.
+        type: string
+        default: purpusgit
+
+jobs:
+  lockfile-pin-gate:
+    runs-on: ubuntu-latest
+    name: Lockfile and internal pin check
+    steps:
+      - uses: actions/checkout@v5.1.0
+      - name: Check internal pins and lockfile agreement
+        run: |
+          python3 - "${{ inputs.org }}" <<'PY'
+          import json, os, re, sys
+
+          org = sys.argv[1]
+          problems = []
+
+          if not os.path.exists("package.json"):
+              print(f"No package.json — nothing for this gate to check.")
+              raise SystemExit(0)
+
+          pkg = json.load(open("package.json"))
+
+          npm_lock  = os.path.exists("package-lock.json")
+          pnpm_lock = os.path.exists("pnpm-lock.yaml")
+          yarn_lock = os.path.exists("yarn.lock")
+
+          # ── 3. one lockfile, matching the package manager ──────────────────
+          locks = [n for n, p in (("package-lock.json", npm_lock),
+                                  ("pnpm-lock.yaml", pnpm_lock),
+                                  ("yarn.lock", yarn_lock)) if p]
+          if not locks:
+              problems.append(
+                  "No lockfile committed. An install here resolves whatever is "
+                  "newest at build time, so two builds of the same commit are not "
+                  "the same build.")
+          elif len(locks) > 1:
+              problems.append(
+                  f"More than one lockfile committed: {', '.join(locks)}. Exactly "
+                  "one package manager owns a repo; a second lockfile is read by "
+                  "some tool somewhere and silently disagrees with the first.")
+
+          declared_pm = (pkg.get("packageManager") or "").split("@")[0]
+          if declared_pm and locks:
+              expected = {"npm": "package-lock.json", "pnpm": "pnpm-lock.yaml",
+                          "yarn": "yarn.lock"}.get(declared_pm)
+              if expected and locks[0] != expected:
+                  problems.append(
+                      f'package.json declares packageManager "{declared_pm}" but the '
+                      f"committed lockfile is {locks[0]}, not {expected}.")
+
+          # ── 1. internal git deps are pinned to a full commit SHA ───────────
+          # `github:owner/repo#ref` and `git+https://…#ref` both appear in this org.
+          deps = {}
+          for section in ("dependencies", "devDependencies", "optionalDependencies"):
+              deps.update(pkg.get(section) or {})
+
+          def owner_of(spec):
+              """Owner in `github:owner/repo#ref`, `git+https://github.com/owner/repo.git#ref`
+              or `git+ssh://git@github.com/owner/repo.git#ref`. Returns None when the spec
+              is not a git dependency at all."""
+              if spec.startswith("github:"):
+                  rest = spec[len("github:"):]
+              elif spec.startswith(("git+", "git:", "https://github.com/")):
+                  m = re.search(r"github\.com[:/](?P<rest>[^#]+)", spec)
+                  if not m:
+                      return None
+                  rest = m.group("rest")
+              else:
+                  return None
+              parts = rest.split("#")[0].split("/")
+              # Lowercased on both sides: GitHub owners are case-insensitive, so
+              # `github:PurpusGit/...` installs identically and must not slip past. An
+              # owner match that misses is indistinguishable from a repo with no internal
+              # dependencies -- it prints "0 internal git dependencies checked" and exits
+              # 0. That is how the first draft of this gate passed its own fail fixture.
+              return parts[0].lower() if parts and parts[0] else None
+
+          internal = {}
+          for name, spec in deps.items():
+              if isinstance(spec, str) and owner_of(spec) == org.lower():
+                  internal[name] = spec
+
+          sha_re = re.compile(r"#([0-9a-f]{40})$")
+          for name, spec in sorted(internal.items()):
+              m = sha_re.search(spec)
+              if m:
+                  continue
+              if "#" not in spec:
+                  problems.append(
+                      f'"{name}": "{spec}" has NO ref at all — it resolves to the '
+                      "default branch and moves under you.")
+              elif spec.endswith("#"):
+                  problems.append(
+                      f'"{name}": "{spec}" has an EMPTY pin. This is not a pin: it '
+                      "resolves to the default branch, and a lockfile that already "
+                      "held a good ref will keep CI green while the manifest floats.")
+              else:
+                  problems.append(
+                      f'"{name}": "{spec}" is not pinned to a 40-character commit '
+                      "SHA. A branch or tag can be moved after review.")
+
+          # ── 2. the lockfile agrees with the manifest, per dependency ───────
+          def lock_refs_npm(path):
+              data = json.load(open(path))
+              found = {}
+              for key, node in (data.get("packages") or {}).items():
+                  nm = node.get("name") or key.split("node_modules/")[-1]
+                  res = node.get("resolved") or ""
+                  m = re.search(r"#([0-9a-f]{40})\b", res)
+                  if m:
+                      found.setdefault(nm, set()).add(m.group(1))
+              for name, node in (data.get("dependencies") or {}).items():
+                  m = re.search(r"#([0-9a-f]{40})\b", node.get("version") or "")
+                  if m:
+                      found.setdefault(name, set()).add(m.group(1))
+              return found
+
+          def lock_refs_pnpm(path):
+              text = open(path, encoding="utf-8").read()
+              found = {}
+              # pnpm records the resolved tarball URL, whose last path segment is the
+              # commit, keyed by `'<name>@https://codeload…/<sha>'`.
+              #
+              # ⛔ NO WILDCARD FALLBACK. The first draft collected every codeload SHA in
+              # the file under a `"*"` key and fell back to it when a dependency's own
+              # name was not found. That made check 2 unreachable on pnpm for any repo
+              # with a second git dependency: a dep pinned in the manifest but ABSENT
+              # from the lockfile passed, because some other dep's SHA matched. The
+              # fallback existed to avoid a false red and produced a false green, which
+              # is the worse of the two by the whole margin of why this gate exists.
+              for name, sha in re.findall(
+                      r"'([^']+)@https://codeload\.github\.com/[^']+/([0-9a-f]{40})'",
+                      text):
+                  found.setdefault(name, set()).add(sha)
+              return found
+
+          lock_refs, lock_read = {}, True
+          if npm_lock:
+              lock_refs = lock_refs_npm("package-lock.json")
+          elif pnpm_lock:
+              lock_refs = lock_refs_pnpm("pnpm-lock.yaml")
+          elif internal:
+              # A lockfile this gate cannot parse (yarn today) must not be scored as
+              # agreement. Skipping check 2 silently while still printing "checked" is
+              # the control-that-binds-nothing shape, so it is reported instead.
+              lock_read = False
+              problems.append(
+                  f"{locks[0] if locks else 'the lockfile'} is not a format this gate can "
+                  "read, so the manifest pins above were NOT checked against it. Add a "
+                  "parser here rather than letting this pass quietly.")
+
+          if lock_read:
+              for name, spec in sorted(internal.items()):
+                  m = sha_re.search(spec)
+                  if not m:
+                      continue          # already reported by check 1
+                  want = m.group(1)
+                  got = lock_refs.get(name)
+                  if got is None:
+                      problems.append(
+                          f'"{name}" is pinned to {want[:10]} in package.json but the '
+                          "lockfile records no commit for it. The lockfile was not "
+                          "regenerated after the pin changed.")
+                  elif want not in got:
+                      problems.append(
+                          f'"{name}" is pinned to {want[:10]} in package.json but the '
+                          f"lockfile resolves {', '.join(sorted(s[:10] for s in got))}. "
+                          "The installed code is not the reviewed code.")
+
+          if problems:
+              print("ERROR: lockfile and internal pin gate FAILED")
+              print("")
+              for p in problems:
+                  print(f"  - {p}")
+              print("")
+              print("Fix: correct the pin in package.json, then regenerate the lockfile")
+              print("with your package manager's lock-only mode (npm install")
+              print("--package-lock-only / pnpm install --lockfile-only) and commit both.")
+              raise SystemExit(1)
+
+          n = len(internal)
+          print(f"Lockfile and internal pin gate passed "
+                f"({n} internal git dependenc{'y' if n == 1 else 'ies'} checked).")
+          PY
