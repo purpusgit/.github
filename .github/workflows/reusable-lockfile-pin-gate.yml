@@ -42,6 +42,18 @@ on:
           business and are ignored.
         type: string
         default: purpusgit
+      check_ancestry:
+        description: >-
+          Also verify that each pinned SHA still exists upstream and is an ancestor of a
+          protected branch. DEFAULT FALSE, and deliberately: the three checks above are
+          pure file inspection, and this one makes network calls. Anything that can fail
+          because GitHub is having a bad day should be opt-in and separately switchable.
+        type: boolean
+        default: false
+      protected_branch:
+        description: Branch the pinned SHA must be an ancestor of, when check_ancestry is on.
+        type: string
+        default: sandbox
 
 jobs:
   lockfile-pin-gate:
@@ -224,4 +236,102 @@ jobs:
           n = len(internal)
           print(f"Lockfile and internal pin gate passed "
                 f"({n} internal git dependenc{'y' if n == 1 else 'ies'} checked).")
+
+          # Hand the SHA-pinned dependencies to the optional ancestry step. Written even
+          # when that step is off, because a file that is always produced is easier to
+          # reason about than one that appears conditionally.
+          import os as _os
+          with open("/tmp/internal-pins.txt", "w", encoding="utf-8") as fh:
+              for name, spec in sorted(internal.items()):
+                  m = sha_re.search(spec)
+                  if m:
+                      owner_repo = owner_of(spec), spec.split("#")[0].split("/")[-1]
+                      fh.write(f"{name}\t{owner_repo[0]}/{owner_repo[1]}\t{m.group(1)}\n")
+          PY
+
+      - name: Check each pinned SHA is still on a protected branch
+        if: ${{ inputs.check_ancestry }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROTECTED: ${{ inputs.protected_branch }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request, urllib.error, sys
+
+          token = os.environ["GH_TOKEN"]
+          protected = os.environ["PROTECTED"]
+
+          def api(path):
+              req = urllib.request.Request("https://api.github.com" + path)
+              req.add_header("Authorization", f"Bearer {token}")
+              req.add_header("Accept", "application/vnd.github+json")
+              try:
+                  return 200, json.load(urllib.request.urlopen(req))
+              except urllib.error.HTTPError as e:
+                  return e.code, None
+
+          try:
+              lines = [l.rstrip("\n") for l in open("/tmp/internal-pins.txt") if l.strip()]
+          except FileNotFoundError:
+              lines = []
+
+          if not lines:
+              print("No SHA-pinned internal dependencies — nothing to check.")
+              raise SystemExit(0)
+
+          # ⛔ THREE OUTCOMES, NOT TWO. `compare` answers 404 both when the commit is gone
+          # and when the token cannot see the repository. A gate that scores 404 as a
+          # violation reports a credential problem as a tampered pin — a false red on the
+          # most alarming possible message, which is how a gate stops being believed.
+          # So reachability is established FIRST, and an unreachable repo is INDETERMINATE:
+          # reported, and not a failure. Same shape as the auth package's
+          # verified / refused / indeterminate split, for the same reason.
+          problems, unknown, checked = [], [], 0
+          reachable = {}
+
+          for line in lines:
+              name, repo, sha = line.split("\t")
+              if repo not in reachable:
+                  code, _ = api(f"/repos/{repo}")
+                  reachable[repo] = (code == 200)
+                  if code != 200:
+                      unknown.append(
+                          f'"{name}": cannot reach {repo} (HTTP {code}). The pin was NOT '
+                          "checked — this is a permissions or availability problem, not a "
+                          "finding about the pin.")
+              if not reachable[repo]:
+                  continue
+
+              code, data = api(f"/repos/{repo}/compare/{protected}...{sha}")
+              checked += 1
+              if code == 404:
+                  problems.append(
+                      f'"{name}": {sha[:10]} does not exist in {repo}. A force-push or a '
+                      "deleted branch can orphan a commit that a lockfile still names.")
+                  continue
+              if code != 200:
+                  unknown.append(f'"{name}": comparing {sha[:10]} in {repo} answered HTTP {code}.')
+                  continue
+
+              status = (data or {}).get("status")
+              if status in ("identical", "behind"):
+                  continue
+              problems.append(
+                  f'"{name}": {sha[:10]} is not an ancestor of {repo}@{protected} '
+                  f"(compare says \"{status}\"). If you pinned a PULL REQUEST head, that is "
+                  "expected — a squash merge creates a new commit and orphans the branch "
+                  "commit. Re-pin to the SHA that landed on the branch.")
+
+          for u in unknown:
+              print(f"  ? {u}")
+
+          if problems:
+              print("ERROR: pinned SHA ancestry check FAILED")
+              print("")
+              for p in problems:
+                  print(f"  - {p}")
+              raise SystemExit(1)
+
+          print(f"Ancestry check passed ({checked} pin(s) verified against "
+                f"@{protected}; {len(unknown)} not checked).")
           PY
