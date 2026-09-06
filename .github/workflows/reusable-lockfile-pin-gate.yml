@@ -156,30 +156,44 @@ jobs:
           def lock_refs_pnpm(path):
               text = open(path, encoding="utf-8").read()
               found = {}
-              # pnpm records the resolved tarball URL, whose last path segment is
-              # the commit. Names appear as `'<name>@https://codeload…/<sha>'`.
+              # pnpm records the resolved tarball URL, whose last path segment is the
+              # commit, keyed by `'<name>@https://codeload…/<sha>'`.
+              #
+              # ⛔ NO WILDCARD FALLBACK. The first draft collected every codeload SHA in
+              # the file under a `"*"` key and fell back to it when a dependency's own
+              # name was not found. That made check 2 unreachable on pnpm for any repo
+              # with a second git dependency: a dep pinned in the manifest but ABSENT
+              # from the lockfile passed, because some other dep's SHA matched. The
+              # fallback existed to avoid a false red and produced a false green, which
+              # is the worse of the two by the whole margin of why this gate exists.
               for name, sha in re.findall(
                       r"'([^']+)@https://codeload\.github\.com/[^']+/([0-9a-f]{40})'",
                       text):
                   found.setdefault(name, set()).add(sha)
-              for sha in re.findall(
-                      r"https://codeload\.github\.com/\S+?/([0-9a-f]{40})", text):
-                  found.setdefault("*", set()).add(sha)
               return found
 
-          lock_refs = {}
+          lock_refs, lock_read = {}, True
           if npm_lock:
               lock_refs = lock_refs_npm("package-lock.json")
           elif pnpm_lock:
               lock_refs = lock_refs_pnpm("pnpm-lock.yaml")
+          elif internal:
+              # A lockfile this gate cannot parse (yarn today) must not be scored as
+              # agreement. Skipping check 2 silently while still printing "checked" is
+              # the control-that-binds-nothing shape, so it is reported instead.
+              lock_read = False
+              problems.append(
+                  f"{locks[0] if locks else 'the lockfile'} is not a format this gate can "
+                  "read, so the manifest pins above were NOT checked against it. Add a "
+                  "parser here rather than letting this pass quietly.")
 
-          if lock_refs:
+          if lock_read:
               for name, spec in sorted(internal.items()):
                   m = sha_re.search(spec)
                   if not m:
                       continue          # already reported by check 1
                   want = m.group(1)
-                  got = lock_refs.get(name) or (lock_refs.get("*") if pnpm_lock else None)
+                  got = lock_refs.get(name)
                   if got is None:
                       problems.append(
                           f'"{name}" is pinned to {want[:10]} in package.json but the '
