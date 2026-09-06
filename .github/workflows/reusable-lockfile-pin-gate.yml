@@ -297,6 +297,17 @@ jobs:
               with open(_fixture, encoding="utf-8") as fh:
                   _canned = json.load(fh)
 
+          # A transport failure is INDETERMINATE, not a violation and not a crash. This
+          # step's whole argument is that it never reports "I could not check" as "the
+          # check failed" -- and catching only HTTPError broke that promise for every
+          # non-HTTP failure: a DNS blip, a reset connection or a TLS error raised
+          # URLError, propagated, and turned the context red with a Python traceback.
+          # A mangled body raised JSONDecodeError and did the same.
+          #
+          # The timeout matters as much: urlopen has NO default, so a hung connection
+          # did not go indeterminate -- it stalled the job to the six-hour ceiling.
+          TRANSPORT_FAILURE = -1
+
           def api(path):
               if _canned is not None:
                   if path not in _canned:
@@ -304,14 +315,24 @@ jobs:
                       # Saying so loudly beats silently scoring it as a finding.
                       raise SystemExit(f"FIXTURE INCOMPLETE: no canned response for {path}")
                   code, body = _canned[path]
+                  # A fixture may name the transport-failure arm, which is otherwise
+                  # unreachable offline: the seam returns before a request is ever built,
+                  # so no canned STATUS can exercise the exception path.
+                  if code == "TRANSPORT_FAILURE":
+                      return TRANSPORT_FAILURE, None
                   return code, body
               req = urllib.request.Request("https://api.github.com" + path)
               req.add_header("Authorization", f"Bearer {token}")
               req.add_header("Accept", "application/vnd.github+json")
               try:
-                  return 200, json.load(urllib.request.urlopen(req))
+                  return 200, json.load(urllib.request.urlopen(req, timeout=20))
               except urllib.error.HTTPError as e:
                   return e.code, None
+              except (urllib.error.URLError, TimeoutError, ValueError):
+                  # URLError covers DNS, refused connections, resets and TLS; TimeoutError
+                  # covers the socket timeout above; ValueError covers a body that is not
+                  # JSON (JSONDecodeError subclasses it).
+                  return TRANSPORT_FAILURE, None
 
           pins_file = os.environ.get("ANCESTRY_PINS_FILE", "/tmp/internal-pins.txt")
           try:
@@ -331,7 +352,7 @@ jobs:
           # reported, and not a failure. Same shape as the auth package's
           # verified / refused / indeterminate split, for the same reason.
           problems, unknown, verified = [], [], 0
-          reachable, has_base = {}, {}
+          reachable, has_base, repo_code = {}, {}, {}
 
           for line in lines:
               name, repo, sha = line.split("\t")
@@ -339,14 +360,18 @@ jobs:
               if repo not in reachable:
                   code, _ = api(f"/repos/{repo}")
                   reachable[repo] = (code == 200)
+                  repo_code[repo] = code
               if not reachable[repo]:
                   # Reported PER DEPENDENCY, not per repo. Caching the probe is right;
                   # caching the diagnostic silently drops every dependency after the first
                   # on the same unreachable repo, and the summary then undercounts what was
                   # skipped — an indeterminate that is not reported is just a miss.
+                  why = ("the API did not answer" if repo_code.get(repo) == TRANSPORT_FAILURE
+                         else f"HTTP {repo_code.get(repo)}")
                   unknown.append(
-                      f'"{name}": cannot reach {repo}. The pin was NOT checked — this is a '
-                      "permissions or availability problem, not a finding about the pin.")
+                      f'"{name}": cannot reach {repo} ({why}). The pin was NOT checked — '
+                      "this is a permissions or availability problem, not a finding about "
+                      "the pin.")
                   continue
 
               code, data = api(f"/repos/{repo}/compare/{protected}...{sha}")
@@ -375,7 +400,9 @@ jobs:
                   continue
 
               if code != 200:
-                  unknown.append(f'"{name}": comparing {sha[:10]} in {repo} answered HTTP {code}.')
+                  how = ("the API did not answer" if code == TRANSPORT_FAILURE
+                         else f"answered HTTP {code}")
+                  unknown.append(f'"{name}": comparing {sha[:10]} in {repo} {how}.')
                   continue
 
               status = (data or {}).get("status")
