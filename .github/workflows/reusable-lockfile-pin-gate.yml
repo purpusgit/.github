@@ -237,16 +237,24 @@ jobs:
           print(f"Lockfile and internal pin gate passed "
                 f"({n} internal git dependenc{'y' if n == 1 else 'ies'} checked).")
 
-          # Hand the SHA-pinned dependencies to the optional ancestry step. Written even
-          # when that step is off, because a file that is always produced is easier to
-          # reason about than one that appears conditionally.
-          import os as _os
+          # Hand the SHA-pinned dependencies to the optional ancestry step. Only written
+          # when this step succeeds -- an earlier `raise SystemExit(1)` returns before it,
+          # and step 2 is skipped on a failed step anyway. Step 2 still handles the file
+          # being absent, because "no file" and "no pins" must not look like an error.
           with open("/tmp/internal-pins.txt", "w", encoding="utf-8") as fh:
               for name, spec in sorted(internal.items()):
                   m = sha_re.search(spec)
-                  if m:
-                      owner_repo = owner_of(spec), spec.split("#")[0].split("/")[-1]
-                      fh.write(f"{name}\t{owner_repo[0]}/{owner_repo[1]}\t{m.group(1)}\n")
+                  if not m:
+                      continue
+                  # `.git` must come off: `git+https://github.com/purpusgit/x.git#<sha>` is a
+                  # form owner_of() explicitly supports, and `purpusgit/x.git` is a 404 --
+                  # which step 2 would report as "cannot reach", turning a PARSER BUG into a
+                  # credentials message on a run that prints "passed". A control that looks
+                  # present and binds nothing, which is the shape this gate exists to remove.
+                  repo_name = spec.split("#")[0].rstrip("/").split("/")[-1]
+                  if repo_name.endswith(".git"):
+                      repo_name = repo_name[:-4]
+                  fh.write(f"{name}\t{owner_of(spec)}/{repo_name}\t{m.group(1)}\n")
           PY
 
       - name: Check each pinned SHA is still on a protected branch
@@ -256,7 +264,7 @@ jobs:
           PROTECTED: ${{ inputs.protected_branch }}
         run: |
           python3 - <<'PY'
-          import json, os, urllib.request, urllib.error, sys
+          import json, os, urllib.request, urllib.error
 
           token = os.environ["GH_TOKEN"]
           protected = os.environ["PROTECTED"]
@@ -286,35 +294,57 @@ jobs:
           # So reachability is established FIRST, and an unreachable repo is INDETERMINATE:
           # reported, and not a failure. Same shape as the auth package's
           # verified / refused / indeterminate split, for the same reason.
-          problems, unknown, checked = [], [], 0
-          reachable = {}
+          problems, unknown, verified = [], [], 0
+          reachable, has_base = {}, {}
 
           for line in lines:
               name, repo, sha = line.split("\t")
+
               if repo not in reachable:
                   code, _ = api(f"/repos/{repo}")
                   reachable[repo] = (code == 200)
-                  if code != 200:
-                      unknown.append(
-                          f'"{name}": cannot reach {repo} (HTTP {code}). The pin was NOT '
-                          "checked — this is a permissions or availability problem, not a "
-                          "finding about the pin.")
               if not reachable[repo]:
+                  # Reported PER DEPENDENCY, not per repo. Caching the probe is right;
+                  # caching the diagnostic silently drops every dependency after the first
+                  # on the same unreachable repo, and the summary then undercounts what was
+                  # skipped — an indeterminate that is not reported is just a miss.
+                  unknown.append(
+                      f'"{name}": cannot reach {repo}. The pin was NOT checked — this is a '
+                      "permissions or availability problem, not a finding about the pin.")
                   continue
 
               code, data = api(f"/repos/{repo}/compare/{protected}...{sha}")
-              checked += 1
+
               if code == 404:
+                  # ⛔ 404 IS STILL AMBIGUOUS HERE, one level down from the repo probe. It
+                  # means "no such commit" OR "no such base ref in this repo" — the bodies
+                  # are byte-identical. `protected_branch` is one string for every
+                  # dependency while this org's convention is three-way (sandbox for
+                  # backend, cwb for Flutter, main for .github), so the first cross-family
+                  # pin hits a missing base ref, not a missing commit. Scoring that as a
+                  # violation prints "a force-push orphaned your commit" at someone whose
+                  # commit is fine — the exact false red this step was designed against.
+                  if repo not in has_base:
+                      bcode, _ = api(f"/repos/{repo}/branches/{protected}")
+                      has_base[repo] = (bcode == 200)
+                  if not has_base[repo]:
+                      unknown.append(
+                          f'"{name}": {repo} has no branch "{protected}", so the pin was NOT '
+                          "checked. Set `protected_branch` to the branch this dependency's "
+                          "repository actually uses.")
+                      continue
                   problems.append(
                       f'"{name}": {sha[:10]} does not exist in {repo}. A force-push or a '
                       "deleted branch can orphan a commit that a lockfile still names.")
                   continue
+
               if code != 200:
                   unknown.append(f'"{name}": comparing {sha[:10]} in {repo} answered HTTP {code}.')
                   continue
 
               status = (data or {}).get("status")
               if status in ("identical", "behind"):
+                  verified += 1
                   continue
               problems.append(
                   f'"{name}": {sha[:10]} is not an ancestor of {repo}@{protected} '
@@ -332,6 +362,9 @@ jobs:
                   print(f"  - {p}")
               raise SystemExit(1)
 
-          print(f"Ancestry check passed ({checked} pin(s) verified against "
-                f"@{protected}; {len(unknown)} not checked).")
+          # Not the word "passed" when nothing was verified. A run that checked nothing
+          # and a run that found nothing wrong print the same line otherwise, and the
+          # first one is the failure this whole gate is about.
+          print(f"Ancestry check: {verified} pin(s) verified against @{protected}, "
+                f"{len(unknown)} indeterminate.")
           PY
