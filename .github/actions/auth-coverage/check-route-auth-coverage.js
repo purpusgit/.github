@@ -140,6 +140,16 @@ const RELATIVE_PATH   = /^(\/|\*|$)/;                 // a route path is relativ
                                                       // real route: the router's own mount point
 const HAS_FURTHER_ARG = /^\s*,/;                      // a registration passes a handler AFTER the path
 const CONSUMED        = /(await|=|\?\?|\|\||&&)\s*$/; // a client call's return value is consumed
+// ponytail: CONSUMED trades a false positive for a false negative, and the false NEGATIVE is the
+// dangerous side. A genuinely gated route preceded within 40 characters by `=` is silently
+// DROPPED — `export const mounted = app.get('/x', authenticate, h);` disappears from the count.
+// No such shape exists in the estate today: old and new predicates produce byte-identical counts
+// on every measured service, and the old one had no CONSUMED filter at all, so anything CONSUMED
+// now rejects was never being counted anyway. Whoever widens this is trading that proof away.
+// Upgrade path if it ever bites: drop everything but `await` from the alternation. The other three
+// alternatives are only load-bearing for a relative-path client call that also passes a second
+// argument, and over-counting one of those is the SAFE direction — it costs an allowlist entry,
+// where an under-count costs a route nobody can see.
 
 const violations = [];
 const redundant = [];

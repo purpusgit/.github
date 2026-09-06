@@ -162,6 +162,29 @@ r = run(['src/mnt', 'auth-exceptions.json']);
 t('DEFECT 10: an empty path is a route (the router mount point), not skipped', r.code === 0 && /2 live route/.test(r.out), r.out);
 
 
+// ── DEFECT 11: a fire-and-forget client call IS counted, and that is the safe direction ──
+// The residue of the three discriminators: `httpClient.post('/x', payload);` is relative, passes a
+// second argument, and does not consume its result — indistinguishable BY SHAPE from a registration
+// without a parser. It is counted, so it appears as an ungated route and costs an allowlist entry
+// with a written reason. That is the direction to fail in: an over-count is loud and one person
+// pays for it once, an under-count is silent and nobody pays until an incident. Asserted rather
+// than argued, so the next edit to CONSUMED moves it in front of a red test instead of quietly.
+w('src/ff/notify.ts', "httpClient.post('/webhooks/notify', payload);\nqueue.publish('/topic/x', msg);\nrouter.get('/real', authenticate, h);\n");
+r = run(['src/ff', 'auth-exceptions.json']);
+t('DEFECT 11: an unconsumed client call is over-counted, not silently dropped', r.code === 1 && /\/webhooks\/notify/.test(r.out), r.out);
+t('DEFECT 11: a non-verb method (queue.publish) is not a route', !/\/topic\/x/.test(r.out), r.out);
+
+// ── DEFECT 12: .use() is excluded — the behaviour, not the paragraph about it ──
+// Two shapes, one exclusion. Mounting a sub-router double-counts leaves this walk already counts
+// from the router's own file. An inline-handler .use() is a reachable CENSUS surface but not a
+// GATE surface: no verb, so "GET /x is ungated" cannot be said about it and no allowlist key can
+// name it. That is a stated ceiling of this gate — an app whose endpoints live on .use() is
+// invisible to it, and the entry file's mounts are what catch that, not this regex.
+w('src/mount/app.ts', "app.use('/api', apiRouter);\napp.use('/inline', (req, res, next) => next());\nrouter.get('/counted', authenticate, h);\n");
+r = run(['src/mount', 'auth-exceptions.json']);
+t('DEFECT 12: .use() is not counted, for either mounting or an inline handler', r.code === 0 && /1 live route/.test(r.out), r.out);
+
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(failures ? `\n${failures} self-test failure(s)` : '\nall self-tests passed');
 process.exit(failures ? 1 : 0);
