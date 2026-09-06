@@ -105,6 +105,10 @@ BEHAVIOUR = {
             {"step": "Check each pinned SHA is still on a protected branch",
              "key": "ancestry",
              "expect": "is not an ancestor of",
+             # Asserted on the PASS side too: without this, a mutation that stops
+             # counting anything as verified prints "0 pin(s) verified … 5
+             # indeterminate", exits 0, and is scored as a pass.
+             "expect_pass": "2 pin(s) verified against @sandbox, 4 indeterminate",
              "env": {"GH_TOKEN": "unused-by-the-fixture",
                      "PROTECTED": "sandbox",
                      "ANCESTRY_PINS_FILE": "pins.txt",
@@ -403,7 +407,7 @@ def run_predicate(script, workdir, env=None):
                        env={**os.environ, **env} if env else None)
     return r.returncode, r.stdout + r.stderr
 
-def behavioural_dir(script, key, label, prep=None, expect=None,
+def behavioural_dir(script, key, label, prep=None, expect=None, expect_pass=None,
                     env=None, env_fail=None, resolve=None):
     """`resolve`, when given, is called with the prepared fixture directory and
     returns {"<expression>": "<value>"} for `${{ <expression> }}` occurrences the
@@ -444,6 +448,15 @@ def behavioural_dir(script, key, label, prep=None, expect=None,
             code, out = run_predicate(case_script, work, env=case_env or None)
             if want_zero and code != 0:
                 fail(f"{label}: PASS fixture unexpectedly RED (exit {code})\n{out}")
+            elif want_zero and expect_pass and expect_pass not in out:
+                # Exit 0 is necessary but not sufficient, for the same reason the
+                # non-zero side needs `expect`: a gate that CHECKED NOTHING and a gate
+                # that found nothing wrong both exit 0. Without this, a mutation that
+                # turns every verification into "could not check" is scored as a pass —
+                # which is the exact defect the gates in this repo exist to catch, in
+                # the harness that is supposed to catch it.
+                fail(f"{label}: PASS fixture exited 0 but the output does not contain "
+                     f"{expect_pass!r} — it may have passed by checking NOTHING\n{out}")
             elif not want_zero and code == 0:
                 fail(f"{label}: FAIL fixture was NOT caught (exit 0) — gate is asleep\n{out}")
             elif not want_zero and expect and expect not in out:
@@ -452,9 +465,11 @@ def behavioural_dir(script, key, label, prep=None, expect=None,
                 fail(f"{label}: FAIL fixture exited {code} but the output does not "
                      f"contain {expect!r} — the gate went red for the WRONG reason\n{out}")
             else:
-                ok(f"{label}: {case} fixture behaves ("
-                   f"{'exit 0' if want_zero else 'non-zero'}"
-                   f"{'' if want_zero or not expect else f', reports {expect!r}'})")
+                if want_zero:
+                    detail = "exit 0" + (f", reports {expect_pass!r}" if expect_pass else "")
+                else:
+                    detail = "non-zero" + (f", reports {expect!r}" if expect else "")
+                ok(f"{label}: {case} fixture behaves ({detail})")
 
 def build_diff_repo(tmp, fpath, base_content, added_line, origin_ref=True):
     """Two-branch git repo the diff-based gates need. Base branch 'cwb' holds
@@ -1124,6 +1139,7 @@ def main():
                 behavioural_dir(script, beh["key"], fn,
                                 prep=prep and prep.replace("{ROOT}", ROOT),
                                 expect=beh.get("expect"),
+                                expect_pass=beh.get("expect_pass"),
                                 env=beh.get("env"), env_fail=beh.get("env_fail"))
                 if beh["key"] == "flutter-analyze":
                     analyze_script = script
@@ -1144,6 +1160,7 @@ def main():
                 behavioural_dir(sub_inputs(xscript, fixture_inputs(doc, extra)),
                                 extra["key"], f"{fn}[{extra['step']}]",
                                 expect=extra["expect"],
+                                expect_pass=extra.get("expect_pass"),
                                 env=extra.get("env"), env_fail=extra.get("env_fail"))
             if beh.get("note"):
                 print(f"  ⤳ PARTIAL: {beh['note']}")

@@ -25,6 +25,14 @@
   502,
   null
  ],
+ "/repos/purpusgit/repo_forbidden": [
+  403,
+  null
+ ],
+ "/repos/purpusgit/repo_invisible": [
+  404,
+  null
+ ],
  "/repos/purpusgit/repo_nobranch": [
   200,
   {
@@ -37,10 +45,6 @@
  ],
  "/repos/purpusgit/repo_nobranch/compare/sandbox...4444444444444444444444444444444444444444": [
   404,
-  null
- ],
- "/repos/purpusgit/repo_private": [
-  403,
   null
  ]
 }
