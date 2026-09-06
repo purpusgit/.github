@@ -111,6 +111,80 @@ w('src/env2/b.ts', "router.get('/fine', authenticate, h);\n");
 r = run(['src/env2', 'auth-exceptions.json'], POISON);
 t('DEFECT 6: a genuinely gated route still passes with the same environment set', r.code === 0, r.out);
 
+// ── DEFECT 7: the matcher reads the REGISTRATION, not the receiver's NAME ────
+// It required the receiver's identifier to contain "router", so two services registering on
+// `fastify.` and `app.` were invisible. What saved them was the empty-root refusal firing on a
+// directory that looked empty — a safety net catching a design flaw, not a design — and that net
+// has a hole: a root that is NOT empty reports green over every tree it does not name.
+w('src/recv/frameworks.ts', "router.get('/by-router', authenticate, h);\napiRouter.post('/by-api-router', authenticate, h);\napp.get('/by-app', authenticate, h);\nfastify.post('/by-fastify', authenticate, h);\nserver.put('/by-server', authenticate, h);\ninstance.delete('/by-anything', authenticate, h);\n");
+r = run(['src/recv', 'auth-exceptions.json']);
+t('DEFECT 7: every receiver name is matched, not just *router*', r.code === 0 && /6 live route/.test(r.out), r.out);
+
+// The real shapes those two services use. Fastify and the Fastify-style `app` take an OPTIONS
+// OBJECT between the path and the handler, and that object is where their auth lives
+// (`preHandler: [authenticate]`). A rule rejecting an object as the second argument would hide
+// exactly the routes this change exists to see.
+w('src/opts/fastify.ts', "fastify.post('/with-empty-opts', {}, async (req, reply) => {});\napp.get('/with-prehandler', { preHandler: [authenticate] }, async (req, reply) => {});\napp.get('/ungated-with-opts', { schema: {} }, async (req, reply) => {});\n");
+r = run(['src/opts', 'auth-exceptions.json']);
+t('DEFECT 7: an options object between path and handler does not hide the route', r.code === 1 && /with-empty-opts/.test(r.out) && /ungated-with-opts/.test(r.out), r.out);
+t('DEFECT 7: auth inside that options object still counts as gated', r.code === 1 && !/with-prehandler/.test(r.out), r.out);
+
+// ── DEFECT 8: an outbound HTTP call is not a route ──────────────────────────
+// Broadening the receiver makes every HTTP client a candidate; ten exist in the estate today.
+// TWO properties separate a registration from a call and both are needed: a route path is
+// RELATIVE, and a registration passes a handler AFTER the path. The awaited case needs a third.
+w('src/out/clients.ts', "const a = await axios.get('https://example.com/v1/thing');\nconst b = await axios.get(`${base}/user/get/${id}`, { headers });\nconst c = await apiHelper.get(`/admin/users/${id}`);\nawait http.post('/internal/ping', { timeout: 5 });\nconst d = db.delete(userContacts).where(eq(x, y));\nrouter.get('/a-real-one', authenticate, h);\n");
+r = run(['src/out', 'auth-exceptions.json']);
+t('DEFECT 8: outbound HTTP clients and ORM calls are not counted as routes', r.code === 0 && /1 live route/.test(r.out), r.out);
+
+// ── DEFECT 9: a fixture is not a route, and "test" is not a substring rule ──
+// A real false alarm: 30 registrations across three services, all fixtures inside a file named
+// `*.selftest.js`, indistinguishable from real routes by shape. The old filter matched `.test.`
+// and missed `.selftest.`. The rule must be the CONVENTION — a dot-delimited suffix or a
+// conventional directory — never a bare substring, or a real route file named for a product
+// feature is silently dropped.
+w('src/fx/handler.selftest.ts', "router.get('/fixture-ghost', h);\n");
+w('src/fx/thing.test.ts', "router.get('/test-ghost', h);\n");
+w('src/fx/__tests__/x.ts', "router.get('/dir-ghost', h);\n");
+w('src/fx/test-mode/live.ts', "router.get('/genuinely-a-route', authenticate, h);\n");
+w('src/fx/latest.ts', "router.get('/also-a-route', authenticate, h);\n");
+r = run(['src/fx', 'auth-exceptions.json']);
+t('DEFECT 9: fixtures in .selftest./.test./__tests__ are not counted', r.code === 0 && !/ghost/.test(r.out), r.out);
+t('DEFECT 9: a real route file whose NAME merely contains "test" is still scanned', /2 live route/.test(r.out), r.out);
+
+// ── DEFECT 10: an EMPTY path is a route — it serves the router's own mount point ──
+// Caught by diffing all eleven measured services old-vs-new before merging: requiring the path to
+// start with "/" silently dropped one real, gated route — `routerApi.get('', authMiddleware, h)`,
+// which serves the path its router is mounted at. A discriminator that is too STRICT is a silent
+// under-count, the same class of failure as one that is too loose.
+w('src/mnt/index.ts', "routerApi.get('', authMiddleware, (req, res) => {});\nrouterApi.get('/child', authMiddleware, (req, res) => {});\n");
+r = run(['src/mnt', 'auth-exceptions.json']);
+t('DEFECT 10: an empty path is a route (the router mount point), not skipped', r.code === 0 && /2 live route/.test(r.out), r.out);
+
+
+// ── DEFECT 11: a fire-and-forget client call IS counted, and that is the safe direction ──
+// The residue of the three discriminators: `httpClient.post('/x', payload);` is relative, passes a
+// second argument, and does not consume its result — indistinguishable BY SHAPE from a registration
+// without a parser. It is counted, so it appears as an ungated route and costs an allowlist entry
+// with a written reason. That is the direction to fail in: an over-count is loud and one person
+// pays for it once, an under-count is silent and nobody pays until an incident. Asserted rather
+// than argued, so the next edit to CONSUMED moves it in front of a red test instead of quietly.
+w('src/ff/notify.ts', "httpClient.post('/webhooks/notify', payload);\nqueue.publish('/topic/x', msg);\nrouter.get('/real', authenticate, h);\n");
+r = run(['src/ff', 'auth-exceptions.json']);
+t('DEFECT 11: an unconsumed client call is over-counted, not silently dropped', r.code === 1 && /\/webhooks\/notify/.test(r.out), r.out);
+t('DEFECT 11: a non-verb method (queue.publish) is not a route', !/\/topic\/x/.test(r.out), r.out);
+
+// ── DEFECT 12: .use() is excluded — the behaviour, not the paragraph about it ──
+// Two shapes, one exclusion. Mounting a sub-router double-counts leaves this walk already counts
+// from the router's own file. An inline-handler .use() is a reachable CENSUS surface but not a
+// GATE surface: no verb, so "GET /x is ungated" cannot be said about it and no allowlist key can
+// name it. That is a stated ceiling of this gate — an app whose endpoints live on .use() is
+// invisible to it, and the entry file's mounts are what catch that, not this regex.
+w('src/mount/app.ts', "app.use('/api', apiRouter);\napp.use('/inline', (req, res, next) => next());\nrouter.get('/counted', authenticate, h);\n");
+r = run(['src/mount', 'auth-exceptions.json']);
+t('DEFECT 12: .use() is not counted, for either mounting or an inline handler', r.code === 0 && /1 live route/.test(r.out), r.out);
+
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(failures ? `\n${failures} self-test failure(s)` : '\nall self-tests passed');
 process.exit(failures ? 1 : 0);

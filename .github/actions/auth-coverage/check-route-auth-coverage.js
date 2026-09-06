@@ -5,11 +5,15 @@
 // than a string literal, could slip past undetected. It also cannot see that a registration
 // is commented out, and cannot see the mount graph, so a dead registration still counts.
 // Upgrade to an AST-based check (e.g. ts-morph) if any of that proves to be a real gap.
-// Only checks .get/.post/.put/.patch/.delete — .use() is deliberately excluded. .use() in
-// this fleet is exclusively sub-router mounting (app.use(path, someRouter)) or global
-// middleware, never a route handler on its own; the leaf routes inside a mounted router are
-// already checked individually when this walks that router's own file. Including .use() just
-// produced one duplicate false-positive per mount point with no additional coverage.
+// Only checks .get/.post/.put/.patch/.delete — .use() stays excluded, and now that the
+// matcher accepts ANY receiver that reason needs stating rather than assuming. A .use() is
+// one of two things. Mounting a sub-router (app.use(path, someRouter)) is not a route: its
+// leaves are counted when this walks that router's own file, so counting the mount too
+// double-counts every one of them. A .use() carrying an inline handler IS a reachable
+// surface, but it is a CENSUS surface, not a GATE surface — it has no verb, so "GET /x is
+// ungated" cannot be said about it and no allowlist key can name it. Excluding it is a
+// stated ceiling of this gate, not an oversight; an app whose real endpoints live on .use()
+// is invisible to it, and that is the case to catch by reading the entry file's mounts.
 //
 // FOUR WAYS THIS GATE USED TO REPORT GREEN WITHOUT MEANING IT, all now refused:
 //   1. An absent or empty root scanned nothing and passed. A repo whose routes live in
@@ -77,8 +81,13 @@ function walk(dir, out = []) {
     // Normalized to forward slashes here (not just at match time) — path.join uses the
     // platform separator, but every allowlist key in auth-exceptions.json is forward-slash.
     const p = path.join(dir, entry.name).split(path.sep).join('/');
-    if (entry.isDirectory()) walk(p, out);
-    else if (/\.(ts|js)$/.test(entry.name) && !/\.(test|spec|selfcheck|check)\.(ts|js)$/.test(entry.name)) out.push(p);
+    // Fixture exclusion is by CONVENTION — a dot-delimited suffix or a conventional
+    // directory — never a bare substring. `.selftest.` was being missed while a real route
+    // file named `latest.ts` or living under `test-mode/` must stay scanned.
+    if (entry.isDirectory()) {
+      if (!/^(__tests__|__mocks__|node_modules)$/.test(entry.name)) walk(p, out);
+    } else if (/\.(ts|js)$/.test(entry.name)
+               && !/\.(test|spec|selftest|selfcheck|check)\.(ts|js)$/.test(entry.name)) out.push(p);
   }
   return out;
 }
@@ -117,8 +126,30 @@ function commentMask(src) {
   return masked;
 }
 
-// Matches: <anything with "router" in it>.<verb>(  '<path>'  , ...rest-of-args...  ) ;
-const ROUTE_RE = /\b[\w$]*[Rr]outer\w*\s*\.\s*(get|post|put|patch|delete)\s*\(\s*(['"`])((?:\\.|(?!\2).)*)\2([\s\S]*?)\)\s*;/g;
+// Matches: <any receiver>.<verb>(  '<path>'  , ...rest-of-args...  ) ;
+// The receiver used to have to contain "router". That made the gate blind to two whole
+// services registering on `fastify.` and `app.` — and what hid it was the empty-root refusal
+// firing, i.e. a safety net catching a design flaw. The receiver is now unconstrained, so
+// three discriminators below do the work the name used to do badly.
+const ROUTE_RE = /\b([A-Za-z_$][\w$]*)\s*\.\s*(get|post|put|patch|delete)\s*\(\s*(['"`])((?:\\.|(?!\3).)*)\3([\s\S]*?)\)\s*;/g;
+
+// An outbound HTTP client call is the shape a broadened receiver picks up by accident
+// (axios.get, apiHelper.get, http.post) and so is an ORM verb (db.delete(t).where(...)).
+// Three properties separate a registration from a call, and all three are needed:
+const RELATIVE_PATH   = /^(\/|\*|$)/;                 // a route path is relative — and '' is a
+                                                      // real route: the router's own mount point
+const HAS_FURTHER_ARG = /^\s*,/;                      // a registration passes a handler AFTER the path
+const CONSUMED        = /(await|=|\?\?|\|\||&&)\s*$/; // a client call's return value is consumed
+// ponytail: CONSUMED trades a false positive for a false negative, and the false NEGATIVE is the
+// dangerous side. A genuinely gated route preceded within 40 characters by `=` is silently
+// DROPPED — `export const mounted = app.get('/x', authenticate, h);` disappears from the count.
+// No such shape exists in the estate today: old and new predicates produce byte-identical counts
+// on every measured service, and the old one had no CONSUMED filter at all, so anything CONSUMED
+// now rejects was never being counted anyway. Whoever widens this is trading that proof away.
+// Upgrade path if it ever bites: drop everything but `await` from the alternation. The other three
+// alternatives are only load-bearing for a relative-path client call that also passes a second
+// argument, and over-counting one of those is the SAFE direction — it costs an allowlist entry,
+// where an under-count costs a route nobody can see.
 
 const violations = [];
 const redundant = [];
@@ -135,7 +166,10 @@ for (const ROOT of ROOTS) {
     let m;
     while ((m = ROUTE_RE.exec(src))) {
       if (masked[m.index]) { commented++; continue; }   // a commented-out registration is not a route
-      const [, verb, , routePath, rest] = m;
+      const [, , verb, , routePath, rest] = m;
+      if (!RELATIVE_PATH.test(routePath)) continue;                            // an absolute URL is a client call
+      if (!HAS_FURTHER_ARG.test(rest)) continue;                               // no handler follows: not a registration
+      if (CONSUMED.test(src.slice(Math.max(0, m.index - 40), m.index))) continue; // its value is consumed: a call
       checked++; here++;
       const hasAuthToken = AUTH_TOKENS.some(t => rest.includes(t));
       const bareKey = `${verb.toUpperCase()} ${routePath}`;
