@@ -185,6 +185,33 @@ r = run(['src/mount', 'auth-exceptions.json']);
 t('DEFECT 12: .use() is not counted, for either mounting or an inline handler', r.code === 0 && /1 live route/.test(r.out), r.out);
 
 
+// ── DEFECT 13: a commented-out middleware is not a middleware ────────────────
+// Found in the field, not invented. Two live registrations on the largest social surface in the
+// estate read `// verifyAuthToken,` inside their argument list, and the gate scored both as GATED
+// because it tested the RAW argument text. A missed route is a hole you can see; a route reported
+// as PROTECTED while serving anonymous traffic is a hole that closes the investigation.
+w('src/ghost/routes.ts', "router.post('/looks-gated',\n  multipart,\n  // authenticate,\n  handler\n);\nrouter.post('/really-gated',\n  multipart,\n  authenticate,\n  handler\n);\n");
+fs.writeFileSync(path.join(tmp, 'auth-exceptions.json'), JSON.stringify({}, null, 1));
+r = run(['src/ghost', 'auth-exceptions.json']);
+t('DEFECT 13: auth commented out INSIDE the registration does not count as gated', r.code === 1 && /looks-gated/.test(r.out), r.out);
+t('DEFECT 13: the identical registration with it live is still gated', !/really-gated/.test(r.out), r.out);
+t('DEFECT 13: both multi-line registrations were counted at all', /2 route/.test(r.out), r.out);
+
+
+// The shape that PROVES the offset rather than merely surviving it. A wide gap between `)` and `;`
+// makes the mis-measurement long enough for the comment's tail to reach the token test — this
+// fixture passed (reported GATED) against the first version of the fix above.
+w('src/gap/routes.ts', "router.post('/gap', multipart, handler\n  // TODO put back verifyAuthToken\n)                    ;\n");
+r = run(['src/gap', 'auth-exceptions.json']);
+t('DEFECT 13: a wide gap before the semicolon does not smuggle the comment past the mask', r.code === 1 && /\/gap/.test(r.out), r.out);
+
+// And the other direction of the same arithmetic: a LIVE token immediately followed by a block
+// comment, with no space. Mis-measuring truncates `authenticate` and reports a gated route as open.
+w('src/tight/routes.ts', "router.post('/tight-block', multipart, authenticate/*old*/, handler);\n");
+r = run(['src/tight', 'auth-exceptions.json']);
+t('DEFECT 13: a live token abutting a block comment is still gated', r.code === 0, r.out);
+
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(failures ? `\n${failures} self-test failure(s)` : '\nall self-tests passed');
 process.exit(failures ? 1 : 0);
