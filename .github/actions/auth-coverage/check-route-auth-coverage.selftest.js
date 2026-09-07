@@ -212,6 +212,31 @@ r = run(['src/tight', 'auth-exceptions.json']);
 t('DEFECT 13: a live token abutting a block comment is still gated', r.code === 0, r.out);
 
 
+
+// ── DEFECT 14: zero roots is a lost handover, not a clean tree ───────────────
+// `roots` crosses a job-output boundary. Every way that channel drops a value lands on
+// the same empty string, and "" reaches here as a TRUTHY " " once joined, so the
+// `|| 'src/api'` default never fires and filter(Boolean) empties the list. Measured
+// before the guard: `node check.js "" ""` printed "passed - 0 live route(s) checked
+// across 0 root(s)" and exited 0, on a REQUIRED check. The per-root refusal cannot see
+// it -- that fires once per root, and there are no roots.
+r = run(['', '']);
+t('DEFECT 14: an empty roots argument is refused, not passed', r.code === 1 && /no scan roots/.test(r.out), r.out);
+t('DEFECT 14: the refusal names the handover, not the routes', /handover was lost/.test(r.out), r.out);
+// THE PARTIAL LOSS, which is the likelier one and which an earlier version of this
+// guard did not catch. `roots` and `allowlist` are two separate `roots=`/`allowlist=`
+// appends, so ONE of them can go while the other survives -- and the allowlist is the
+// one that survives, because it is popped off the end. This used to land on a
+// `|| 'src/api'` default and scan ONE of service_orbit_orgs' TWO surfaces, green.
+r = run(['', 'auth-exceptions.json']);
+t('DEFECT 14: roots lost while the allowlist survives is refused, not defaulted',
+  r.code === 1 && /no scan roots/.test(r.out), r.out);
+// And no arguments at all: there is no default, so this is the same refusal rather
+// than a scan of some assumed directory.
+r = run([]);
+t('DEFECT 14: no arguments at all is refused rather than defaulted to src/api',
+  r.code === 1 && /no scan roots/.test(r.out) && !/src\/api: /.test(r.out), r.out);
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(failures ? `\n${failures} self-test failure(s)` : '\nall self-tests passed');
 process.exit(failures ? 1 : 0);

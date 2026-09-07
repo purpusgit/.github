@@ -1044,14 +1044,21 @@ def actionlint_gate():
 
 
 # ── the M34 auth-coverage gate ───────────────────────────────────────────────
-# Required on four repos (service_auth, service_mongo_social, service_orbit_orgs,
-# service_org_broadcast) and deliberately a COMPOSITE ACTION rather than a reusable
+# Required on NINE repos -- measured 2026-09-07 by reading branch protection on
+# `sandbox` for every repo carrying a .github/auth-coverage.json: service_auth,
+# service_mongo_social, service_mongo_admin, service_orbit_orgs, service_orbit_kafka,
+# service_orbit_analytics, service_org_broadcast, service_marketplace_ecom,
+# service_nearyest. This comment said FOUR until then, understating the blast radius
+# of every change to this predicate by more than half; action.yml two directories over
+# has said "Nine services" the whole time. Counted, not remembered -- and the count is
+# dated because it will move again.
+# Deliberately a COMPOSITE ACTION rather than a reusable
 # workflow -- see action.yml for why. The side effect is that main()'s loop over
 # .github/workflows/ structurally cannot see it, so the org's most-required
 # non-Flutter gate had no coverage here at all.
 #
 # It also had no red-proof in the wild: every failed run on the `auth-coverage`
-# context across all four repos failed in a DIFFERENT step of the same job (a
+# context across the repos then measured failed in a DIFFERENT step of the same job (a
 # secret-scan step), never in the predicate. Green forever on the thing it is
 # actually for. That is the shape this harness exists to break.
 AUTH_COVERAGE_DIR = os.path.join(ROOT, ".github", "actions", "auth-coverage")
@@ -1092,10 +1099,10 @@ def canary_auth_coverage(script, resolve):
 
 
 def auth_coverage_gate():
-    print("── .github/actions/auth-coverage (composite action; required on 4 repos)")
+    print("── .github/actions/auth-coverage (composite action; required on 9 repos)")
     action = os.path.join(AUTH_COVERAGE_DIR, "action.yml")
     if not os.path.exists(action):
-        fail("auth-coverage: action.yml is missing — a gate four repos require has "
+        fail("auth-coverage: action.yml is missing — a gate nine repos require has "
              "no predicate on disk")
         return
     doc = load_yaml(action)
