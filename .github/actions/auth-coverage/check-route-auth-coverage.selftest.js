@@ -223,16 +223,19 @@ t('DEFECT 13: a live token abutting a block comment is still gated', r.code === 
 r = run(['', '']);
 t('DEFECT 14: an empty roots argument is refused, not passed', r.code === 1 && /no scan roots/.test(r.out), r.out);
 t('DEFECT 14: the refusal names the handover, not the routes', /handover was lost/.test(r.out), r.out);
-// The other direction: no arguments AT ALL still takes the documented default, so this
-// guard has not quietly removed the standalone invocation. Asserted on the SCAN LINE,
-// not the exit code -- src/api by now holds fixture routes from earlier defects and is
-// legitimately red, and scoring this on the verdict would test those routes rather than
-// the thing under test, which is that the default fired at all.
-w('src/api/routes.ts', "router.get('/x', authenticate, handler);\n");
-fs.writeFileSync(path.join(tmp, 'auth-exceptions.json'), JSON.stringify({}, null, 1));
+// THE PARTIAL LOSS, which is the likelier one and which an earlier version of this
+// guard did not catch. `roots` and `allowlist` are two separate `roots=`/`allowlist=`
+// appends, so ONE of them can go while the other survives -- and the allowlist is the
+// one that survives, because it is popped off the end. This used to land on a
+// `|| 'src/api'` default and scan ONE of service_orbit_orgs' TWO surfaces, green.
+r = run(['', 'auth-exceptions.json']);
+t('DEFECT 14: roots lost while the allowlist survives is refused, not defaulted',
+  r.code === 1 && /no scan roots/.test(r.out), r.out);
+// And no arguments at all: there is no default, so this is the same refusal rather
+// than a scan of some assumed directory.
 r = run([]);
-t('DEFECT 14: no arguments at all still defaults to src/api and scans it',
-  /src\/api: [1-9]\d* route/.test(r.out) && !/no scan roots/.test(r.out), r.out);
+t('DEFECT 14: no arguments at all is refused rather than defaulted to src/api',
+  r.code === 1 && /no scan roots/.test(r.out) && !/src\/api: /.test(r.out), r.out);
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(failures ? `\n${failures} self-test failure(s)` : '\nall self-tests passed');

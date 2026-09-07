@@ -37,15 +37,25 @@ const path = require('path');
 const argv = process.argv.slice(2);
 let ALLOWLIST_PATH = 'auth-exceptions.json';
 if (argv.length > 1 && /auth-exceptions|\.json$/.test(argv[argv.length - 1])) ALLOWLIST_PATH = argv.pop();
-const ROOTS = (argv.join(' ') || 'src/api').split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+// ⛔ NO DEFAULT ROOT. `action.yml` says out loud there is "deliberately NO default",
+// and `service_orbit_orgs`'s own config file says the action having none is precisely
+// what stops its admin surface going unscanned by omission. This line used to read
+// `|| 'src/api'` and quietly gave it one, which defeated both statements: with the
+// `roots` output lost but `allowlist` surviving -- a rename of one output name --
+// argv.join('') is falsy, the default supplies src/api, and the gate scans ONE of that
+// repo's TWO surfaces and reports green. Measured:
+//     node check.js "src/api src/api-admin" auth-exceptions.json  -> FAILED, /admin/nuke
+//     node check.js ""                      auth-exceptions.json  -> passed, 1 root
+// Same surface, same commit, opposite verdicts. The caller always passes roots; the
+// only invocation that relied on the default was this script's own self-test.
+const ROOTS = argv.join(' ').split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
 
 // ⛔ ZERO ROOTS IS A LOST HANDOVER, NOT A CLEAN TREE. `roots` crosses a job-output
 // boundary (`steps.config.outputs.roots`), and every way that channel drops a value --
 // a rename of the `config` step id, a refactor that moves the read to another job,
 // Actions redacting a value it believes holds a secret -- lands on the same empty
-// string. The argument then arrives as "", which `argv.join(' ')` renders as a TRUTHY
-// " " so the `|| 'src/api'` default never fires, and `filter(Boolean)` empties the
-// list. Measured on merged main before this guard:
+// string, and there is no default to fall back to (see above -- there must not be).
+// Measured on merged main before this guard:
 //     node check-route-auth-coverage.js "" ""
 //     M34 auth-coverage gate passed - 0 live route(s) checked across 0 root(s)   exit 0
 // A green tick over an unexamined surface, on a REQUIRED check. The per-root refusal
