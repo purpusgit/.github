@@ -72,6 +72,7 @@ jobs:
       # manifest parser in this file — duplicating it into the second job is how the two
       # would drift, and that parser is the part of this gate that has had bugs.
       pins: ${{ steps.pins.outputs.pins }}
+      pins_count: ${{ steps.pins.outputs.pins_count }}
     steps:
       - uses: actions/checkout@v5.1.0
       - name: Check internal pins and lockfile agreement
@@ -256,7 +257,7 @@ jobs:
           # returns before it, and the ancestry job `needs:` this one so it does not run
           # after a failure. It still handles an empty value, because "no pins" and "no
           # value" must not look like an error.
-          out_path = os.environ.get("GITHUB_OUTPUT", "/tmp/internal-pins.txt")
+          out_path = os.environ["GITHUB_OUTPUT"]
           rows = []
           for name, spec in sorted(internal.items()):
               m = sha_re.search(spec)
@@ -274,8 +275,18 @@ jobs:
 
           # Heredoc-delimited, because a multi-line value needs one and a bare newline
           # would silently truncate the output to its first line.
+          #
+          # The COUNT travels beside the pins so the next job can tell "no pins" from "the
+          # pins did not arrive". Every way a job output can go missing -- the 1 MB cap,
+          # Actions redacting a value it thinks contains a secret, a rename of this step's
+          # `id`, a refactor that drops the write -- lands on the same empty string, and
+          # without the count the ancestry job would print "nothing to check" and exit
+          # GREEN. This channel has more silent-drop modes than the same-machine file it
+          # replaced, and a checker that cannot tell "checked nothing" from "found nothing
+          # wrong" is the exact defect this gate exists to remove.
           with open(out_path, "a", encoding="utf-8") as fh:
               fh.write("pins<<PINS_EOF\n" + "\n".join(rows) + "\nPINS_EOF\n")
+              fh.write(f"pins_count={len(rows)}\n")
           PY
 
   # ── JOB 2: the only part that touches the network. Its own context on purpose. ──
@@ -293,6 +304,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PROTECTED: ${{ inputs.protected_branch }}
           PINS: ${{ needs.lockfile-pin-gate.outputs.pins }}
+          PINS_COUNT: ${{ needs.lockfile-pin-gate.outputs.pins_count }}
         run: |
           python3 - <<'PY'
           import http.client, json, os, urllib.request, urllib.error
@@ -404,6 +416,20 @@ jobs:
                   lines = []
           else:
               lines = [l for l in os.environ.get("PINS", "").split("\n") if l.strip()]
+              # The count the previous job actually found. If it disagrees with what
+              # arrived, the handover lost something and this job must NOT report a clean
+              # run over it.
+              expected = os.environ.get("PINS_COUNT", "")
+              if expected.isdigit() and len(lines) != int(expected):
+                  print("ERROR: the pin list did not survive the job boundary.")
+                  print("")
+                  print(f"  the previous job found {expected} SHA-pinned dependenc"
+                        f"{'y' if expected == '1' else 'ies'}; {len(lines)} arrived here.")
+                  print("")
+                  print("This is not a finding about any pin. A job output can be dropped "
+                        "by the 1 MB cap, by Actions redacting a value it believes holds a "
+                        "secret, or by a rename of the step that sets it.")
+                  raise SystemExit(1)
 
           if not lines:
               print("No SHA-pinned internal dependencies — nothing to check.")

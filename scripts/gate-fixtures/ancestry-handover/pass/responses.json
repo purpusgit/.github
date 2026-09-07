@@ -1,0 +1,20 @@
+{
+ "/repos/purpusgit/repo_a": [
+  200,
+  {
+   "name": "repo_a"
+  }
+ ],
+ "/repos/purpusgit/repo_a/compare/sandbox...1111111111111111111111111111111111111111": [
+  200,
+  {
+   "status": "identical"
+  }
+ ],
+ "/repos/purpusgit/repo_a/compare/sandbox...2222222222222222222222222222222222222222": [
+  200,
+  {
+   "status": "behind"
+  }
+ ]
+}
