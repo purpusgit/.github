@@ -150,6 +150,25 @@ BEHAVIOUR = {
              # one pin instead of two. That is what a dropped or redacted job output looks
              # like from this side, and it is why the two fixture trees are identical.
              "env_fail": {"PINS": '@a\tpurpusgit/repo_a\t1111111111111111111111111111111111111111'}},
+            # The BLACKOUT, which the entry above cannot express. Its fail case keeps the
+            # count and drops a pin, so it exercises the mismatch branch -- but the pins and
+            # the count are written by the SAME step to the SAME file, so the LIKELY loss
+            # takes BOTH. With both gone the mismatch test is skipped, `lines` is empty, and
+            # the job printed "nothing to check" and exited 0. Executed on merged main
+            # before this fixture existed:
+            #     PINS="" PINS_COUNT=""  ->  exit 0, "No SHA-pinned internal dependencies"
+            # Same fixture tree as the handover pair; the two cases differ ONLY by what
+            # arrived, which is the whole demonstration.
+            {"step": "Check each pinned SHA is still on a protected branch",
+             "key": "ancestry-handover-blackout",
+             "expect": "reported no pin count",
+             "expect_pass": "2 pin(s) verified against @sandbox, 0 indeterminate",
+             "env": {"GH_TOKEN": "unused-by-the-fixture",
+                     "PROTECTED": "sandbox",
+                     "ANCESTRY_FIXTURE_RESPONSES": "responses.json",
+                     "PINS": '@a\tpurpusgit/repo_a\t1111111111111111111111111111111111111111\n@b\tpurpusgit/repo_a\t2222222222222222222222222222222222222222',
+                     "PINS_COUNT": "2"},
+             "env_fail": {"PINS": "", "PINS_COUNT": ""}},
             # The FLOOR, on its own fixture pair because it needs a case where every pin
             # is indeterminate — which the battery above cannot express, since that
             # battery's whole point is that indeterminates do NOT fail. pass/ has one
