@@ -56,12 +56,27 @@ on:
         default: sandbox
 
 jobs:
+  # ── JOB 1: file inspection only. No network, no install, no toolchain. ──────────
+  # Deliberately separate from the ancestry job below, and the separation is the whole
+  # point: one job is one CHECK CONTEXT, so while both lived here nobody could require
+  # the three deterministic checks without also requiring a network call. A context that
+  # can go red because GitHub is having a bad day is a context that holds a merge queue
+  # during an incident — so the two must be requirable independently, and now are.
   lockfile-pin-gate:
     runs-on: ubuntu-latest
     name: Lockfile and internal pin check
+    outputs:
+      # The SHA-pinned dependencies, handed to the ancestry job. A job output rather than
+      # an artifact: this is a few lines of text, and upload/download actions would be two
+      # more moving parts for something `$GITHUB_OUTPUT` already does. It also keeps ONE
+      # manifest parser in this file — duplicating it into the second job is how the two
+      # would drift, and that parser is the part of this gate that has had bugs.
+      pins: ${{ steps.pins.outputs.pins }}
+      pins_count: ${{ steps.pins.outputs.pins_count }}
     steps:
       - uses: actions/checkout@v5.1.0
       - name: Check internal pins and lockfile agreement
+        id: pins
         run: |
           python3 - "${{ inputs.org }}" <<'PY'
           import json, os, re, sys
@@ -237,31 +252,59 @@ jobs:
           print(f"Lockfile and internal pin gate passed "
                 f"({n} internal git dependenc{'y' if n == 1 else 'ies'} checked).")
 
-          # Hand the SHA-pinned dependencies to the optional ancestry step. Only written
-          # when this step succeeds -- an earlier `raise SystemExit(1)` returns before it,
-          # and step 2 is skipped on a failed step anyway. Step 2 still handles the file
-          # being absent, because "no file" and "no pins" must not look like an error.
-          with open("/tmp/internal-pins.txt", "w", encoding="utf-8") as fh:
-              for name, spec in sorted(internal.items()):
-                  m = sha_re.search(spec)
-                  if not m:
-                      continue
-                  # `.git` must come off: `git+https://github.com/purpusgit/x.git#<sha>` is a
-                  # form owner_of() explicitly supports, and `purpusgit/x.git` is a 404 --
-                  # which step 2 would report as "cannot reach", turning a PARSER BUG into a
-                  # credentials message on a run that prints "passed". A control that looks
-                  # present and binds nothing, which is the shape this gate exists to remove.
-                  repo_name = spec.split("#")[0].rstrip("/").split("/")[-1]
-                  if repo_name.endswith(".git"):
-                      repo_name = repo_name[:-4]
-                  fh.write(f"{name}\t{owner_of(spec)}/{repo_name}\t{m.group(1)}\n")
+          # Hand the SHA-pinned dependencies to the ancestry JOB, via this job's output.
+          # Only written when this step succeeds -- an earlier `raise SystemExit(1)`
+          # returns before it, and the ancestry job `needs:` this one so it does not run
+          # after a failure. It still handles an empty value, because "no pins" and "no
+          # value" must not look like an error.
+          out_path = os.environ["GITHUB_OUTPUT"]
+          rows = []
+          for name, spec in sorted(internal.items()):
+              m = sha_re.search(spec)
+              if not m:
+                  continue
+              # `.git` must come off: `git+https://github.com/purpusgit/x.git#<sha>` is a
+              # form owner_of() explicitly supports, and `purpusgit/x.git` is a 404 --
+              # which the ancestry job would report as "cannot reach", turning a PARSER
+              # BUG into a credentials message on a run that prints "passed". A control
+              # that looks present and binds nothing, which is what this gate removes.
+              repo_name = spec.split("#")[0].rstrip("/").split("/")[-1]
+              if repo_name.endswith(".git"):
+                  repo_name = repo_name[:-4]
+              rows.append(f"{name}\t{owner_of(spec)}/{repo_name}\t{m.group(1)}")
+
+          # Heredoc-delimited, because a multi-line value needs one and a bare newline
+          # would silently truncate the output to its first line.
+          #
+          # The COUNT travels beside the pins so the next job can tell "no pins" from "the
+          # pins did not arrive". Every way a job output can go missing -- the 1 MB cap,
+          # Actions redacting a value it thinks contains a secret, a rename of this step's
+          # `id`, a refactor that drops the write -- lands on the same empty string, and
+          # without the count the ancestry job would print "nothing to check" and exit
+          # GREEN. This channel has more silent-drop modes than the same-machine file it
+          # replaced, and a checker that cannot tell "checked nothing" from "found nothing
+          # wrong" is the exact defect this gate exists to remove.
+          with open(out_path, "a", encoding="utf-8") as fh:
+              fh.write("pins<<PINS_EOF\n" + "\n".join(rows) + "\nPINS_EOF\n")
+              fh.write(f"pins_count={len(rows)}\n")
           PY
 
+  # ── JOB 2: the only part that touches the network. Its own context on purpose. ──
+  # `needs:` job 1 for the pins, which also means it does not run when the file checks
+  # fail — the same ordering the single-job version had, kept deliberately: there is no
+  # point asking GitHub about pins that the manifest and lockfile already disagree about.
+  ancestry-check:
+    runs-on: ubuntu-latest
+    name: Pinned SHA ancestry check
+    needs: lockfile-pin-gate
+    if: ${{ inputs.check_ancestry }}
+    steps:
       - name: Check each pinned SHA is still on a protected branch
-        if: ${{ inputs.check_ancestry }}
         env:
           GH_TOKEN: ${{ github.token }}
           PROTECTED: ${{ inputs.protected_branch }}
+          PINS: ${{ needs.lockfile-pin-gate.outputs.pins }}
+          PINS_COUNT: ${{ needs.lockfile-pin-gate.outputs.pins_count }}
         run: |
           python3 - <<'PY'
           import http.client, json, os, urllib.request, urllib.error
@@ -362,11 +405,31 @@ jobs:
                   transport_reason.append(type(e).__name__)
                   return TRANSPORT_FAILURE, None
 
-          pins_file = os.environ.get("ANCESTRY_PINS_FILE", "/tmp/internal-pins.txt")
-          try:
-              lines = [l.rstrip("\n") for l in open(pins_file) if l.strip()]
-          except FileNotFoundError:
-              lines = []
+          # From the previous JOB's output now that the two are separate jobs, so /tmp
+          # does not carry between them. ANCESTRY_PINS_FILE still wins when set, because
+          # that is what the offline fixtures drive.
+          pins_file = os.environ.get("ANCESTRY_PINS_FILE")
+          if pins_file:
+              try:
+                  lines = [l.rstrip("\n") for l in open(pins_file) if l.strip()]
+              except FileNotFoundError:
+                  lines = []
+          else:
+              lines = [l for l in os.environ.get("PINS", "").split("\n") if l.strip()]
+              # The count the previous job actually found. If it disagrees with what
+              # arrived, the handover lost something and this job must NOT report a clean
+              # run over it.
+              expected = os.environ.get("PINS_COUNT", "")
+              if expected.isdigit() and len(lines) != int(expected):
+                  print("ERROR: the pin list did not survive the job boundary.")
+                  print("")
+                  print(f"  the previous job found {expected} SHA-pinned dependenc"
+                        f"{'y' if expected == '1' else 'ies'}; {len(lines)} arrived here.")
+                  print("")
+                  print("This is not a finding about any pin. A job output can be dropped "
+                        "by the 1 MB cap, by Actions redacting a value it believes holds a "
+                        "secret, or by a rename of the step that sets it.")
+                  raise SystemExit(1)
 
           if not lines:
               print("No SHA-pinned internal dependencies — nothing to check.")

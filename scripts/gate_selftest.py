@@ -94,6 +94,12 @@ BEHAVIOUR = {
         "step": "Check internal pins and lockfile agreement",
         "key": "lockfile-pin",
         "expect": "has an EMPTY pin",
+        # GITHUB_OUTPUT is pinned to a file inside the fixture directory. Without it the
+        # predicate inherits the harness job's OWN $GITHUB_OUTPUT and appends a `pins`
+        # output to it on every self-test run -- writing into a runner-parsed shared
+        # resource, where a malformed line would red the self-test for a reason unrelated
+        # to any gate.
+        "env": {"GITHUB_OUTPUT": "gha_output"},
         # The ancestry step IS behaviourally tested, against canned API responses rather
         # than the live network. Its pass fixture carries every shape that must not fail
         # -- identical, behind, an unreadable repo (403), a missing base ref (404 then a
@@ -122,6 +128,28 @@ BEHAVIOUR = {
                      "PROTECTED": "sandbox",
                      "ANCESTRY_PINS_FILE": "pins.txt",
                      "ANCESTRY_FIXTURE_RESPONSES": "responses.json"}},
+            # The JOB HANDOVER. Since the split, job 1 writes the pins to $GITHUB_OUTPUT
+            # and job 2 reads them from env PINS -- and NOTHING drove that branch: both
+            # entries above set ANCESTRY_PINS_FILE, which short-circuits it. The one path
+            # this split actually adds was the one path the battery did not touch, and its
+            # failure mode is a silent green ("nothing to check", exit 0).
+            #
+            # pass/ hands over two pins with a matching count. fail/ hands over a count of
+            # two with only one pin arriving -- what a dropped or redacted output looks
+            # like -- and must be RED rather than "nothing to check".
+            {"step": "Check each pinned SHA is still on a protected branch",
+             "key": "ancestry-handover",
+             "expect": "did not survive the job boundary",
+             "expect_pass": "2 pin(s) verified against @sandbox, 0 indeterminate",
+             "env": {"GH_TOKEN": "unused-by-the-fixture",
+                     "PROTECTED": "sandbox",
+                     "ANCESTRY_FIXTURE_RESPONSES": "responses.json",
+                     "PINS": '@a\tpurpusgit/repo_a\t1111111111111111111111111111111111111111\n@b\tpurpusgit/repo_a\t2222222222222222222222222222222222222222',
+                     "PINS_COUNT": "2"},
+             # The fail case differs from the pass case ONLY by what arrived: same count,
+             # one pin instead of two. That is what a dropped or redacted job output looks
+             # like from this side, and it is why the two fixture trees are identical.
+             "env_fail": {"PINS": '@a\tpurpusgit/repo_a\t1111111111111111111111111111111111111111'}},
             # The FLOOR, on its own fixture pair because it needs a case where every pin
             # is indeterminate — which the battery above cannot express, since that
             # battery's whole point is that indeterminates do NOT fail. pass/ has one
