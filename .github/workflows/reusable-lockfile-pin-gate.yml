@@ -420,7 +420,29 @@ jobs:
               # arrived, the handover lost something and this job must NOT report a clean
               # run over it.
               expected = os.environ.get("PINS_COUNT", "")
-              if expected.isdigit() and len(lines) != int(expected):
+              # ⛔ AN ABSENT COUNT IS ITSELF A LOST HANDOVER, and it was the one shape the
+              # count could not catch. The pins and the count are written by the SAME step
+              # to the SAME file, so the LIKELY loss takes both -- and a guard that only
+              # fires when the count survives fires only on a PARTIAL loss. With both gone,
+              # `lines` is empty, the mismatch test is skipped, and the job prints "nothing
+              # to check" and exits 0: a green tick over a check that ran on nothing, which
+              # is the failure this gate exists to remove, reproduced inside it.
+              #
+              # There is no benign reading. `needs:` guarantees job 1 succeeded, and job 1
+              # writes the count unconditionally at the end of that step, so on this branch
+              # -- reached only when ANCESTRY_PINS_FILE is unset, i.e. in real CI -- an
+              # absent count can only mean the transport dropped it.
+              if not expected.isdigit():
+                  print("ERROR: the previous job reported no pin count.")
+                  print("")
+                  print("  The ancestry job cannot tell 'this repo pins nothing' from 'the "
+                        "handover lost everything', and those must not share an exit code.")
+                  print("")
+                  print("This is not a finding about any pin. Check that the 'Check internal "
+                        "pins and lockfile agreement' step still writes pins_count to "
+                        "$GITHUB_OUTPUT, and that the job output names still match.")
+                  raise SystemExit(1)
+              if len(lines) != int(expected):
                   print("ERROR: the pin list did not survive the job boundary.")
                   print("")
                   print(f"  the previous job found {expected} SHA-pinned dependenc"
