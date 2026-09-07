@@ -131,7 +131,7 @@ function commentMask(src) {
 // services registering on `fastify.` and `app.` — and what hid it was the empty-root refusal
 // firing, i.e. a safety net catching a design flaw. The receiver is now unconstrained, so
 // three discriminators below do the work the name used to do badly.
-const ROUTE_RE = /\b([A-Za-z_$][\w$]*)\s*\.\s*(get|post|put|patch|delete)\s*\(\s*(['"`])((?:\\.|(?!\3).)*)\3([\s\S]*?)\)\s*;/g;
+const ROUTE_RE = /\b([A-Za-z_$][\w$]*)\s*\.\s*(get|post|put|patch|delete)\s*\(\s*(['"`])((?:\\.|(?!\3).)*)\3([\s\S]*?)\)\s*;/dg;
 
 // An outbound HTTP client call is the shape a broadened receiver picks up by accident
 // (axios.get, apiHelper.get, http.post) and so is an ORM verb (db.delete(t).where(...)).
@@ -178,7 +178,14 @@ for (const ROOT of ROOTS) {
       // coverage gate can fail in: a missed route is a hole you can see, a route reported as
       // protected is a hole that closes the investigation. Reuse the mask already computed for
       // this file rather than parsing comments a second time.
-      const restStart = m.index + m[0].length - rest.length;
+      // `d` on ROUTE_RE, and the REAL offset of group 5 — not arithmetic. `m[0]` runs past
+      // `rest` by the closing paren, any whitespace, and the semicolon, so
+      // `m.index + m[0].length - rest.length` lands PAST the arguments by that much. It fails in
+      // both directions at once: a live `authenticate` loses its last characters and reads as
+      // ungated, while the tail of a COMMENT survives in their place — so with enough whitespace
+      // before the semicolon, a commented-out `verifyAuthToken` scores as gated, which is the
+      // exact defect this block exists to close.
+      const restStart = m.indices[5][0];
       const liveRest = rest.split('').filter((_, i) => !masked[restStart + i]).join('');
       const hasAuthToken = AUTH_TOKENS.some(t => liveRest.includes(t));
       const bareKey = `${verb.toUpperCase()} ${routePath}`;

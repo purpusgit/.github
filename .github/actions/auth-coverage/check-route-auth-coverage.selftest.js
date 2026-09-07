@@ -198,6 +198,20 @@ t('DEFECT 13: the identical registration with it live is still gated', !/really-
 t('DEFECT 13: both multi-line registrations were counted at all', /2 route/.test(r.out), r.out);
 
 
+// The shape that PROVES the offset rather than merely surviving it. A wide gap between `)` and `;`
+// makes the mis-measurement long enough for the comment's tail to reach the token test — this
+// fixture passed (reported GATED) against the first version of the fix above.
+w('src/gap/routes.ts', "router.post('/gap', multipart, handler\n  // TODO put back verifyAuthToken\n)                    ;\n");
+r = run(['src/gap', 'auth-exceptions.json']);
+t('DEFECT 13: a wide gap before the semicolon does not smuggle the comment past the mask', r.code === 1 && /\/gap/.test(r.out), r.out);
+
+// And the other direction of the same arithmetic: a LIVE token immediately followed by a block
+// comment, with no space. Mis-measuring truncates `authenticate` and reports a gated route as open.
+w('src/tight/routes.ts', "router.post('/tight-block', multipart, authenticate/*old*/, handler);\n");
+r = run(['src/tight', 'auth-exceptions.json']);
+t('DEFECT 13: a live token abutting a block comment is still gated', r.code === 0, r.out);
+
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(failures ? `\n${failures} self-test failure(s)` : '\nall self-tests passed');
 process.exit(failures ? 1 : 0);
