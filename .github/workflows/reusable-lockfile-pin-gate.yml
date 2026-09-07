@@ -307,28 +307,38 @@ jobs:
           # The timeout matters as much: urlopen has NO default, so a hung connection
           # did not go indeterminate -- it stalled the job to the six-hour ceiling.
           TRANSPORT_FAILURE = -1
+          transport_reason = []
 
           def api(path):
+              canned_raise = False
               if _canned is not None:
                   if path not in _canned:
                       # An unlisted path is a hole in the fixture, not a 404 from GitHub.
                       # Saying so loudly beats silently scoring it as a finding.
                       raise SystemExit(f"FIXTURE INCOMPLETE: no canned response for {path}")
                   code, body = _canned[path]
-                  # A fixture may name the transport-failure arm, which is otherwise
-                  # unreachable offline: the seam returns before a request is ever built,
-                  # so no canned STATUS can exercise the exception path.
-                  if code == "TRANSPORT_FAILURE":
-                      return TRANSPORT_FAILURE, None
-                  return code, body
+                  # A fixture naming "TRANSPORT_FAILURE" RAISES rather than returning the
+                  # sentinel, and it raises inside the try below. That is deliberate: an
+                  # earlier version returned the sentinel from up here, which meant no
+                  # fixture ever reached the `except` clause -- so the tuple could be
+                  # narrowed back to the buggy one with the whole battery still green.
+                  # The property this step most needs was the one nothing asserted.
+                  if code != "TRANSPORT_FAILURE":
+                      return code, body
+                  canned_raise = True
               req = urllib.request.Request("https://api.github.com" + path)
               req.add_header("Authorization", f"Bearer {token}")
               req.add_header("Accept", "application/vnd.github+json")
               try:
+                  if canned_raise:
+                      # RemoteDisconnected specifically: it is the read-phase failure that
+                      # escaped the URLError-based tuple, so a fixture using it fails
+                      # loudly the moment someone narrows the tuple back.
+                      raise http.client.RemoteDisconnected("fixture: transport failure")
                   return 200, json.load(urllib.request.urlopen(req, timeout=20))
               except urllib.error.HTTPError as e:
                   return e.code, None
-              except (OSError, ValueError, http.client.HTTPException):
+              except (OSError, ValueError, http.client.HTTPException) as e:
                   # NOT `URLError`. urllib wraps OSError -> URLError around h.request()
                   # ONLY; h.getresponse() sits outside that wrapper, so every read-phase
                   # failure escaped a URLError-based tuple and produced a traceback and a
@@ -343,6 +353,13 @@ jobs:
                   # (TimeoutError subclasses OSError); HTTPException covers IncompleteRead,
                   # which is not an OSError at all; ValueError covers a body that is not
                   # JSON. HTTPError is also an OSError -- which is why its clause is FIRST.
+                  #
+                  # The exception TYPE is carried, not discarded: without it a CI log says
+                  # only "the API did not answer", and DNS, TLS, a reset, a mangled body
+                  # and the 20-second timeout are indistinguishable in the one place
+                  # somebody debugs an outage. Telling causes apart is this step's whole
+                  # argument.
+                  transport_reason.append(type(e).__name__)
                   return TRANSPORT_FAILURE, None
 
           pins_file = os.environ.get("ANCESTRY_PINS_FILE", "/tmp/internal-pins.txt")
@@ -377,7 +394,8 @@ jobs:
                   # caching the diagnostic silently drops every dependency after the first
                   # on the same unreachable repo, and the summary then undercounts what was
                   # skipped — an indeterminate that is not reported is just a miss.
-                  why = ("the API did not answer" if repo_code.get(repo) == TRANSPORT_FAILURE
+                  why = (f"the API did not answer: {transport_reason[-1]}"
+                         if repo_code.get(repo) == TRANSPORT_FAILURE
                          else f"HTTP {repo_code.get(repo)}")
                   unknown.append(
                       f'"{name}": cannot reach {repo} ({why}). The pin was NOT checked — '
@@ -411,8 +429,8 @@ jobs:
                   continue
 
               if code != 200:
-                  how = ("the API did not answer" if code == TRANSPORT_FAILURE
-                         else f"answered HTTP {code}")
+                  how = (f"the API did not answer: {transport_reason[-1]}"
+                         if code == TRANSPORT_FAILURE else f"answered HTTP {code}")
                   unknown.append(f'"{name}": comparing {sha[:10]} in {repo} {how}.')
                   continue
 
@@ -452,8 +470,12 @@ jobs:
               for u in unknown:
                   print(f"  - {u}")
               print("")
-              print("This is not a finding about any pin. It means the gate could not "
-                    "reach GitHub, or the token cannot see the source repositories.")
+              print("This is not a finding about any pin. Read the lines above for the "
+                    "reason — they are not all the same, and one of them is a "
+                    "MISCONFIGURATION rather than an outage: if they say the source "
+                    "repository has no such branch, `protected_branch` is wrong for that "
+                    "repository's family (sandbox for backend, cwb for Flutter, main for "
+                    "org config), and GitHub answered every call correctly.")
               raise SystemExit(1)
 
           # Not the word "passed" when nothing was verified. A run that checked nothing

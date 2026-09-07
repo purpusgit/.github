@@ -116,7 +116,7 @@ BEHAVIOUR = {
              # gate, because the old one formatted the sentinel as "HTTP
              # TRANSPORT_FAILURE". A summary line is the part of the output a fix
              # cannot change; that is exactly why it is the wrong thing to assert on.
-             "expect_pass": ["cannot reach purpusgit/repo_offline (the API did not answer)",
+             "expect_pass": ["cannot reach purpusgit/repo_offline (the API did not answer: RemoteDisconnected)",
                              "2 pin(s) verified against @sandbox, 6 indeterminate"],
              "env": {"GH_TOKEN": "unused-by-the-fixture",
                      "PROTECTED": "sandbox",
@@ -1185,7 +1185,7 @@ def main():
                          "fixture; do NOT let it fall back to a positional guess.")
                     continue
                 behavioural_dir(sub_inputs(xscript, fixture_inputs(doc, extra)),
-                                extra["key"], f"{fn}[{extra['step']}]",
+                                extra["key"], f"{fn}[{extra['step']}:{extra['key']}]",
                                 expect=extra["expect"],
                                 expect_pass=extra.get("expect_pass"),
                                 env=extra.get("env"), env_fail=extra.get("env_fail"))
