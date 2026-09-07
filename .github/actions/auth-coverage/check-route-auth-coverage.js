@@ -39,6 +39,30 @@ let ALLOWLIST_PATH = 'auth-exceptions.json';
 if (argv.length > 1 && /auth-exceptions|\.json$/.test(argv[argv.length - 1])) ALLOWLIST_PATH = argv.pop();
 const ROOTS = (argv.join(' ') || 'src/api').split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
 
+// ⛔ ZERO ROOTS IS A LOST HANDOVER, NOT A CLEAN TREE. `roots` crosses a job-output
+// boundary (`steps.config.outputs.roots`), and every way that channel drops a value --
+// a rename of the `config` step id, a refactor that moves the read to another job,
+// Actions redacting a value it believes holds a secret -- lands on the same empty
+// string. The argument then arrives as "", which `argv.join(' ')` renders as a TRUTHY
+// " " so the `|| 'src/api'` default never fires, and `filter(Boolean)` empties the
+// list. Measured on merged main before this guard:
+//     node check-route-auth-coverage.js "" ""
+//     M34 auth-coverage gate passed - 0 live route(s) checked across 0 root(s)   exit 0
+// A green tick over an unexamined surface, on a REQUIRED check. The per-root refusal
+// below cannot catch it: it fires once per root, and there are no roots.
+// The producer in action.yml validates `roots` is a non-empty array of non-empty
+// strings, which is what makes this unreachable TODAY -- so this is the floor for the
+// day the producer and the consumer stop being edited together.
+if (ROOTS.length === 0) {
+  console.error('M34 auth-coverage gate FAILED - no scan roots were supplied.');
+  console.error('Refusing to pass having read nothing. This is not a finding about any route:');
+  console.error('the roots come from auth-coverage.json via a job output, so an empty arrival');
+  console.error("means the handover was lost, not that the repo has no API surface. Check that");
+  console.error("the 'config' step still writes roots= to $GITHUB_OUTPUT and that the step id");
+  console.error('and the output name still match.');
+  process.exit(1);
+}
+
 // ⛔ THIS LIST IS A CONSTANT. It used to read `process.env.AUTH_TOKENS ||` first, and that
 // one `||` was the whole gate's undoing: on a pull_request the workflow supplying the
 // environment is taken from the PULL REQUEST'S OWN BRANCH, so two lines of `env:` in the

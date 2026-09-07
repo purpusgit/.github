@@ -212,6 +212,28 @@ r = run(['src/tight', 'auth-exceptions.json']);
 t('DEFECT 13: a live token abutting a block comment is still gated', r.code === 0, r.out);
 
 
+
+// ── DEFECT 14: zero roots is a lost handover, not a clean tree ───────────────
+// `roots` crosses a job-output boundary. Every way that channel drops a value lands on
+// the same empty string, and "" reaches here as a TRUTHY " " once joined, so the
+// `|| 'src/api'` default never fires and filter(Boolean) empties the list. Measured
+// before the guard: `node check.js "" ""` printed "passed - 0 live route(s) checked
+// across 0 root(s)" and exited 0, on a REQUIRED check. The per-root refusal cannot see
+// it -- that fires once per root, and there are no roots.
+r = run(['', '']);
+t('DEFECT 14: an empty roots argument is refused, not passed', r.code === 1 && /no scan roots/.test(r.out), r.out);
+t('DEFECT 14: the refusal names the handover, not the routes', /handover was lost/.test(r.out), r.out);
+// The other direction: no arguments AT ALL still takes the documented default, so this
+// guard has not quietly removed the standalone invocation. Asserted on the SCAN LINE,
+// not the exit code -- src/api by now holds fixture routes from earlier defects and is
+// legitimately red, and scoring this on the verdict would test those routes rather than
+// the thing under test, which is that the default fired at all.
+w('src/api/routes.ts', "router.get('/x', authenticate, handler);\n");
+fs.writeFileSync(path.join(tmp, 'auth-exceptions.json'), JSON.stringify({}, null, 1));
+r = run([]);
+t('DEFECT 14: no arguments at all still defaults to src/api and scans it',
+  /src\/api: [1-9]\d* route/.test(r.out) && !/no scan roots/.test(r.out), r.out);
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(failures ? `\n${failures} self-test failure(s)` : '\nall self-tests passed');
 process.exit(failures ? 1 : 0);
