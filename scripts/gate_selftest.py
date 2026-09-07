@@ -108,7 +108,30 @@ BEHAVIOUR = {
              # Asserted on the PASS side too: without this, a mutation that stops
              # counting anything as verified prints "0 pin(s) verified … 5
              # indeterminate", exits 0, and is scored as a pass.
-             "expect_pass": "2 pin(s) verified against @sandbox, 6 indeterminate",
+             # TWO assertions, and the first is the load-bearing one. The SUMMARY line
+             # is byte-identical on the pre-fix and post-fix gate -- the orchestrator
+             # proved that by reconstructing the old gate and running it against these
+             # same fixtures -- so asserting the summary alone is green on the bug it
+             # was written for. The diagnostic string below exists ONLY in the fixed
+             # gate, because the old one formatted the sentinel as "HTTP
+             # TRANSPORT_FAILURE". A summary line is the part of the output a fix
+             # cannot change; that is exactly why it is the wrong thing to assert on.
+             "expect_pass": ["cannot reach purpusgit/repo_offline (the API did not answer)",
+                             "2 pin(s) verified against @sandbox, 6 indeterminate"],
+             "env": {"GH_TOKEN": "unused-by-the-fixture",
+                     "PROTECTED": "sandbox",
+                     "ANCESTRY_PINS_FILE": "pins.txt",
+                     "ANCESTRY_FIXTURE_RESPONSES": "responses.json"}},
+            # The FLOOR, on its own fixture pair because it needs a case where every pin
+            # is indeterminate — which the battery above cannot express, since that
+            # battery's whole point is that indeterminates do NOT fail. pass/ has one
+            # verified beside one indeterminate (floor silent); fail/ is a total blackout
+            # (floor fires). Without this, "0 verified, N indeterminate" exits green and
+            # the gate is present, green, and incapable of the refusal it exists to make.
+            {"step": "Check each pinned SHA is still on a protected branch",
+             "key": "ancestry-floor",
+             "expect": "nothing could be checked",
+             "expect_pass": "1 pin(s) verified against @sandbox, 1 indeterminate",
              "env": {"GH_TOKEN": "unused-by-the-fixture",
                      "PROTECTED": "sandbox",
                      "ANCESTRY_PINS_FILE": "pins.txt",
@@ -448,15 +471,19 @@ def behavioural_dir(script, key, label, prep=None, expect=None, expect_pass=None
             code, out = run_predicate(case_script, work, env=case_env or None)
             if want_zero and code != 0:
                 fail(f"{label}: PASS fixture unexpectedly RED (exit {code})\n{out}")
-            elif want_zero and expect_pass and expect_pass not in out:
+            elif want_zero and expect_pass and any(
+                    e not in out for e in ([expect_pass] if isinstance(expect_pass, str)
+                                           else expect_pass)):
                 # Exit 0 is necessary but not sufficient, for the same reason the
                 # non-zero side needs `expect`: a gate that CHECKED NOTHING and a gate
                 # that found nothing wrong both exit 0. Without this, a mutation that
                 # turns every verification into "could not check" is scored as a pass —
                 # which is the exact defect the gates in this repo exist to catch, in
                 # the harness that is supposed to catch it.
+                missing = [e for e in ([expect_pass] if isinstance(expect_pass, str)
+                                       else expect_pass) if e not in out]
                 fail(f"{label}: PASS fixture exited 0 but the output does not contain "
-                     f"{expect_pass!r} — it may have passed by checking NOTHING\n{out}")
+                     f"{missing!r} — it may have passed by checking NOTHING\n{out}")
             elif not want_zero and code == 0:
                 fail(f"{label}: FAIL fixture was NOT caught (exit 0) — gate is asleep\n{out}")
             elif not want_zero and expect and expect not in out:

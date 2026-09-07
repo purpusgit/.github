@@ -264,7 +264,7 @@ jobs:
           PROTECTED: ${{ inputs.protected_branch }}
         run: |
           python3 - <<'PY'
-          import json, os, urllib.request, urllib.error
+          import http.client, json, os, urllib.request, urllib.error
 
           # ⭐ THREE OUTCOMES, NOT TWO -- and this is the same contract the shared auth
           # package reaches for token introspection: verified / refused / INDETERMINATE,
@@ -328,10 +328,21 @@ jobs:
                   return 200, json.load(urllib.request.urlopen(req, timeout=20))
               except urllib.error.HTTPError as e:
                   return e.code, None
-              except (urllib.error.URLError, TimeoutError, ValueError):
-                  # URLError covers DNS, refused connections, resets and TLS; TimeoutError
-                  # covers the socket timeout above; ValueError covers a body that is not
-                  # JSON (JSONDecodeError subclasses it).
+              except (OSError, ValueError, http.client.HTTPException):
+                  # NOT `URLError`. urllib wraps OSError -> URLError around h.request()
+                  # ONLY; h.getresponse() sits outside that wrapper, so every read-phase
+                  # failure escaped a URLError-based tuple and produced a traceback and a
+                  # red check. Verified against the class graph rather than assumed:
+                  #
+                  #   RemoteDisconnected     OSError yes, URLError NO
+                  #   ConnectionResetError   OSError yes, URLError NO
+                  #   ssl.SSLError           OSError yes, URLError NO
+                  #   IncompleteRead         OSError NO,  HTTPException yes
+                  #
+                  # OSError covers DNS, refusal, reset, TLS and the socket timeout
+                  # (TimeoutError subclasses OSError); HTTPException covers IncompleteRead,
+                  # which is not an OSError at all; ValueError covers a body that is not
+                  # JSON. HTTPError is also an OSError -- which is why its clause is FIRST.
                   return TRANSPORT_FAILURE, None
 
           pins_file = os.environ.get("ANCESTRY_PINS_FILE", "/tmp/internal-pins.txt")
@@ -423,6 +434,26 @@ jobs:
               print("")
               for p in problems:
                   print(f"  - {p}")
+              raise SystemExit(1)
+
+          # ⛔ THE FLOOR. Indeterminate is fail-OPEN by design -- an outage must not be
+          # reported as a tampered pin -- but fail-open with no floor means a total
+          # blackout prints "0 verified, N indeterminate" and exits GREEN. That is the
+          # shape this gate exists to remove: present, green, and structurally incapable
+          # of the refusal it is for. It is the refused/indeterminate distinction applied
+          # one level up -- "I checked and found nothing wrong" and "I checked nothing"
+          # must not produce the same exit code.
+          #
+          # It cannot misfire on a repo with no internal pins: `if not lines` returns
+          # above, before this is reached.
+          if verified == 0 and unknown:
+              print("ERROR: nothing could be checked — every pin is indeterminate.")
+              print("")
+              for u in unknown:
+                  print(f"  - {u}")
+              print("")
+              print("This is not a finding about any pin. It means the gate could not "
+                    "reach GitHub, or the token cannot see the source repositories.")
               raise SystemExit(1)
 
           # Not the word "passed" when nothing was verified. A run that checked nothing
