@@ -4,3 +4,5 @@
 @indeterminate/repo-403-ratelimit	purpusgit/repo_forbidden	7777777777777777777777777777777777777777
 @indeterminate/wrong-base-branch	purpusgit/repo_nobranch	4444444444444444444444444444444444444444
 @indeterminate/upstream-5xx	purpusgit/repo_a	5555555555555555555555555555555555555555
+@indeterminate/repo-probe-transport	purpusgit/repo_offline	9999999999999999999999999999999999999999
+@indeterminate/compare-transport	purpusgit/repo_a	aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

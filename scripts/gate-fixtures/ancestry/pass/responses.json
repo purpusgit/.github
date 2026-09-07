@@ -25,6 +25,10 @@
   502,
   null
  ],
+ "/repos/purpusgit/repo_a/compare/sandbox...aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": [
+  "TRANSPORT_FAILURE",
+  null
+ ],
  "/repos/purpusgit/repo_forbidden": [
   403,
   null
@@ -45,6 +49,10 @@
  ],
  "/repos/purpusgit/repo_nobranch/compare/sandbox...4444444444444444444444444444444444444444": [
   404,
+  null
+ ],
+ "/repos/purpusgit/repo_offline": [
+  "TRANSPORT_FAILURE",
   null
  ]
 }
