@@ -237,6 +237,20 @@ r = run([]);
 t('DEFECT 14: no arguments at all is refused rather than defaulted to src/api',
   r.code === 1 && /no scan roots/.test(r.out) && !/src\/api: /.test(r.out), r.out);
 
+// ── DEFECT 15: masked characters are REPLACED, not removed, so halves cannot splice ──
+// Numbered 15, not 14: `main` took 14 for the zero-root floor while this branch sat approved, and
+// two cases sharing a number is how one of them stops being looked for.
+// Contrived, and kept anyway: removing the masked span joins what is left of the identifier on
+// either side of the comment. `auth` + `enticate_not_real` reads as `authenticate` and the route
+// reports GATED. Nothing in the estate is written this way — but this is a false-GATED shape, and
+// a route reported as protected is the failure that closes an investigation rather than opening one.
+w('src/splice/routes.ts', "router.post('/concat', mw, auth/*x*/enticate_not_real, h);\nrouter.post('/genuine', mw, authenticate, h);\n");
+fs.writeFileSync(path.join(tmp, 'auth-exceptions.json'), JSON.stringify({}, null, 1));
+r = run(['src/splice', 'auth-exceptions.json']);
+t('DEFECT 15: a comment between two identifier halves does not splice into a token', r.code === 1 && /\/concat/.test(r.out), r.out);
+t('DEFECT 15: the genuinely gated route beside it is unaffected', !/\/genuine/.test(r.out), r.out);
+
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(failures ? `\n${failures} self-test failure(s)` : '\nall self-tests passed');
 process.exit(failures ? 1 : 0);
