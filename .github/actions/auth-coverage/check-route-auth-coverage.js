@@ -220,7 +220,11 @@ for (const ROOT of ROOTS) {
       // before the semicolon, a commented-out `verifyAuthToken` scores as gated, which is the
       // exact defect this block exists to close.
       const restStart = m.indices[5][0];
-      const liveRest = rest.split('').filter((_, i) => !masked[restStart + i]).join('');
+      // REPLACE the masked characters, do not REMOVE them. Removing splices the surviving halves
+      // together, so `auth/*x*/enticate_not_real` collapses to a string containing `authenticate`
+      // and the route reports GATED — a false-GATED shape, which is the direction this whole block
+      // exists to eliminate. A space cannot join two identifiers, so the splice cannot happen.
+      const liveRest = rest.split('').map((ch, i) => (masked[restStart + i] ? ' ' : ch)).join('');
       const hasAuthToken = AUTH_TOKENS.some(t => liveRest.includes(t));
       const bareKey = `${verb.toUpperCase()} ${routePath}`;
       const fileKey = `${file}:${bareKey}`;
