@@ -1,0 +1,154 @@
+name: reusable-critic-passed
+
+# Rule 78 (external critic pass before merge) as a REQUIRED STATUS CHECK.
+#
+# Why this exists
+# ---------------
+# Rule 78 has been enforced two ways, and neither is a gate:
+#   1. Socially — a session remembering to run a critic pass.
+#   2. By accident — branch protection refusing a merge when one identity both
+#      raised and pushed the PR, which depends on which account a session
+#      managed to authenticate as, not on whether anyone reviewed the diff.
+#
+# Green CI has never meant reviewed. A client PR passed three checks carrying a
+# wrong-price defect (a null offer id coerced to an empty string, so the plain
+# base plan fell through to whatever offer sat at index 0). CI could not see it;
+# an external critic pass did.
+#
+# Once this is a required context it does not matter who raised the PR, and the
+# push-approval setting can be retired.
+#
+# ⛔ THE JOB KEY BELOW IS THE REQUIRED STATUS CHECK NAME.
+# Branch protection requires the bare context `critic-passed`. Renaming the job
+# turns the gate into an ABSENCE — which blocks rather than passes, but reports
+# NOTHING to explain why, and presents as a PR that simply never becomes
+# mergeable. Do not rename it.
+#
+# ⛔ CALLERS MUST TRIGGER ON `labeled` AND `unlabeled`.
+# Without them the check never re-runs when the label changes, and a red run
+# stays red after the critique lands. See the caller snippet at the bottom.
+
+on:
+  workflow_call:
+    inputs:
+      label:
+        description: "Label that marks a completed external critic pass."
+        required: false
+        type: string
+        default: critic-passed
+
+jobs:
+  critic-passed:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+      contents: read
+    steps:
+      - name: Assert an external critic pass covers THIS head commit
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const LABEL = `${{ inputs.label }}`;
+            const pr = context.payload.pull_request;
+            if (!pr) {
+              core.setFailed('Not a pull_request event — this gate only evaluates pull requests.');
+              return;
+            }
+
+            // ---- 1. When was the commit this run is judging actually written?
+            const { data: headCommit } = await github.rest.repos.getCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: pr.head.sha,
+            });
+            const headTime = new Date(headCommit.commit.committer.date);
+            core.info(`head ${pr.head.sha.slice(0, 8)} committed ${headTime.toISOString()}`);
+
+            // ---- 2. Is the label on the PR right now?
+            // Read from the event payload, which is the state at trigger time.
+            const labelPresent = (pr.labels || []).some((l) => l.name === LABEL);
+            if (!labelPresent) {
+              core.setFailed(
+                `No \`${LABEL}\` label on this pull request.\n\n` +
+                `Rule 78: a session that did NOT author this diff must review it, then apply the ` +
+                `\`${LABEL}\` label. Green CI is not review — CI checks that the code builds, not ` +
+                `that it is correct.`
+              );
+              return;
+            }
+
+            // ---- 3. WHEN was it applied? A label older than the head commit
+            // means the critic reviewed an earlier commit and later pushes are
+            // uncovered. This is the same defect class as GitHub's own
+            // "require approval of the most recent reviewable push", and it is
+            // the whole reason this gate is not just "does the label exist".
+            const events = await github.paginate(
+              github.rest.issues.listEventsForTimeline,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                per_page: 100,
+              }
+            );
+
+            const applied = events
+              .filter((e) => e.event === 'labeled' && e.label && e.label.name === LABEL)
+              .map((e) => ({
+                at: new Date(e.created_at),
+                by: (e.actor && e.actor.login) || 'unknown',
+              }))
+              .sort((a, b) => a.at - b.at);
+
+            const last = applied[applied.length - 1];
+            if (!last) {
+              core.setFailed(
+                `The \`${LABEL}\` label is present but no labeling event was found in the timeline, ` +
+                `so it is impossible to prove WHEN the critique happened. Remove the label and ` +
+                `re-apply it after reviewing the current head.`
+              );
+              return;
+            }
+
+            if (last.at < headTime) {
+              core.setFailed(
+                `STALE CRITIQUE.\n\n` +
+                `  \`${LABEL}\` applied : ${last.at.toISOString()} (by ${last.by})\n` +
+                `  head commit written : ${headTime.toISOString()}\n\n` +
+                `The critic reviewed an EARLIER commit; everything pushed since is unreviewed. ` +
+                `Re-review the current head, then remove and re-apply the label.`
+              );
+              return;
+            }
+
+            core.info(`OK — \`${LABEL}\` applied ${last.at.toISOString()} by ${last.by}; covers head.`);
+            core.notice(`critic-passed: ${pr.head.sha.slice(0, 8)} reviewed by ${last.by}`);
+
+# ---------------------------------------------------------------------------
+# Thin caller — copy into each consumer repo as
+# `.github/workflows/critic-passed.yml`. Nothing here is repo-specific.
+#
+#   name: critic-passed
+#   on:
+#     pull_request:
+#       types: [opened, synchronize, reopened, labeled, unlabeled]
+#   jobs:
+#     critic-passed:
+#       uses: purpusgit/.github/.github/workflows/reusable-critic-passed.yml@<SHA>
+#
+# Pin the SHA, never `@main` — the same discipline the auth-coverage callers use.
+#
+# ROLLOUT ORDER, and it matters:
+#   1. Merge this workflow.
+#   2. Add the caller to ONE repo and prove all four cases:
+#        no label            -> red
+#        label applied       -> green
+#        label, then a push  -> RED AGAIN   (the property above)
+#        label removed       -> red
+#   3. Only then add `critic-passed` to branch protection, and only then roll
+#      the caller out more widely.
+#
+# ⛔ NEVER add the required context to a repo that has no caller yet. A required
+# context with no workflow to satisfy it blocks every PR in that repo forever,
+# and presents as a PR that never becomes mergeable with no red X to explain it.
+# ---------------------------------------------------------------------------
