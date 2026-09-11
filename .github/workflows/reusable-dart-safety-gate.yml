@@ -2,10 +2,12 @@ name: Reusable — Dart String Interpolation Safety Gate
 
 on:
   workflow_call:
+    inputs:
+      runner: { type: string, default: ubuntu-latest }
 
 jobs:
   dart-safety-gate:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     name: Dart escaped interpolation check
     steps:
       - uses: actions/checkout@v5.1.0

@@ -3,6 +3,7 @@ name: Reusable — SQL Template Literal Safety Gate
 on:
   workflow_call:
     inputs:
+      runner: { type: string, default: ubuntu-latest }
       guard_workflows:
         description: >-
           Space-separated workflow files in the CALLING repo that back a required status
@@ -30,7 +31,7 @@ on:
 
 jobs:
   sql-safety-gate:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     name: SQL stray-semicolon check
     steps:
       - uses: actions/checkout@v5.1.0

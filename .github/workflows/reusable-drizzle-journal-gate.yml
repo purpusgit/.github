@@ -3,6 +3,7 @@ name: Reusable — Drizzle Journal Completeness Gate
 on:
   workflow_call:
     inputs:
+      runner: { type: string, default: ubuntu-latest }
       migrations_dir:
         description: Path to the Drizzle migrations folder (containing the .sql files and meta/_journal.json)
         type: string
@@ -10,7 +11,7 @@ on:
 
 jobs:
   drizzle-journal-gate:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     name: Migration journal completeness check
     steps:
       - uses: actions/checkout@v5.1.0
