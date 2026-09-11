@@ -16,7 +16,7 @@
     { "repo": "service_nearyest",          "expected_context": "auth-coverage", "reporter_workflow": "m34-auth-coverage.yml" },
     { "repo": "service_iap_web_commerce",  "expected_context": "auth-coverage", "reporter_workflow": "m34-auth-coverage.yml" },
     { "repo": "service_broadcast_audience", "expected_context": "auth-coverage", "reporter_workflow": "m34-auth-coverage.yml" },
-    { "repo": "service_AI_ML",             "expected_context": "auth-guard",    "reporter_workflow": "python-lint.yml" }
+    { "repo": "service_AI_ML",             "expected_context": "auth-coverage",    "reporter_workflow": "python-lint.yml" }
   ],
   "not_enrolled": [
     { "repo": "service_inapp_chat", "reason": "No auth-coverage reporter on its default branch (ci.yml reports typecheck/shellcheck/taxo-guard/jest, no auth job) AND RequiredStatusChecks is null on sandbox (verified 2026-09-11). It is not drift (never enrolled) — it is an enrollment decision for the chat lane. Left out of the gated set so the detector does not report a repo nobody has decided should be gated. Add it here once a reporter is wired." }
