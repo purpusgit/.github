@@ -8,6 +8,7 @@ name: Taxo FK Contract Lint (G4)
 on:
   workflow_call:
     inputs:
+      runner: { type: string, default: ubuntu-latest }
       repo-checkout-ref:
         required: false
         type: string
@@ -26,7 +27,7 @@ on:
 jobs:
   taxo-lint:
     name: taxo-lint / G4 wrong-concept / wrong-level check
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     steps:
       - name: Checkout caller repo
         uses: actions/checkout@v5.1.0

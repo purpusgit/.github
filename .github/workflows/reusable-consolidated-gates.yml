@@ -40,6 +40,7 @@ name: Reusable — Consolidated one-grep gates (A2)
 on:
   workflow_call:
     inputs:
+      runner: { type: string, default: ubuntu-latest }
       base_ref:
         description: 'Base branch the diff-based gates compare against'
         required: false
@@ -170,7 +171,7 @@ jobs:
   # and all three were guessed wrong from the YAML on the same day).
   consolidated-gates:
     name: Consolidated gates (A2)
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     steps:
       # fetch-depth: 0 because the colours and barrel predicates both diff against a
       # base ref. It is a superset of what the other gates need.

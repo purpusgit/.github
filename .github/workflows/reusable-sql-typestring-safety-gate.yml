@@ -24,6 +24,7 @@ name: Reusable — SQL taxo Type-String Safety Gate
 on:
   workflow_call:
     inputs:
+      runner: { type: string, default: ubuntu-latest }
       base_ref:
         description: 'Base branch to diff against. Empty = the PR base, then the repo default branch.'
         required: false
@@ -37,7 +38,7 @@ on:
 
 jobs:
   sql-typestring-gate:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     name: SQL taxo.master type-string check (Rule 58/59)
     steps:
       - uses: actions/checkout@v5.1.0

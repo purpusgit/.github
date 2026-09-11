@@ -14,7 +14,9 @@ name: Barrel & Factory Safety (Rule 66) — reusable
 # "Unused in this repo" is never a reason to remove from a barrel —
 # downstream consumers are external and invisible to this repo.
 on:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      runner: { type: string, default: ubuntu-latest }
   # No `paths:` filter here or in callers. This is a REQUIRED status check:
   # when skipped it never reports, and GitHub blocks the PR on
   # "Expected — waiting for status". Observed live on pkg_orbit_binder #140,
@@ -26,7 +28,7 @@ permissions:
 jobs:
   barrel-safety:
     name: Barrel & factory safety (Rule 66)
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     steps:
       - uses: actions/checkout@v4
         with:
