@@ -1,0 +1,43 @@
+name: required-context-reporter-audit
+
+# Detects required status checks that nothing on the repo can satisfy.
+#
+# ⛔ This REPORTS, it never gates. A detector that can block is a second way to
+# freeze the estate, which is the exact failure it exists to catch.
+#
+# It exists because prevention and attribution are both unavailable here:
+# repository rulesets expose no creator field, and the audit-log API is
+# Enterprise-only (404 on Team). A written rule (CI-G14) has twice failed to
+# stop a required context being added to a repo that cannot satisfy it,
+# because the person adding it was not the person who read the rule.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: required-context reporter audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Mint a short-lived installation token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORBIT_BOT_APP_ID }}
+          private-key: ${{ secrets.ORBIT_BOT_PRIVATE_KEY }}
+          owner: purpusgit
+          permission-contents: read
+          permission-administration: read
+          permission-checks: read
+          permission-actions: read
+      - name: Audit
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          ORG: purpusgit
+        run: python3 scripts/required_context_reporter_audit.py
