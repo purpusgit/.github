@@ -57,7 +57,9 @@ DATA_FILE = os.path.join(HERE, "auth_coverage_gated_repos.json")
 TOKEN = os.environ.get("GH_TOKEN", "")
 # The report comment/issue uses a SEPARATE, narrowly-scoped write token
 # (issues:write on purpusgit/lanes only); the org-wide read token has no write
-# scope at all. Falls back to TOKEN for local/manual runs with one token.
+# scope at all (and no issues:read either). Every lanes issue op -- list,
+# create, comment, close -- goes through WRITE_TOKEN. Falls back to TOKEN for
+# local/manual runs with one token.
 WRITE_TOKEN = os.environ.get("GH_WRITE_TOKEN", TOKEN)
 
 
@@ -272,8 +274,10 @@ def render(run_ts, rows, scope_note, not_enrolled):
 
 
 def tracking_issue(org, report):
+    # Uses WRITE_TOKEN: the org-wide read token has no issues:read on lanes.
     st, issues = gh("GET", f"/repos/{org}/{report['repo']}/issues",
-                    params={"labels": report["label"], "state": "open", "per_page": 100})
+                    params={"labels": report["label"], "state": "open", "per_page": 100},
+                    token=WRITE_TOKEN)
     if st == 200 and isinstance(issues, list):
         for i in issues:
             if "pull_request" not in i:
