@@ -18,11 +18,24 @@ name: reusable-critic-passed
 # Once this is a required context it does not matter who raised the PR, and the
 # push-approval setting can be retired.
 #
-# ⛔ THE JOB KEY BELOW IS THE REQUIRED STATUS CHECK NAME.
-# Branch protection requires the bare context `critic-passed`. Renaming the job
-# turns the gate into an ABSENCE — which blocks rather than passes, but reports
-# NOTHING to explain why, and presents as a PR that simply never becomes
-# mergeable. Do not rename it.
+# ⛔ THE REPORTED CONTEXT IS COMPOUND — IT IS NOT THE BARE JOB KEY.
+# This is a REUSABLE WORKFLOW. A caller job that `uses:` it reports
+# `<caller job id> / <job name inside this file>`. With the caller snippet at the
+# bottom (`jobs.critic-passed`) and this file's job key, the context GitHub emits
+# is:
+#
+#     critic-passed / critic-passed
+#
+# ⛔ DO NOT require the bare string `critic-passed` in branch protection. A bare
+# name that nothing reports is an ABSENCE, not a failure: the pull request never
+# becomes mergeable, no red X explains why, and no re-run, reopen or empty commit
+# can clear it. The sibling gate is a COMPOSITE ACTION for exactly this reason —
+# see .github/actions/auth-coverage/action.yml, whose header records six package
+# branches that sat in that state.
+#
+# Read the emitted name off a real completed check run (rollout step 2 below) and
+# require THAT string. Renaming either job changes it; never rename without
+# re-reading it.
 #
 # ⛔ STALENESS IS ANCHORED TO PUSH TIME, NOT COMMIT TIME.
 # `commit.committer.date` is settable and does not change on push, so a commit
