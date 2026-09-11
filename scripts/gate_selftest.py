@@ -382,8 +382,8 @@ BEHAVIOUR = {
         "reason": "org-wide GitHub API read/write job; needs a live installation"
                    " token this harness must not be handed. Not a gate: schedule +"
                    " workflow_dispatch only, comment-only output."},
+    "reusable-critic-passed.yml":    {"kind": None, "reason": "pure actions/github-script gate, no run: predicate to extract; proven by the mandated live rollout, not by a fixture"},
 }
-
 FAILURES = []
 def fail(msg): FAILURES.append(msg); print(f"  ✗ {msg}")
 def ok(msg):   print(f"  ✓ {msg}")
