@@ -24,6 +24,13 @@ name: reusable-critic-passed
 # NOTHING to explain why, and presents as a PR that simply never becomes
 # mergeable. Do not rename it.
 #
+# ⛔ STALENESS IS ANCHORED TO PUSH TIME, NOT COMMIT TIME.
+# `commit.committer.date` is settable and does not change on push, so a commit
+# authored before a critique but pushed after it would slip through. The gate
+# uses the earliest workflow-run `run_started_at` for the head SHA — a
+# server-side stamp — and falls back to committer date only if that read fails.
+# This needs `actions: read`; without it the gate warns and degrades.
+#
 # ⛔ CALLERS MUST TRIGGER ON `labeled` AND `unlabeled`.
 # Without them the check never re-runs when the label changes, and a red run
 # stays red after the critique lands. See the caller snippet at the bottom.
@@ -43,6 +50,7 @@ jobs:
     permissions:
       pull-requests: read
       contents: read
+      actions: read        # listWorkflowRunsForRepo — the push-time anchor, see step 1
     steps:
       - name: Assert an external critic pass covers THIS head commit
         uses: actions/github-script@v7
@@ -55,14 +63,62 @@ jobs:
               return;
             }
 
-            // ---- 1. When was the commit this run is judging actually written?
+            // ---- 1. Establish the anchor: when did THIS head commit become
+            // reviewable? Everything below compares the label against it.
             const { data: headCommit } = await github.rest.repos.getCommit({
               owner: context.repo.owner,
               repo: context.repo.repo,
               ref: pr.head.sha,
             });
-            const headTime = new Date(headCommit.commit.committer.date);
-            core.info(`head ${pr.head.sha.slice(0, 8)} committed ${headTime.toISOString()}`);
+            const committerTime = new Date(headCommit.commit.committer.date);
+
+            // ⛔ DO NOT anchor on commit.committer.date alone.
+            // It is COMMIT METADATA: written when the commit is created, unchanged
+            // by pushing, and settable via GIT_COMMITTER_DATE. The natural failure
+            // needs no bad intent — make three commits locally at T0, push only the
+            // first, get it critiqued and labelled at T0+10, then push the other
+            // two. Both carry committer dates OLDER than the label, so a
+            // committer-date comparison reports GREEN on code no critic ever saw.
+            // That is precisely the hole this gate exists to close.
+            //
+            // The server-side anchor is when CI FIRST SAW this SHA. GitHub stamps
+            // run_started_at at push time; it cannot be backdated by a client.
+            let firstSeen = null;
+            try {
+              const runs = await github.paginate(
+                github.rest.actions.listWorkflowRunsForRepo,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  head_sha: pr.head.sha,
+                  per_page: 100,
+                }
+              );
+              const times = runs
+                .map((r) => new Date(r.run_started_at || r.created_at))
+                .filter((d) => !Number.isNaN(d.getTime()))
+                .map(Number);
+              if (times.length) firstSeen = new Date(Math.min(...times));
+            } catch (e) {
+              // Fail SAFE, not open: without the push-time anchor we still have the
+              // committer date, which is conservative in the common case. Warn loudly
+              // so a permissions regression is visible rather than silent.
+              core.warning(
+                `Could not read workflow runs for the head SHA (${e.message}). ` +
+                `Falling back to committer date alone — the backdating hole is OPEN ` +
+                `for this run. Check the job's \`actions: read\` permission.`
+              );
+            }
+
+            // Take the LATER of the two. Push time defeats a backdated committer
+            // date; committer date covers a head with no runs yet.
+            const headTime =
+              firstSeen && firstSeen > committerTime ? firstSeen : committerTime;
+            core.info(
+              `head ${pr.head.sha.slice(0, 8)} — committed ${committerTime.toISOString()}` +
+              (firstSeen ? `, first seen by CI ${firstSeen.toISOString()}` : ', no CI runs yet') +
+              ` -> anchor ${headTime.toISOString()}`
+            );
 
             // ---- 2. Is the label on the PR right now?
             // Read from the event payload, which is the state at trigger time.
@@ -114,7 +170,8 @@ jobs:
               core.setFailed(
                 `STALE CRITIQUE.\n\n` +
                 `  \`${LABEL}\` applied : ${last.at.toISOString()} (by ${last.by})\n` +
-                `  head commit written : ${headTime.toISOString()}\n\n` +
+                `  head became reviewable : ${headTime.toISOString()}` +
+                (firstSeen && firstSeen > committerTime ? ' (push time)' : ' (commit time)') + `\n\n` +
                 `The critic reviewed an EARLIER commit; everything pushed since is unreviewed. ` +
                 `Re-review the current head, then remove and re-apply the label.`
               );
