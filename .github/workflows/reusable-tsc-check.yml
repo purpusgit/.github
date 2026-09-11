@@ -8,6 +8,13 @@ name: TypeScript Type Check — reusable
 # Why paths filter: a paths filter on the CALLER prevents vacuous runs on
 # markdown-only PRs. The caller owns the trigger and paths decision; this
 # reusable just runs tsc when invoked.
+#
+# ⛔ A paths filter belongs on the caller's `on:` ONLY where this context is
+# NOT a required check on that repo. Where it IS required, a filtered trigger
+# creates no check run at all and blocks the PR on an absence (CI-G1). Note
+# also that skipping the CALLER JOB with `if:` does not help: a skipped
+# `uses:` job never creates the nested `<caller> / <callee>` context, so the
+# required context still never reports.
 
 on:
   workflow_call:
@@ -20,6 +27,23 @@ permissions:
 jobs:
   tsc:
     name: tsc --noEmit
+    # ── Cancel superseded runs ──────────────────────────────────────────────
+    # A push that supersedes an in-flight run leaves that run billing to
+    # completion for a verdict nobody reads. Actions bills per JOB, rounded UP
+    # to a whole minute, so the waste is whole minutes per superseded push.
+    #
+    # ⛔ `github.repository` IS LOAD-BEARING. This reusable is called by nine
+    # service repos and `github.workflow` resolves to the CALLER's workflow
+    # name, which is the same string in several of them. Without the repository
+    # in the key, a push in one repo would cancel an in-flight run in another —
+    # a cross-repo outage that presents as a random cancelled gate.
+    #
+    # ⛔ Cancellation is gated to `pull_request` deliberately. A run on the
+    # trunk is the record that the merged state is green; cancelling it would
+    # delete that evidence to save a minute.
+    concurrency:
+      group: ${{ github.repository }}-${{ github.workflow }}-tsc-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ${{ inputs.runner }}
     steps:
       - uses: actions/checkout@v4
