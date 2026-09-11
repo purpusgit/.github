@@ -1,0 +1,100 @@
+name: Nightly — Pushed-but-not-landed surfacer
+
+# LANE-2 Job 3 (git gates, lanes#2/#59). Answers the question named in the
+# git-gates handoff (lanes#59, comment 5630054609): "pushed a commit, no PR"
+# and "PR raised, not merged" must never again silently read as "done" --
+# across every active repo in the org.
+#
+# This is a DIFFERENT detector from lane #12's own drift-detector (which
+# watches `push` to trunk on 5 named repos for security-sensitive file
+# changes and lives one workflow per watched repo -- see lanes#12 comment
+# 5624212485). This one reuses that spec's DESIGN discipline -- report every
+# run including a clean one, a heartbeat line, say plainly what is not
+# covered -- applied to a different, schedule-only question across the
+# whole active fleet, in ONE workflow rather than N.
+#
+# WHY ONE MATRIX WORKFLOW, NOT ONE PER REPO (LANE-2 asked this explicitly).
+# Lane #12's detector needed `on: push` -- an event that only exists inside
+# the watched repo, so the workflow had to live there, once per repo. Both
+# questions this surfacer answers ("no open PR for these commits", "this PR
+# has aged") have NO triggering event at all -- they are the ABSENCE of an
+# event, which only a poll can see. A poll needs no home inside the repo it
+# polls. One scheduled workflow, one script, org-wide GitHub-API reads, is
+# simpler to maintain than 40+ near-identical per-repo files that would all
+# need updating in lockstep every time the org gains or loses a repo -- and
+# unlike lane #12's five NAMED repos, this surfacer's scope is every active
+# repo, discovered live each run via the org repos list, never a maintained
+# name list to go stale.
+#
+# NEVER BLOCKING. Schedule + workflow_dispatch only -- no `pull_request`,
+# no `push`. Every action taken is a read (branches, compares, PR lists) or
+# a single comment post to purpusgit/lanes#2. No status check is published,
+# no branch protection is touched, no feature-branch push is ever slowed
+# down by this running.
+
+on:
+  schedule:
+    # 03:10 UTC daily -- after .github's own 02:17 nightly taxo lint, before
+    # the org's working day starts anywhere it operates.
+    - cron: "10 3 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  surface:
+    runs-on: ubuntu-latest
+    name: Pushed-but-not-landed surfacer
+    steps:
+      - uses: actions/checkout@v5.1.0
+
+      # Read token: org-wide (no `repositories:` — every repo the app is
+      # installed on), contents + pull-requests, READ ONLY. This is the
+      # token the script uses for every branch/compare/PR-list call across
+      # the fleet.
+      - name: Mint a read-only org-wide installation token
+        id: read_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORBIT_BOT_APP_ID }}
+          private-key: ${{ secrets.ORBIT_BOT_PRIVATE_KEY }}
+          owner: purpusgit
+          permission-contents: read
+          permission-pull-requests: read
+
+      # Write token: scoped to ONLY purpusgit/lanes, issues:write. Least
+      # privilege on purpose -- the org-wide read token above has no write
+      # scope at all, and this one cannot read or write anything outside
+      # the single repo it posts the report to.
+      - name: Mint a write token scoped to the mailbox repo only
+        id: write_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORBIT_BOT_APP_ID }}
+          private-key: ${{ secrets.ORBIT_BOT_PRIVATE_KEY }}
+          owner: purpusgit
+          repositories: lanes
+          permission-issues: write
+
+      - name: Verify both tokens were minted
+        run: |
+          set -euo pipefail
+          if [ -z "${{ steps.read_token.outputs.token }}" ]; then
+            echo "::error::No read token minted. Check ORBIT_BOT_APP_ID / ORBIT_BOT_PRIVATE_KEY."
+            exit 1
+          fi
+          if [ -z "${{ steps.write_token.outputs.token }}" ]; then
+            echo "::error::No write token minted for purpusgit/lanes."
+            exit 1
+          fi
+
+      - name: Run the surfacer
+        env:
+          GH_TOKEN: ${{ steps.read_token.outputs.token }}
+          GH_WRITE_TOKEN: ${{ steps.write_token.outputs.token }}
+        run: python3 scripts/pushed_but_not_landed_surfacer.py
+        # GH_TOKEN (org-wide, read-only) does every branch/compare/PR-list
+        # call. GH_WRITE_TOKEN (lanes-only, issues:write) is used for
+        # exactly one call: posting the report comment. See the script's
+        # own module docstring for the full design.

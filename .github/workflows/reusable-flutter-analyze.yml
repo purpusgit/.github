@@ -53,6 +53,7 @@ name: Flutter Analyze — reusable (pkg_* packages)
 on:
   workflow_call:
     inputs:
+      runner: { type: string, default: ubuntu-latest }
       run_web_build:
         description: >
           Build example/ for web with dart2js in THIS job, as a step, instead of as a
@@ -135,7 +136,7 @@ jobs:
     # reports this to consumers as the context `analyze / flutter analyze`.
     # Renaming either breaks every repo's branch-protection required check.
     name: flutter analyze
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     steps:
       - uses: actions/checkout@v4
       # ── pubspec constraint gates (added 2026-08-26) ──────────────────────────

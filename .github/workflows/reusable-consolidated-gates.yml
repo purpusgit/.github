@@ -34,12 +34,17 @@ name: Reusable — Consolidated one-grep gates (A2)
 # per-gate table to $GITHUB_STEP_SUMMARY, and exits 1 if any BLOCKING gate failed.
 # Job-level red therefore preserves each gate's current blocking semantics exactly,
 # and the Checks tab names the failing gate without anyone opening raw logs.
-# Every gate consolidated here is blocking today; none is advisory. If one ever
-# becomes advisory, drop its row out of the `fail=1` arm — per-step, never job-wide.
+# Every gate consolidated here is blocking today EXCEPT ONE: "Wireframe declared"
+# (run_wireframe) is deliberately advisory — see that input's own description and the
+# named carve-out in the Verdict step's case statement. It is folded in for billing
+# only, never for enforcement. Any OTHER gate that becomes advisory in future follows
+# the same pattern: drop its row out of the `fail=1` arm by name — per-step, never
+# job-wide.
 
 on:
   workflow_call:
     inputs:
+      runner: { type: string, default: ubuntu-latest }
       base_ref:
         description: 'Base branch the diff-based gates compare against'
         required: false
@@ -158,6 +163,22 @@ on:
         required: false
         type: boolean
         default: true
+      run_wireframe:
+        description: >-
+          Wireframe declared — founder-issued directive that a UI-touching PR ticks
+          exactly one box in the PR body's "Wireframe gate" section. ADVISORY ONLY,
+          same as the standalone wireframe-gate.yml it folds in: this step is NEVER
+          counted toward this job's pass/fail, however it resolves. Making it binding
+          is a branch-protection change and belongs to whoever owns branch protection,
+          not to this file — see the Verdict step's explicit carve-out below. A caller
+          enabling this MUST also add `edited` to its own `pull_request: types:` list
+          (default types omit it), because the one action this check asks of an author
+          — ticking a box in the PR body — does not fire any of the default event
+          types. DEFAULTS FALSE: wiring this on a repo with no wireframe directive
+          would just be free-floating noise in every PR's step summary.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -170,7 +191,7 @@ jobs:
   # and all three were guessed wrong from the YAML on the same day).
   consolidated-gates:
     name: Consolidated gates (A2)
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     steps:
       # fetch-depth: 0 because the colours and barrel predicates both diff against a
       # base ref. It is a superset of what the other gates need.
@@ -999,6 +1020,68 @@ jobs:
           print("Secret scan passed: this PR adds no secret-shaped line.")
           PYEOF
 
+      # ── Wireframe declared (ADVISORY — never blocking; see Verdict below) ──────
+      # Folded in verbatim from the standalone wireframe-gate.yml, which existed
+      # because a founder-issued UI directive had no mechanism and no record. Folding
+      # it into this already-required job does NOT make the directive itself binding
+      # — see the run_wireframe input's own description for why that would be a
+      # branch-protection change owned elsewhere, not a decision this file gets to
+      # make by proximity to four gates that already are required.
+      #
+      # `edited` IS REQUIRED on the CALLER's `pull_request: types:` list — see the
+      # run_wireframe input description. Without it, an author ticks the box, saves
+      # the PR body, and this step never re-runs to see it.
+      - name: Wireframe declared
+        id: wireframe
+        if: ${{ inputs.run_wireframe }}
+        continue-on-error: true
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -uo pipefail
+
+          # PATHSPEC: 'lib/*.dart', NOT 'lib/**/*.dart' — see wireframe-gate.yml's own
+          # header for why the double-star form misses files sitting directly in lib/.
+          if ! changed=$(git diff --name-only "$BASE...$HEAD" -- 'lib/*.dart'); then
+            echo "::error::cannot diff $BASE...$HEAD — refusing to report green on a failed scope check"
+            exit 1
+          fi
+          if [ -z "$changed" ]; then
+            echo "No Dart under lib/ changed — the directive does not reach this PR."
+            exit 0
+          fi
+          echo "Dart under lib/ changed:"; echo "$changed" | sed 's/^/  /'
+
+          # Read ONLY the "Wireframe gate" section — see wireframe-gate.yml's header
+          # for the four adversarial cases this awk program defends against (fenced
+          # copies of the template, a demoted closing heading, a demoted opening
+          # heading, a second later section concatenating onto the first).
+          section=$(printf '%s\n' "$BODY" | awk '
+            /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
+            fence { next }
+            /^#{2,6}[[:space:]]*Wireframe gate/ { if (seen) exit; f = 1; seen = 1; next }
+            f && /^#{1,6}[[:space:]]/ { exit }
+            f { print }
+          ')
+
+          TICKED='^[[:space:]]*([-*+]|[0-9]+[.)])[[:space:]]*\[[xX]\]'
+          n=$(printf '%s\n' "$section" | grep -icE "$TICKED" || true)
+
+          if [ "$n" -eq 0 ]; then
+            echo "::error::This PR changes Dart under lib/ and no wireframe box is ticked."
+            echo "Open the PR description and tick exactly one box in the 'Wireframe gate' section."
+            exit 1
+          fi
+          if [ "$n" -gt 1 ]; then
+            echo "::error::$n wireframe boxes are ticked; the template asks for exactly one."
+            printf '%s\n' "$section" | grep -iE "$TICKED" | sed 's/^/  /'
+            exit 1
+          fi
+          echo "A wireframe box is ticked. Recorded."
+          printf '%s\n' "$section" | grep -iE "$TICKED" | sed 's/^/  /'
+
       # One row per gate step above: label ~ outcome ~ the one-line reason a FAIL means.
       # `outcome` (not `conclusion`) is what continue-on-error preserves.
       - name: Verdict — per-gate summary
@@ -1027,6 +1110,7 @@ jobs:
             Translation checker self-test~${{ steps.tk_self_demo.outcome }}~this repo's own scripts/check_translations.py failed its --demo assertions, so the checker is broken and not the locale files under review
             Secret scan (diff-scoped)~${{ steps.secret_scan.outcome }}~a line added by this PR matches a credential shape (private-key header, AKIA, sk_live/sk_test, ghp_/github_pat_, xox*, JWT, or a quoted api_key/secret/token/password assignment) - OR the scanner could not compute the PR diff and refused to pass on an uncomputable diff
             Translation keys (self)~${{ steps.tk_self_check.outcome }}~a translation key added or changed in this PR is missing from one or more locales in this repo's OWN assets/translations
+            Wireframe declared (advisory, not required)~${{ steps.wireframe.outcome }}~this PR changes Dart under lib/ and no wireframe box is ticked in the PR body — a founder-issued directive, recorded here as a loud signal only; ticking it is NOT enforced by this job
         run: |
           # errexit is ON before line 1 (/usr/bin/bash -e {0}) and `set -uo pipefail`
           # does NOT clear it — only `set +e` does. Without this line the first
@@ -1050,9 +1134,20 @@ jobs:
                 printf '| %s | not enabled for this repo | |\n' "$gate" >> "$GITHUB_STEP_SUMMARY"
                 ;;
               *)
-                fail=1
-                printf '| %s | **FAIL** | %s |\n' "$gate" "$reason" >> "$GITHUB_STEP_SUMMARY"
-                echo "::error title=$gate::$reason"
+                # ADVISORY CARVE-OUT (Rule 85 gate, folded from wireframe-gate.yml):
+                # this ONE gate is deliberately never counted toward $fail, however it
+                # resolves. Making it binding is a branch-protection decision that
+                # belongs to whoever owns branch protection, not to this file — see
+                # the run_wireframe input's own description. Every OTHER gate in this
+                # job is still blocking; this is a per-row exception, not a job-wide one.
+                if [ "$gate" = "Wireframe declared (advisory, not required)" ]; then
+                  printf '| %s | **NOT TICKED (advisory)** | %s |\n' "$gate" "$reason" >> "$GITHUB_STEP_SUMMARY"
+                  echo "::warning title=$gate::$reason"
+                else
+                  fail=1
+                  printf '| %s | **FAIL** | %s |\n' "$gate" "$reason" >> "$GITHUB_STEP_SUMMARY"
+                  echo "::error title=$gate::$reason"
+                fi
                 ;;
             esac
           done <<< "$ROWS"

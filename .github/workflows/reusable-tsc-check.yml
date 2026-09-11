@@ -10,7 +10,9 @@ name: TypeScript Type Check — reusable
 # reusable just runs tsc when invoked.
 
 on:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      runner: { type: string, default: ubuntu-latest }
 
 permissions:
   contents: read
@@ -18,7 +20,7 @@ permissions:
 jobs:
   tsc:
     name: tsc --noEmit
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

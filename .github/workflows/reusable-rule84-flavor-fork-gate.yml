@@ -13,7 +13,9 @@ name: Config & Fork Gate (Rule 84) — reusable
 # that is acceptable (the gate is still validly enforced for the other two steps).
 
 on:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      runner: { type: string, default: ubuntu-latest }
 
 permissions:
   contents: read
@@ -21,7 +23,7 @@ permissions:
 jobs:
   rule84:
     name: Config & fork gate (Rule 84)
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     steps:
       - uses: actions/checkout@v4
 
