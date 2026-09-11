@@ -386,6 +386,10 @@ BEHAVIOUR = {
     # every gated repo, so its exit code cannot be asserted from a fixture without
     # faking that API -- which would assert the fake, not the detector.
     "auth-coverage-drift.yml": {"kind": None, "reason": "scheduled org-wide monitor; needs live GitHub API access across every gated repo"},
+    # Scheduled org-wide detector, not a PR gate: it reads live rulesets and
+    # check runs across every repo, so its exit code cannot be asserted from a
+    # fixture without faking those APIs. It also never fails on a finding.
+    "required-context-reporter-audit.yml": {"kind": None, "reason": "scheduled org-wide detector; reads live rulesets + check runs, reports only, never gates"},
     "reusable-critic-passed.yml":    {"kind": None, "reason": "pure actions/github-script gate, no run: predicate to extract; proven by the mandated live rollout, not by a fixture"},
 }
 FAILURES = []
