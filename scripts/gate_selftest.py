@@ -367,6 +367,21 @@ BEHAVIOUR = {
     # that sentence is exactly the evidence someone would cite to unwire a live gate.
     "reusable-taxo-contract-lint.yml": {"kind": "dead", "reason": "1 caller (service_orbit_orgs), context published but NOT required on any protection as of 2026-08-26. Behavioural test needs a cross-repo checkout token; checker.py is offline-tested by taxo-contract/test_checker.py, which self-test-gates.yml runs."},
     "taxo-data-lint-nightly.yml":    {"kind": None, "reason": "DB-backed scheduled job; needs TAXO_DB_* MySQL secrets"},
+    # LANE-2 Job 3 (git-gates, lanes#2/#59). NOT a gate -- schedule +
+    # workflow_dispatch only, no pull_request/push trigger, no status check
+    # published, no branch-protection write. Its one behavioural surface is a
+    # live, org-wide GitHub API read (every active repo's branches/PRs) plus a
+    # write to purpusgit/lanes#2 via a scoped app-installation token this
+    # harness has no credential for and must not be given one to fixture-test
+    # in CI. The script's own logic (pagination-error vs clean-end distinction,
+    # branch-cutover exclusion, report rendering) is unit-testable offline and
+    # was verified that way before merge (see PR #85 description) -- it is not
+    # exercised by this harness because doing so would require live org
+    # credentials in a workflow every fork/PR runs.
+    "pushed-but-not-landed-surfacer.yml": {"kind": None,
+        "reason": "org-wide GitHub API read/write job; needs a live installation"
+                   " token this harness must not be handed. Not a gate: schedule +"
+                   " workflow_dispatch only, comment-only output."},
 }
 
 FAILURES = []
