@@ -31,6 +31,13 @@ name: reusable-critic-passed
 # server-side stamp — and falls back to committer date only if that read fails.
 # This needs `actions: read`; without it the gate warns and degrades.
 #
+# ⚠ KNOWN CEILING of the push-time anchor: it takes the EARLIEST run for the
+# head SHA, so force-pushing back to a previously-run SHA yields an anchor that
+# predates the label. And from 2026-10-01 runs are purged at the Actions
+# retention setting (default 90d), so on a long-lived PR the earliest surviving
+# run can be the labeled-triggered one, reddening a legitimately critiqued PR.
+# Both are logged against this gate; neither is fixed here.
+#
 # ⛔ CALLERS MUST TRIGGER ON `labeled` AND `unlabeled`.
 # Without them the check never re-runs when the label changes, and a red run
 # stays red after the critique lands. See the caller snippet at the bottom.
