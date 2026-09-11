@@ -723,7 +723,56 @@ def behavioural_barrel(runs, label):
                               origin_ref=origin_ref, extras=extras)
             _assert_diff(script, label, case, want_zero, tmp, expect=expect)
 
-def behavioural_consolidated(named, beh, label):
+def assert_rows_completeness(doc, label):
+    """Every `steps.<X>.outcome` in the Verdict ROWS env must match a real step
+    `id:` in the same job, and every gate step (`id:` + `continue-on-error: true`)
+    must have a matching row. Failing either half is a broken gate assertion:
+    a stale row resolves to "" and (until 2026-09-11) was printed as "not enabled
+    for this repo" — a comment reading as mitigation while nothing was checked. A
+    silent step (id present, no row) fails without appearing in the summary, and
+    with continue-on-error: true the job still passes.
+
+    Falsified by removing a row while keeping its step, or renaming a step id while
+    keeping the row — either produces a named RED here rather than a silent green
+    on a live consumer.
+    """
+    import re
+    job = next(iter((doc.get("jobs") or {}).values()), None)
+    if not job:
+        fail(f"{label}[rows-completeness]: no jobs in workflow — cannot audit rows")
+        return
+    steps = job.get("steps") or []
+    gate_ids = {s["id"] for s in steps
+                if isinstance(s, dict) and s.get("id") and s.get("continue-on-error")}
+    verdict = next((s for s in steps
+                    if isinstance(s, dict) and str(s.get("name", "")).startswith("Verdict")),
+                   None)
+    if not verdict:
+        fail(f"{label}[rows-completeness]: no Verdict step found — cannot audit rows")
+        return
+    rows_env = ((verdict.get("env") or {}).get("ROWS") or "")
+    if not rows_env:
+        fail(f"{label}[rows-completeness]: Verdict has no ROWS env — cannot audit rows")
+        return
+    row_refs = set(re.findall(r"steps\.([A-Za-z0-9_]+)\.outcome", rows_env))
+    missing_id = sorted(row_refs - gate_ids)
+    missing_row = sorted(gate_ids - row_refs)
+    if missing_id:
+        fail(f"{label}[rows-completeness]: ROWS references step id(s) that do not "
+             f"exist as `id:` on a gate step in this job — the row would resolve to "
+             f'"" at runtime and print as "not enabled for this repo" while holding '
+             f"nothing: {', '.join(missing_id)}. Either add the step or delete the row.")
+    if missing_row:
+        fail(f"{label}[rows-completeness]: gate step id(s) with no ROWS row — a "
+             f"failure would go uncounted (continue-on-error preserves the outcome "
+             f"but Verdict never reads it): {', '.join(missing_row)}. Either add a "
+             f"row or remove the id/continue-on-error.")
+    if not missing_id and not missing_row:
+        ok(f"{label}[rows-completeness]: {len(gate_ids)} gate id(s) all covered by "
+           f"{len(row_refs)} row(s), and vice versa — no silent step, no broken row")
+
+
+def behavioural_consolidated(named, beh, label, doc=None):
     """Assert every mirrored step is byte-identical to its source predicate, then
     red-proof one of them against a real fixture.
 
@@ -733,6 +782,17 @@ def behavioural_consolidated(named, beh, label):
     the LIVE source predicate on every PR to this repo, so editing one side alone
     reds here and says which pair disagrees. Nothing is duplicated silently.
     """
+    # Rows/ids completeness — the "not enabled for this repo" arm in Verdict is a
+    # legitimate opt-out ONLY if the row it prints refers to a real gate step in the
+    # same job. A row referring to a step that does not exist (typo, rename, delete)
+    # resolves to "" at runtime and used to print the same mitigation string; the
+    # orchestrator's ruling: a boundary whose loss is documented as "not enabled for
+    # this repo" is worse than one nobody noticed. This assertion refuses to ship a
+    # workflow that would print that comment while holding nothing, so the runtime
+    # arm that now fails on "" never has to.
+    if doc is not None:
+        assert_rows_completeness(doc, label)
+
     for step_name, (src_file, src_step) in beh["mirrors"].items():
         mine = named.get(step_name)
         if mine is None:
@@ -1269,7 +1329,7 @@ def main():
         elif beh["kind"] == "rule84":
             behavioural_rule84(runs, fn)
         elif beh["kind"] == "consolidated":
-            behavioural_consolidated(named, beh, fn)
+            behavioural_consolidated(named, beh, fn, doc=doc)
         print()
 
     actionlint_gate()
