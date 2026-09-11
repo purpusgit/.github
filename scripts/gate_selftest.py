@@ -367,6 +367,14 @@ BEHAVIOUR = {
     # that sentence is exactly the evidence someone would cite to unwire a live gate.
     "reusable-taxo-contract-lint.yml": {"kind": "dead", "reason": "1 caller (service_orbit_orgs), context published but NOT required on any protection as of 2026-08-26. Behavioural test needs a cross-repo checkout token; checker.py is offline-tested by taxo-contract/test_checker.py, which self-test-gates.yml runs."},
     "taxo-data-lint-nightly.yml":    {"kind": None, "reason": "DB-backed scheduled job; needs TAXO_DB_* MySQL secrets"},
+    # No `run:` steps at all -- the whole predicate is actions/github-script calling
+    # the REST timeline + workflow-runs APIs. There is nothing for the bash -n /
+    # heredoc loop to extract, and a behavioural fixture would mean faking two
+    # GitHub APIs, which would assert the fake's shape rather than the gate's.
+    # actionlint still covers workflow validity. The real proof is the four-case
+    # rollout on a live repo (no label / label / label-then-push / label removed)
+    # that the workflow's own footer mandates before it may become required.
+    "reusable-critic-passed.yml":    {"kind": None, "reason": "pure actions/github-script gate, no run: predicate to extract; proven by the mandated four-case live rollout, not by a fixture"},
 }
 
 FAILURES = []
