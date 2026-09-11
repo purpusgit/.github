@@ -382,6 +382,10 @@ BEHAVIOUR = {
         "reason": "org-wide GitHub API read/write job; needs a live installation"
                    " token this harness must not be handed. Not a gate: schedule +"
                    " workflow_dispatch only, comment-only output."},
+    # Scheduled org-wide monitor, not a PR gate: it queries the live GitHub API for
+    # every gated repo, so its exit code cannot be asserted from a fixture without
+    # faking that API -- which would assert the fake, not the detector.
+    "auth-coverage-drift.yml": {"kind": None, "reason": "scheduled org-wide monitor; needs live GitHub API access across every gated repo"},
     "reusable-critic-passed.yml":    {"kind": None, "reason": "pure actions/github-script gate, no run: predicate to extract; proven by the mandated live rollout, not by a fixture"},
 }
 FAILURES = []
