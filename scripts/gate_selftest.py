@@ -54,6 +54,13 @@ depends on that value. Passing under `code_root: packages` is scored identically
 by a gate that reads the input and by one that hardcodes `packages`. See
 canary_sql_code_root.
 
+A fourth rule, added after PR #98: a behavioural fixture must supply every `env:`
+key its step reads UNGUARDED. This harness runs a step's `run:` with a hardcoded
+dict and never the step's own `env:`, so adding an env key to a gate and reading it
+under `set -u` reds the PASS fixture with "unbound variable" — a stale FIXTURE that
+reads as a broken gate, on a required context with no `paths:` filter. The check is
+structural and runs before the predicate; see unforwarded_env_keys.
+
 Exit 0 = all checks passed (green). Exit 1 = a predicate broke or a fixture
 assertion failed (red).
 """
@@ -424,6 +431,23 @@ def extract_named_runs(doc):
                 named[step["name"]] = step["run"]
     return named
 
+def extract_named_steps(doc):
+    """{step name: step dict, with the JOB's `env:` merged under the step's own}.
+
+    extract_named_runs gives the `run:` only; the env-forwarding guard below needs
+    the `env:` block as well — and it needs the job-level one too, because a job
+    `env:` reaches every step in that job and this harness forwards it no more
+    than it forwards the step's own. reusable-sql-execution-gate.yml declares five
+    DB_* keys at job level, so that is not a hypothetical shape.
+    """
+    out = {}
+    for job in (doc.get("jobs") or {}).values():
+        jenv = job.get("env") or {}
+        for s in (job.get("steps") or []):
+            if isinstance(s, dict) and s.get("run") and s.get("name"):
+                out[s["name"]] = {**s, "env": {**jenv, **(s.get("env") or {})}}
+    return out
+
 def input_defaults(doc):
     """{input name: declared default} from a workflow's `on.workflow_call.inputs`
     or a composite action's `inputs`.
@@ -498,6 +522,75 @@ def run_predicate(script, workdir, env=None):
                        text=True, capture_output=True,
                        env={**os.environ, **env} if env else None)
     return r.returncode, r.stdout + r.stderr
+
+# ── the stale-fixture landmine: a step's `env:` is NOT forwarded by this harness ─
+# run_predicate passes a HARDCODED dict and never the step's own `env:`. So adding
+# an env key to a gate step and reading it under `set -u` reds the PASS fixture
+# with "unbound variable": the gate change is fine, the FIXTURE is stale, and the
+# red lands on self-test-gates.yml — a REQUIRED context with no `paths:` filter, so
+# it blocks every PR in this repo while reading as a broken gate. That is PR #98
+# (MYSQL_PORT), caught only because the step was run in a harness before merge.
+# These two functions stop it happening silently: the fixture's env is checked
+# against the step's BEFORE the predicate runs, and the message names the key.
+#
+# Only UNGUARDED reads are asserted. `os.environ.get(K, default)` and `${K:-}` are
+# legitimately fine unsupplied, and three live steps rely on that deliberately
+# (drizzle's MIGRATIONS_DIR, ancestry's PINS/PINS_COUNT) — flagging those would
+# make this guard itself the false red it exists to prevent.
+def unforwarded_env_keys(step, fixture_env):
+    """[(key, how)] for every `env:` key the step reads UNGUARDED that the fixture
+    does not supply.
+
+    Pure on purpose: it returns findings and never calls fail(), which is what
+    lets canary_env_forwarded() red-proof it without polluting FAILURES.
+    """
+    body = step.get("run") or ""
+    setu = bool(re.search(r"set\s+-[a-z]*u", body)) or "set -o nounset" in body
+    out = []
+    for k in (step.get("env") or {}):
+        if k in (fixture_env or {}):
+            continue
+        if re.search(r"os\.environ\s*\[\s*['\"]" + re.escape(k) + r"['\"]", body):
+            out.append((k, "reads it as os.environ[...], which raises KeyError"))
+        elif setu and re.search(r"\$\{" + re.escape(k) + r"\}|\$" + re.escape(k)
+                                + r"(?![A-Za-z0-9_])", body):
+            out.append((k, "reads it bare under `set -u`, i.e. unbound variable"))
+    return out
+
+
+def assert_env_forwarded(step, fixture_env, label):
+    """fail() for each unforwarded key, naming the key and the fix."""
+    for k, how in unforwarded_env_keys(step, fixture_env):
+        fail(f"{label}: the step declares env key {k!r} and {how} — but this "
+             f"fixture does not supply it — add {k!r} to the entry's `env:` in "
+             "BEHAVIOUR, in the same commit as the gate change. The gate is fine; "
+             "the FIXTURE is stale, and left alone it reds the PASS fixture as "
+             '"unexpectedly RED", which reads as a broken gate and blocks this '
+             "repo's required self-test context.")
+
+
+def canary_env_forwarded():
+    """Red-proof of the guard, in the shape that actually happened on PR #98: a
+    step declaring MYSQL_PORT and reading it bare under `set -euo pipefail`.
+
+    Three assertions, because the guard has two ways to be useless — not firing
+    on the real shape, and firing on the shapes that are legitimately fine.
+    """
+    bad     = {"run": 'set -euo pipefail\necho "$MYSQL_PORT"\n', "env": {"MYSQL_PORT": "x"}}
+    guarded = {"run": 'set -euo pipefail\necho "${MYSQL_PORT:-3306}"\n', "env": {"MYSQL_PORT": "x"}}
+    if not unforwarded_env_keys(bad, {}):
+        fail("canary[env-forwarding]: an unsupplied, bare-read env key was NOT "
+             "flagged — the guard is inert and the PR #98 class can recur silently")
+    elif unforwarded_env_keys(bad, {"MYSQL_PORT": "3306"}):
+        fail("canary[env-forwarding]: a SUPPLIED key was flagged — the guard would "
+             "false-red on every healthy fixture")
+    elif unforwarded_env_keys(guarded, {}):
+        fail("canary[env-forwarding]: a `${K:-default}` read was flagged — the guard "
+             "would false-red on the three live steps that deliberately default")
+    else:
+        ok("canary[env-forwarding]: flags the unsupplied bare read, and ignores both "
+           "a supplied key and a defaulted read")
+
 
 def behavioural_dir(script, key, label, prep=None, expect=None, expect_pass=None,
                     env=None, env_fail=None, resolve=None):
@@ -823,6 +916,17 @@ def behavioural_consolidated(named, beh, label, doc=None):
             ok(f"{label}: {step_name!r} is byte-identical to {src_file}[{src_step!r}]")
     if beh.get("unmirrored"):
         print(f"  ⤳ PARTIAL: no equality assertion possible for — {beh['unmirrored']}")
+    # Same stale-fixture guard as the `step` entries: these three are run with a
+    # hardcoded env too (behavioural_secretscan supplies BASE_SHA, the other two
+    # supply nothing), so an env: key added to any of them has to land in the
+    # fixture in the same commit or the PASS side reds for the wrong reason.
+    nsteps = extract_named_steps(doc) if doc is not None else {}
+    for sn, fx in ([(beh["redproof"][0], {})]
+                   + [(s, {}) for s, _, _ in beh.get("b9_steps", [])]
+                   + [(beh["secretscan_step"], {"BASE_SHA": "<built from the fixture repo>"})]):
+        if sn in nsteps:
+            assert_env_forwarded(nsteps[sn], fx, f"{label}[{sn}]")
+
     rp_step, rp_key, rp_expect = beh["redproof"]
     script = named.get(rp_step)
     if script is None:
@@ -1272,6 +1376,7 @@ def main():
         doc = load_yaml(os.path.join(WF_DIR, fn))
         runs = extract_runs(doc)
         named = extract_named_runs(doc)
+        nsteps = extract_named_steps(doc)
         if not runs:
             print("  (no run: steps)")
         for i, script in enumerate(runs):
@@ -1300,6 +1405,10 @@ def main():
                      "do NOT let it fall back to a positional guess.")
             else:
                 script = sub_inputs(script, fixture_inputs(doc, beh))
+                # Checked against the PASS env alone: `env_fail` only reaches the
+                # fail case, so a key supplied there and nowhere else still reds the
+                # pass side — which is the landmine, not a fix for it.
+                assert_env_forwarded(nsteps[beh["step"]], beh.get("env"), fn)
                 prep = beh.get("prep")
                 behavioural_dir(script, beh["key"], fn,
                                 prep=prep and prep.replace("{ROOT}", ROOT),
@@ -1322,6 +1431,8 @@ def main():
                          "this gate — the gate changed shape. Repoint or remove the "
                          "fixture; do NOT let it fall back to a positional guess.")
                     continue
+                assert_env_forwarded(nsteps[extra["step"]], extra.get("env"),
+                                     f"{fn}[{extra['step']}:{extra['key']}]")
                 behavioural_dir(sub_inputs(xscript, fixture_inputs(doc, extra)),
                                 extra["key"], f"{fn}[{extra['step']}:{extra['key']}]",
                                 expect=extra["expect"],
@@ -1354,6 +1465,7 @@ def main():
         canary_analyze(analyze_script)
     else:
         fail("canary[analyze]: analyze predicate not found")
+    canary_env_forwarded()
     if sql_default_script:
         canary_sql_code_root(sql_default_script)
     else:
