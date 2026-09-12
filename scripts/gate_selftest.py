@@ -349,7 +349,10 @@ BEHAVIOUR = {
         # uncovered ONLY because this harness did not forward `env:`. It does now.
         "step": "Validate gate inputs",
         "key": "sql-exec-inputs",
-        "env": {"DB_NAME": "orbit_japa", "HARNESS": "ci/x/run.sh",
+        # MYSQL_PORT joined the step's env: when the host port became an input. Omit it and
+        # the PASS fixture dies on "unbound variable" under set -u — red for the wrong reason,
+        # which is indistinguishable here from the gate itself being broken.
+        "env": {"DB_NAME": "orbit_japa", "HARNESS": "ci/x/run.sh", "MYSQL_PORT": "3306",
                 "SCHEMA_FILES": "db/schema.sql", "SEED_FILES": ""},
         # The two fixture trees are BYTE-IDENTICAL; the fail case differs ONLY by
         # environment, so what is asserted is unambiguously the input check and not a
