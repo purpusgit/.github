@@ -1,0 +1,86 @@
+name: Auth-coverage drift detector
+
+# Scheduled monitor for purpusgit/.github (org config repo -- base `main`, the
+# one place `main` is correct, Rule 73). Watches the gated set in
+# scripts/auth_coverage_gated_repos.json for three silent-drift modes: a
+# deleted/renamed reporter, a requirement dropped by a name-list ruleset on
+# rename (Rule 96), and a reported/required context mismatch. Full design and
+# the no-vacuous-green discipline are in the script's module docstring.
+#
+# ONE workflow, not one per repo: both questions this answers ("is a reporter
+# present", "is the context required") are the ABSENCE of a thing, which only a
+# poll can see -- a poll needs no home inside the repo it polls. Same reasoning
+# as pushed-but-not-landed-surfacer.yml.
+#
+# NEVER BLOCKING. schedule + workflow_dispatch only -- no pull_request, no push,
+# no status check published, no branch protection touched. Reads across the org
+# are read-only; the sole write is one tracking issue on purpusgit/lanes.
+
+on:
+  schedule:
+    # 03:30 UTC daily -- after .github's nightly taxo lint (02:17) and the
+    # pushed-but-not-landed surfacer (03:10), before the working day.
+    - cron: "30 3 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    name: auth-coverage-drift
+    steps:
+      - uses: actions/checkout@v5.1.0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install pyyaml==6.0.2
+
+      # Prove the predicate can fail before asking it whether anything did --
+      # the same first-step self-test discipline the m34 auth-coverage action
+      # follows. A checker whose own logic is broken must not report CLEAN.
+      - name: Self-test the detector logic
+        run: python3 scripts/auth_coverage_drift.py --selftest
+
+      # Read token: org-wide, contents:read ONLY. Reads workflow files (part a)
+      # and each repo's effective branch rules (part b). No write scope at all.
+      - name: Mint a read-only org-wide token
+        id: read_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORBIT_BOT_APP_ID }}
+          private-key: ${{ secrets.ORBIT_BOT_PRIVATE_KEY }}
+          owner: purpusgit
+          permission-contents: read
+
+      # Write token: purpusgit/lanes only, issues:write. Least privilege -- the
+      # org-wide read token above cannot write anything; this one cannot read or
+      # write outside the single repo it files the tracking issue in.
+      - name: Mint a write token scoped to the mailbox repo only
+        id: write_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORBIT_BOT_APP_ID }}
+          private-key: ${{ secrets.ORBIT_BOT_PRIVATE_KEY }}
+          owner: purpusgit
+          repositories: lanes
+          permission-issues: write
+
+      - name: Verify both tokens were minted
+        run: |
+          set -euo pipefail
+          if [ -z "${{ steps.read_token.outputs.token }}" ]; then
+            echo "::error::No read token minted. Check ORBIT_BOT_APP_ID / ORBIT_BOT_PRIVATE_KEY."; exit 1
+          fi
+          if [ -z "${{ steps.write_token.outputs.token }}" ]; then
+            echo "::error::No write token minted for purpusgit/lanes."; exit 1
+          fi
+
+      - name: Run the drift detector
+        env:
+          GH_TOKEN: ${{ steps.read_token.outputs.token }}
+          GH_WRITE_TOKEN: ${{ steps.write_token.outputs.token }}
+        run: python3 scripts/auth_coverage_drift.py

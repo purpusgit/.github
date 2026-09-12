@@ -1,0 +1,24 @@
+{
+  "_comment": "Gated set for the auth-coverage drift detector (scripts/auth_coverage_drift.py). Rule 70B: data lives here, not in the script. Each repo was confirmed LIVE on its default branch (2026-09-11) to carry the named reporter for expected_context. reporter_workflow is the file the context was found in at seed time (informational — the detector scans ALL workflows, so a benign rename of this file does not false-alarm as long as the job still reports the context). To enroll a repo: confirm its reporter live, then add a row here.",
+  "org": "purpusgit",
+  "report": {
+    "repo": "lanes",
+    "label": "auth-coverage-drift",
+    "issue_title": "Auth-coverage drift detector — open findings"
+  },
+  "gated_repos": [
+    { "repo": "service_orbit_orgs",        "expected_context": "auth-coverage", "reporter_workflow": "m34-auth-coverage.yml" },
+    { "repo": "service_auth",              "expected_context": "auth-coverage", "reporter_workflow": "m34-auth-coverage.yml" },
+    { "repo": "service_mongo_admin",       "expected_context": "auth-coverage", "reporter_workflow": "m34-auth-coverage.yml" },
+    { "repo": "service_mongo_social",      "expected_context": "auth-coverage", "reporter_workflow": "m34-auth-coverage.yml" },
+    { "repo": "service_marketplace_ecom",  "expected_context": "auth-coverage", "reporter_workflow": "m34-auth-coverage.yml" },
+    { "repo": "service_orbit_kafka",       "expected_context": "auth-coverage", "reporter_workflow": "m34-auth-coverage.yml" },
+    { "repo": "service_nearyest",          "expected_context": "auth-coverage", "reporter_workflow": "m34-auth-coverage.yml" },
+    { "repo": "service_iap_web_commerce",  "expected_context": "auth-coverage", "reporter_workflow": "m34-auth-coverage.yml" },
+    { "repo": "service_broadcast_audience", "expected_context": "auth-coverage", "reporter_workflow": "m34-auth-coverage.yml" },
+    { "repo": "service_AI_ML",             "expected_context": "auth-coverage",    "reporter_workflow": "python-lint.yml" }
+  ],
+  "not_enrolled": [
+    { "repo": "service_inapp_chat", "reason": "No auth-coverage reporter on its default branch (ci.yml reports typecheck/shellcheck/taxo-guard/jest, no auth job) AND RequiredStatusChecks is null on sandbox (verified 2026-09-11). It is not drift (never enrolled) — it is an enrollment decision for the chat lane. Left out of the gated set so the detector does not report a repo nobody has decided should be gated. Add it here once a reporter is wired." }
+  ]
+}
