@@ -556,7 +556,13 @@ def unforwarded_env_keys(step, fixture_env):
     lets canary_env_forwarded() red-proof it without polluting FAILURES.
     """
     body = step.get("run") or ""
-    setu = bool(re.search(r"set\s+-[a-zA-Z]*u", body)) or "set -o nounset" in body
+    # Anchored per line, so a `set -uo pipefail` mentioned in a COMMENT does not make a
+    # step look like it runs under -u when it does not. reusable-consolidated-gates.yml's
+    # Verdict step is exactly that shape (`set +e`, plus a comment naming `set -uo
+    # pipefail`, plus an `env: ROWS` it reads bare) — unguarded today, and the one live
+    # false-red this guard could otherwise produce once it is.
+    setu = bool(re.search(r"^\s*set\s+-[a-zA-Z]*u", body, re.M)) \
+        or bool(re.search(r"^\s*set\s+-o\s+nounset", body, re.M))
     out = []
     for k in (step.get("env") or {}):
         if k in (fixture_env or {}):
