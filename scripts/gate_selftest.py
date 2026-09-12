@@ -431,22 +431,33 @@ def extract_named_runs(doc):
                 named[step["name"]] = step["run"]
     return named
 
-def extract_named_steps(doc):
-    """{step name: step dict, with the JOB's `env:` merged under the step's own}.
+def extract_steps(doc):
+    """Every `run:` step as a dict, in order, with the JOB's `env:` merged under the
+    step's own.
 
-    extract_named_runs gives the `run:` only; the env-forwarding guard below needs
-    the `env:` block as well — and it needs the job-level one too, because a job
-    `env:` reaches every step in that job and this harness forwards it no more
-    than it forwards the step's own. reusable-sql-execution-gate.yml declares five
-    DB_* keys at job level, so that is not a hypothetical shape.
+    extract_runs gives the `run:` body only; the env-forwarding guard below needs
+    the `env:` block as well — and the job-level one too, because a job `env:`
+    reaches every step in that job and this harness forwards it no more than it
+    forwards the step's own (reusable-sql-execution-gate.yml declares five DB_*
+    keys there, so that is not a hypothetical shape).
+
+    Ordering mirrors extract_runs, so the POSITIONAL behavioural kinds — dir, diff,
+    colors and barrel select runs[-1], rule84 selects runs[0..2] — can be guarded by
+    the same index they are run by. `jobs:` or a composite action's `runs:`, because
+    the auth-coverage gate is an action.yml with no jobs at all.
     """
-    out = {}
-    for job in (doc.get("jobs") or {}).values():
+    out = []
+    for job in (list((doc.get("jobs") or {}).values()) or [doc.get("runs") or {}]):
         jenv = job.get("env") or {}
         for s in (job.get("steps") or []):
-            if isinstance(s, dict) and s.get("run") and s.get("name"):
-                out[s["name"]] = {**s, "env": {**jenv, **(s.get("env") or {})}}
+            if isinstance(s, dict) and s.get("run"):
+                out.append({**s, "env": {**jenv, **(s.get("env") or {})}})
     return out
+
+
+def extract_named_steps(doc):
+    """{step name: step dict} over extract_steps — for fixtures pinned BY NAME."""
+    return {s["name"]: s for s in extract_steps(doc) if s.get("name")}
 
 def input_defaults(doc):
     """{input name: declared default} from a workflow's `on.workflow_call.inputs`
@@ -545,7 +556,7 @@ def unforwarded_env_keys(step, fixture_env):
     lets canary_env_forwarded() red-proof it without polluting FAILURES.
     """
     body = step.get("run") or ""
-    setu = bool(re.search(r"set\s+-[a-z]*u", body)) or "set -o nounset" in body
+    setu = bool(re.search(r"set\s+-[a-zA-Z]*u", body)) or "set -o nounset" in body
     out = []
     for k in (step.get("env") or {}):
         if k in (fixture_env or {}):
@@ -573,12 +584,19 @@ def canary_env_forwarded():
     """Red-proof of the guard, in the shape that actually happened on PR #98: a
     step declaring MYSQL_PORT and reading it bare under `set -euo pipefail`.
 
-    Three assertions, because the guard has two ways to be useless — not firing
-    on the real shape, and firing on the shapes that are legitimately fine.
+    Four assertions, because the guard has two ways to be useless — not firing on a
+    real shape, and firing on the shapes that are legitimately fine — and it has TWO
+    detection arms, so a regression breaking only the os.environ one has to be caught
+    too. It is the arm the ancestry fixtures depend on.
     """
     bad     = {"run": 'set -euo pipefail\necho "$MYSQL_PORT"\n', "env": {"MYSQL_PORT": "x"}}
+    hard    = {"run": 'python3 -c \'import os; os.environ["GH_TOKEN"]\'\n', "env": {"GH_TOKEN": "x"}}
     guarded = {"run": 'set -euo pipefail\necho "${MYSQL_PORT:-3306}"\n', "env": {"MYSQL_PORT": "x"}}
-    if not unforwarded_env_keys(bad, {}):
+    if not unforwarded_env_keys(hard, {}):
+        fail("canary[env-forwarding]: an unsupplied os.environ[...] read was NOT "
+             "flagged — the KeyError arm is inert, and it is the arm the ancestry "
+             "fixtures rely on")
+    elif not unforwarded_env_keys(bad, {}):
         fail("canary[env-forwarding]: an unsupplied, bare-read env key was NOT "
              "flagged — the guard is inert and the PR #98 class can recur silently")
     elif unforwarded_env_keys(bad, {"MYSQL_PORT": "3306"}):
@@ -1357,6 +1375,14 @@ def auth_coverage_gate():
     # so asserting on it cannot tell "caught the ungated route" from "could not
     # find the directory". If the fixture's route is ever renamed, this must be
     # renamed with it, and failing loudly is the correct outcome.
+    # Same guard, for the two steps this gate actually executes. resolve_config
+    # supplies GITHUB_OUTPUT and RUNNER_TEMP; the predicate gets nothing.
+    ansteps = extract_named_steps(doc)
+    assert_env_forwarded(ansteps.get("Auth coverage") or {}, {}, "auth-coverage")
+    assert_env_forwarded(ansteps.get(CONFIG_STEP_NAME) or {},
+                         {"GITHUB_OUTPUT": 1, "RUNNER_TEMP": 1},
+                         f"auth-coverage[{CONFIG_STEP_NAME}]")
+
     behavioural_dir(script, "auth-coverage", "auth-coverage",
                     expect=PLANTED_ROUTE, resolve=resolve_config)
     canary_auth_coverage(script, resolve_config)
@@ -1377,6 +1403,7 @@ def main():
         runs = extract_runs(doc)
         named = extract_named_runs(doc)
         nsteps = extract_named_steps(doc)
+        steps = extract_steps(doc)
         if not runs:
             print("  (no run: steps)")
         for i, script in enumerate(runs):
@@ -1386,6 +1413,18 @@ def main():
             pycompile_heredocs(script, label)
 
         beh = BEHAVIOUR.get(fn)
+        # The env-forwarding guard for the POSITIONAL kinds, whose fixtures supply no
+        # env at all: anything those steps read unguarded out of `env:` is simply unset
+        # when the harness runs them. None of them declares an `env:` today, which is
+        # exactly why it has to be asserted — the first one to gain a key is the
+        # recurrence, and without this it would land as "PASS fixture unexpectedly RED"
+        # with nothing pointing at the fixture. The `step` and `consolidated` kinds are
+        # guarded at their own call sites, where the per-fixture env is known.
+        if beh and beh["kind"] in ("dir", "diff", "colors", "barrel") and steps:
+            assert_env_forwarded(steps[-1], {}, fn)
+        elif beh and beh["kind"] == "rule84":
+            for i in range(min(3, len(steps))):
+                assert_env_forwarded(steps[i], {}, f"{fn}[run#{i+1}]")
         if beh is None:
             print(f"  ! no behaviour entry for {fn} — add one (new gate?)")
             fail(f"{fn}: unmapped gate; refusing to silently skip")
