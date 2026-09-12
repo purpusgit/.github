@@ -1126,14 +1126,16 @@ def actionlint_gate():
 
 
 # ── the M34 auth-coverage gate ───────────────────────────────────────────────
-# Required on NINE repos -- measured 2026-09-07 by reading branch protection on
+# Required on TEN repos -- measured 2026-09-12 by reading branch protection on
 # `sandbox` for every repo carrying a .github/auth-coverage.json: service_auth,
 # service_mongo_social, service_mongo_admin, service_orbit_orgs, service_orbit_kafka,
-# service_orbit_analytics, service_org_broadcast, service_marketplace_ecom,
-# service_nearyest. This comment said FOUR until then, understating the blast radius
-# of every change to this predicate by more than half; action.yml two directories over
-# has said "Nine services" the whole time. Counted, not remembered -- and the count is
-# dated because it will move again.
+# service_orbit_analytics, service_iap_web_commerce (formerly service_org_broadcast),
+# service_marketplace_ecom, service_nearyest, and service_broadcast_audience (added
+# 2026-09-12, SPEC_W E1 -- the broadcast eviction destination; auth-coverage is enforced
+# on its sandbox with both required contexts, verified via the branch-protection API).
+# This comment said FOUR, then NINE; action.yml two directories over is bumped to "Ten
+# services" in the same change. Counted, not remembered -- and the count is dated
+# because it will move again.
 # Deliberately a COMPOSITE ACTION rather than a reusable
 # workflow -- see action.yml for why. The side effect is that main()'s loop over
 # .github/workflows/ structurally cannot see it, so the org's most-required
@@ -1181,10 +1183,10 @@ def canary_auth_coverage(script, resolve):
 
 
 def auth_coverage_gate():
-    print("── .github/actions/auth-coverage (composite action; required on 9 repos)")
+    print("── .github/actions/auth-coverage (composite action; required on 10 repos)")
     action = os.path.join(AUTH_COVERAGE_DIR, "action.yml")
     if not os.path.exists(action):
-        fail("auth-coverage: action.yml is missing — a gate nine repos require has "
+        fail("auth-coverage: action.yml is missing — a gate ten repos require has "
              "no predicate on disk")
         return
     doc = load_yaml(action)
