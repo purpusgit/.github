@@ -1,0 +1,353 @@
+# Reusable drift detector for the purpusgit/lanes#12 lane.
+#
+# REPLACES the byte-identical per-repo `drift-detector.yml` that was fanned into
+# service_mongo_social, service_inapp_chat, service_nearyest, service_ai_v_call and
+# service_goalcaller_voicereach. Callers are now a ~10-line thin caller (see bottom).
+#
+# WHY CENTRAL, when the original header argued for per-repo:
+# The original ruling said a central version "would need one credential with write access
+# across all five repos". That is not how `workflow_call` works. A reusable workflow runs
+# in the CALLER's context: the caller's own repo-scoped GITHUB_TOKEN, the caller's
+# `permissions:`, the caller's checkout. The `contents: write` below only ever moves the
+# CALLING repo's own watermark tag. No cross-repo credential is created or needed, so the
+# security surface the duplication was buying is not real.
+# The second argument -- "a diff between any two copies IS a drift check on the detector
+# itself" -- inverts on inspection: a single shared copy has nothing to drift FROM. The
+# duplication created the failure mode it claimed to detect. It also cost five PRs per
+# one-line fix, which is what prompted this rewrite.
+#
+# WHAT THIS DETECTS: repository drift on the caller's `sandbox` trunk touching a
+# security-relevant path. It does NOT detect deployment drift -- whether a running host
+# container actually picked up these commits. That needs host access this workflow does
+# not have. DRIFT_DETECTED means "read this", not "the live service is affected".
+#
+# FAILURE MODE THIS IS DESIGNED AGAINST: "nothing changed" and "I stopped watching" look
+# identical from outside a push-only trigger. The caller's schedule leg is the fix: it
+# reports every 24h regardless of push activity, so ITS silence is the alarm.
+#
+# ---------------------------------------------------------------------------------------
+# FIXES CARRIED IN FROM THE EXTERNAL CRITIC PASS (all four were RED on the fanned copies):
+#
+# 1. ROUTES ANCHOR (HIGH). The awk anchored at repo root: `path ~ /^routes\//`. Only
+#    service_mongo_social keeps routes at the root; the other four use `src/routes/`. A
+#    push rewriting every HTTP route in the chat service therefore reported NO_DRIFT --
+#    confident false assurance, strictly worse than silence. Now `(^|/)routes/`.
+#
+# 2. SHELL INJECTION (HIGH). `${{ steps.check.outputs.body }}` was interpolated directly
+#    into a `run:` block. That body is built from git pathnames on `sandbox`, which are
+#    attacker-controllable by definition -- watching untrusted pushes is this workflow's
+#    whole job. `${{ }}` is a literal textual substitution performed before bash parses the
+#    script, so a path containing a quote and `$(...)` executed with this job's tokens.
+#    The body now travels via `env:` and is referenced as "$ISSUE_BODY".
+#    ADDITIONALLY: the GITHUB_OUTPUT heredoc delimiter is randomised per run. With a fixed
+#    `DTEOF`, a pathname containing that token on its own line could close the heredoc
+#    early and write attacker-chosen keys into GITHUB_OUTPUT -- a narrower version of the
+#    same class. (git's default core.quotePath already escapes newlines in pathnames, so
+#    this was defence in depth, but it costs one line.)
+#
+# 3. WATERMARK ORDERING (MEDIUM). `git push origin "$WATERMARK_REF" --force` ran inside the
+#    check step -- BEFORE the app token was minted and before the comment was posted. If
+#    minting failed, the range was consumed and unrecoverable: the next run diffed from the
+#    new watermark and reported NO_DRIFT for changes nobody ever saw. The push is now the
+#    LAST step and, by default step ordering, is reached only when the report step
+#    succeeded. A failed report leaves the watermark where it was, so the next run re-diffs
+#    the same range and re-reports it.
+#
+# 4. GLOB_FILTER (STRUCTURAL). The old `GLOB_FILTER` env var was a hand-maintained prose
+#    duplicate of the awk, and the two had ALREADY diverged: the string advertised
+#    `**/*auth*` (a basename glob) while the code ran `tolower(path) ~ /auth/`, which also
+#    matches directories. Two things that must agree with no mechanism forcing them to
+#    agree will not stay in agreement. There is now ONE rule table (`watch_rules`); the
+#    report prints the exact table it executed, and each match names the rule that caught
+#    it.
+#
+# NEW: RULE COVERAGE. Every report states how many tracked files each rule currently
+# matches in the calling repo, and names any rule matching ZERO. That is the generic form
+# of defect 1: a rule that cannot fire in this repo is now loud on every single run instead
+# of silently contributing nothing. Had this existed, the routes gap would have announced
+# itself on the first run in four of the five repos.
+#
+# ---------------------------------------------------------------------------------------
+# THIN CALLER (drop into each watched repo as .github/workflows/drift-detector.yml):
+#
+#   name: Drift Detector
+#   on:
+#     push: { branches: [sandbox] }
+#     schedule: [{ cron: '17 3 * * *' }]
+#     workflow_dispatch: {}
+#   jobs:
+#     drift:
+#       uses: purpusgit/.github/.github/workflows/reusable-drift-detector.yml@main
+#       permissions: { contents: write }
+#       secrets: inherit
+#
+# `secrets: inherit` forwards the org secrets ORBIT_BOT_APP_ID / ORBIT_BOT_PRIVATE_KEY.
+# `permissions: contents: write` is required: the job moves the caller's own watermark tag.
+# A repo whose sources sit somewhere unusual passes `with: { watch_rules: ... }`.
+
+name: Reusable — Drift Detector
+
+on:
+  workflow_call:
+    inputs:
+      runner: { type: string, default: ubuntu-latest }
+
+      lane_repo:
+        description: Repository holding the lane issue that reports are posted to.
+        required: false
+        type: string
+        default: purpusgit/lanes
+
+      lane_issue:
+        description: Issue number in lane_repo to comment on.
+        required: false
+        type: string
+        default: '12'
+
+      watermark_ref:
+        description: >-
+          Tag ref marking the last commit this detector reported on. Must start with
+          refs/tags/ -- validated below, because it is interpolated into a git push.
+        required: false
+        type: string
+        default: refs/tags/drift-watermark
+
+      watch_rules:
+        description: >-
+          THE filter. One rule per line: a label with no spaces, then one space, then an
+          awk ERE. The regex is matched against the full pathname LOWERCASED, so write
+          rules in lowercase. Blank lines and # comments are ignored.
+
+          This is the single source of truth. The report prints this table verbatim and
+          names the matching rule beside every hit, so there is no second description that
+          can drift out of step with what actually ran.
+
+          Defaults are anchored with (^|/) rather than ^ so they match at any depth: the
+          five original callers split between root-level (`routes/`, `middlewares/`) and
+          src-level (`src/routes/`, `src/middleware/`) layouts, and a root anchor silently
+          matched nothing in four of them.
+        required: false
+        type: string
+        default: |
+          routes (^|/)routes/
+          controllers (^|/)controllers?/|\.controller\.
+          middleware middleware
+          auth auth
+          compose (^|/)(docker-compose|compose)[^/]*\.ya?ml$
+          env (^|/)\.env
+
+    secrets:
+      ORBIT_BOT_APP_ID:
+        description: "App ID for orbit-sessions-bot. Forward with `secrets: inherit`."
+        required: false
+      ORBIT_BOT_PRIVATE_KEY:
+        description: "Private key for orbit-sessions-bot. Forward with `secrets: inherit`."
+        required: false
+
+# Declared `required: false` deliberately. A missing required secret fails the workflow at
+# load time, which on a SCHEDULED run is close to invisible -- precisely the silent-watcher
+# failure this detector exists to catch. Instead the report step below fails loudly inside
+# the job, where the log says exactly which secret is missing and prints the report that
+# could not be delivered.
+
+jobs:
+  drift-check:
+    runs-on: ${{ inputs.runner }}
+    name: Drift check
+    permissions:
+      contents: write   # only to move THIS caller's own watermark tag
+    concurrency:
+      group: drift-detector-${{ github.repository }}
+      cancel-in-progress: false   # never skip a report; let runs queue instead
+    env:
+      LANE_REPO: ${{ inputs.lane_repo }}
+      LANE_ISSUE: ${{ inputs.lane_issue }}
+      WATERMARK_REF: ${{ inputs.watermark_ref }}
+
+    steps:
+      - uses: actions/checkout@v5.1.0
+        with:
+          fetch-depth: 0   # full history required: merge-base/diff against an old watermark
+
+      - name: Materialise watch rules and matcher
+        env:
+          # Via env, not `${{ }}` inside the script. Caller input is more trusted than a
+          # pathname, but the rule that stopped defect 2 is "no interpolation into run:",
+          # and a rule with exceptions is not a rule.
+          WATCH_RULES: ${{ inputs.watch_rules }}
+        run: |
+          set -euo pipefail
+
+          case "$WATERMARK_REF" in
+            refs/tags/*) : ;;
+            *) echo "::error::watermark_ref must start with refs/tags/ (got '$WATERMARK_REF'). It is interpolated into a git push." ; exit 1 ;;
+          esac
+
+          printf '%s\n' "$WATCH_RULES" > "$RUNNER_TEMP/watch-rules.txt"
+          if ! grep -qE '[^[:space:]]' "$RUNNER_TEMP/watch-rules.txt"; then
+            echo "::error::watch_rules is empty. A detector with no rules reports NO_DRIFT for everything -- failing instead."
+            exit 1
+          fi
+
+          cat > "$RUNNER_TEMP/match.awk" <<'AWKEOF'
+          # Reads the rule table, then classifies each input path against every rule.
+          # MODE=diff      stdin is `git diff --name-status` (TAB separated) -> print hits
+          # MODE=coverage  stdin is `git ls-files`                           -> print counts
+          BEGIN {
+            n = 0
+            while ((getline line < RULES) > 0) {
+              sub(/^[[:space:]]+/, "", line)
+              sub(/[[:space:]]+$/, "", line)
+              if (line == "" || line ~ /^#/) continue
+              sp = index(line, " ")
+              if (sp == 0) continue
+              n++
+              label[n] = substr(line, 1, sp - 1)
+              rx[n]    = substr(line, sp + 1)
+              sub(/^[[:space:]]+/, "", rx[n])
+              hits[n]  = 0
+            }
+            close(RULES)
+            if (n == 0) { print "::error::no usable rules parsed" > "/dev/stderr"; exit 1 }
+          }
+          {
+            if (MODE == "diff") { status = $1; path = $2 } else { status = ""; path = $0 }
+            if (path == "") next
+            lp = tolower(path)
+            why = ""
+            for (i = 1; i <= n; i++) {
+              if (lp ~ rx[i]) {
+                hits[i]++
+                why = (why == "" ? label[i] : why "," label[i])
+              }
+            }
+            if (why != "" && MODE == "diff") {
+              tag = (status == "D") ? "[DELETED]" : (status == "A" ? "[ADDED]" : "[MODIFIED]")
+              print tag, path, "(" why ")"
+            }
+          }
+          END {
+            if (MODE == "coverage") for (i = 1; i <= n; i++) printf "%s=%d\n", label[i], hits[i]
+          }
+          AWKEOF
+
+      - name: Run drift check
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPO="${GITHUB_REPOSITORY}"
+          NL=$'\n'
+          RULES="$RUNNER_TEMP/watch-rules.txt"
+          AWKP="$RUNNER_TEMP/match.awk"
+
+          # Randomised so a crafted pathname cannot close the heredoc early (defect 2b).
+          DELIM="DTEOF_$(openssl rand -hex 16 2>/dev/null || echo "${GITHUB_RUN_ID}_${RANDOM}_$$")"
+
+          emit() { { echo "body<<$DELIM"; printf '%s\n' "$1"; echo "$DELIM"; } >> "$GITHUB_OUTPUT"; }
+
+          # ---- rule coverage -------------------------------------------------------------
+          # Which rules can fire in THIS repo at all? A rule matching zero tracked files
+          # contributes nothing and, before this block existed, said nothing about it.
+          COVERAGE=$(git ls-files | awk -F'\t' -v RULES="$RULES" -v MODE=coverage -f "$AWKP" | paste -sd' ' -)
+          ZERO=$(git ls-files | awk -F'\t' -v RULES="$RULES" -v MODE=coverage -f "$AWKP" \
+                 | awk -F= '$2 == 0 { print $1 }' | paste -sd', ' -)
+
+          RULES_BLOCK="$(grep -E '[^[:space:]]' "$RULES" || true)"
+          FILTER_NOTE="Rules executed (label + regex, matched lowercased against the full path):${NL}\`\`\`${NL}${RULES_BLOCK}${NL}\`\`\`${NL}Rule coverage in this repo (tracked files matching each rule): \`${COVERAGE}\`"
+          if [ -n "$ZERO" ]; then
+            FILTER_NOTE="${FILTER_NOTE}${NL}${NL}> **Rules matching NOTHING in this repo: \`${ZERO}\`.** These cannot fire here. Either this repo genuinely has no such paths, or the rule is anchored wrong for this repo's layout -- a rule that never fires reports NO_DRIFT rather than reporting nothing, which reads as assurance it has not earned."
+          fi
+
+          echo "move_watermark=false" >> "$GITHUB_OUTPUT"
+
+          # ---- heartbeat leg -------------------------------------------------------------
+          if [ "${GITHUB_EVENT_NAME}" = "schedule" ] || [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            TIP_SHA=$(git rev-parse HEAD)
+            WM_SHA=$(git rev-parse -q --verify "$WATERMARK_REF" 2>/dev/null || echo "")
+            if [ -z "$WM_SHA" ]; then
+              emit "### watchman: alive -- \`${REPO}\`${NL}No watermark yet. Trunk tip: \`${TIP_SHA}\`. (Next push will INITIALIZE it.)${NL}${NL}${FILTER_NOTE}"
+            else
+              WM_TIME=$(git log -1 --format=%ct "$WM_SHA")
+              MOVED_H=$(( ( $(date -u +%s) - WM_TIME ) / 3600 ))
+              emit "### watchman: alive -- \`${REPO}\`${NL}watermark=\`${WM_SHA}\`, ${MOVED_H}h since watermark last moved.${NL}${NL}${FILTER_NOTE}"
+            fi
+            exit 0
+          fi
+
+          # ---- push leg ------------------------------------------------------------------
+          NOW_SHA=$(git rev-parse HEAD)
+          WM_SHA=$(git rev-parse -q --verify "$WATERMARK_REF" 2>/dev/null || echo "")
+
+          # Every push branch below moves the watermark -- but only in the final step, after
+          # the report has actually been delivered (defect 3).
+          {
+            echo "move_watermark=true"
+            echo "watermark_sha=$NOW_SHA"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ -z "$WM_SHA" ]; then
+            emit "### drift-detector: INITIALIZED -- \`${REPO}\`${NL}No watermark existed. Watermark set to \`${NOW_SHA}\`. **No comparison was made this run** -- this is not a zero-drift result, it is a first run. The next push diffs from here.${NL}${NL}${FILTER_NOTE}"
+            exit 0
+          fi
+
+          if ! git merge-base --is-ancestor "$WM_SHA" "$NOW_SHA"; then
+            emit "### drift-detector: REBASED -- \`${REPO}\`${NL}Watermark \`${WM_SHA}\` is not an ancestor of push tip \`${NOW_SHA}\` -- trunk was rewritten, not drifted. Watermark reset to \`${NOW_SHA}\`. No content comparison was made this run; the rewritten range needs a human read if it matters.${NL}${NL}${FILTER_NOTE}"
+            exit 0
+          fi
+
+          # --no-renames so a file renamed INTO a watched path (lib/x.js -> routes/new.js)
+          # is reported as [ADDED] rather than silently missed under its old path.
+          MATCHES=$(git diff --name-status --no-renames "$WM_SHA" "$NOW_SHA" \
+                    | awk -F'\t' -v RULES="$RULES" -v MODE=diff -f "$AWKP")
+          COMMIT_COUNT=$(git rev-list --count "${WM_SHA}..${NOW_SHA}")
+
+          if [ -z "$MATCHES" ]; then
+            emit "### drift-detector: NO_DRIFT -- \`${REPO}\`${NL}\`${WM_SHA}\` to \`${NOW_SHA}\` (${COMMIT_COUNT} commit(s)). Nothing matched.${NL}${NL}${FILTER_NOTE}"
+          else
+            emit "### drift-detector: DRIFT_DETECTED -- \`${REPO}\`${NL}\`${WM_SHA}\` to \`${NOW_SHA}\` (${COMMIT_COUNT} commit(s)).${NL}${NL}\`\`\`${NL}${MATCHES}${NL}\`\`\`${NL}${NL}${FILTER_NOTE}${NL}${NL}This detects repository drift on \`sandbox\`, not deployment drift on the host -- pair with a host-side check before treating as live impact."
+          fi
+
+      - name: Mint a short-lived installation token (lane report only)
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORBIT_BOT_APP_ID }}
+          private-key: ${{ secrets.ORBIT_BOT_PRIVATE_KEY }}
+          owner: purpusgit
+          # Least privilege: this token reaches purpusgit/lanes and nothing else. Same App
+          # (orbit-sessions-bot) and same two org secrets already used by
+          # pkg_orbit_binder/notify-host-tip-moved.yml -- not a new credential.
+          repositories: lanes
+          permission-issues: write
+
+      - name: Report to the lane
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          # Through env, never interpolated into the run: script (defect 2). The body
+          # contains pathnames from a push to sandbox, and `${{ }}` inside run: is a literal
+          # textual substitution performed before bash parses the script.
+          ISSUE_BODY: ${{ steps.check.outputs.body }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::No installation token was minted. Check org secrets ORBIT_BOT_APP_ID / ORBIT_BOT_PRIVATE_KEY, that the caller passed \`secrets: inherit\`, and that orbit-sessions-bot is installed on the lane repo. This run's result was computed but NOT reported -- that is itself the silent-watcher failure this workflow exists to avoid, so this step fails loudly rather than swallowing it. The undelivered report follows."
+            printf '%s\n' "$ISSUE_BODY"
+            exit 1
+          fi
+          gh issue comment "$LANE_ISSUE" --repo "$LANE_REPO" --body "$ISSUE_BODY"
+
+      # DEFECT 3 FIX. The watermark is consumed only once the report has actually landed.
+      # This step is last and carries no `if: always()`, so any earlier failure -- minting,
+      # commenting, a lane outage -- leaves the watermark untouched and the next run
+      # re-diffs and re-reports the same range instead of skipping it forever.
+      - name: Advance watermark (only after the report landed)
+        if: steps.check.outputs.move_watermark == 'true'
+        env:
+          WATERMARK_SHA: ${{ steps.check.outputs.watermark_sha }}
+        run: |
+          set -euo pipefail
+          TAG="${WATERMARK_REF#refs/tags/}"
+          git tag -f "$TAG" "$WATERMARK_SHA"
+          git push origin "refs/tags/${TAG}" --force
+          echo "Watermark advanced to ${WATERMARK_SHA}."
