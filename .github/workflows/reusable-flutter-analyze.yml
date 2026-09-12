@@ -331,8 +331,17 @@ jobs:
             echo "::error::No installation token was minted. Check the org secrets ORBIT_BOT_APP_ID / ORBIT_BOT_PRIVATE_KEY, that orbit-sessions-bot is installed on this repo, and that the calling workflow passed secrets: inherit (a bare secrets: { GH_PAT: ... } map still starts the run but supplies nothing this workflow reads -- switch that caller to secrets: inherit). dart pub get cannot clone private siblings without it -- failing loudly instead of falling through to an anonymous fetch."
             exit 1
           fi
-          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "git@github.com:"
-          git config --global --add url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          # Job-scoped git config, NOT --global. On a self-hosted runner $HOME persists
+          # between jobs, so a --global rewrite accumulates one [url] block per job; the
+          # minting action revokes each token in its post step, and git resolves a
+          # duplicated insteadOf to the FIRST match (alias_url() in remote.c uses a strict
+          # `<`), so from job 2 onward every private-sibling clone authenticates with the
+          # OLDEST dead token while the freshly minted one sits unused at the end of the
+          # file. $RUNNER_TEMP is per-job and GitHub deletes it at job end, so nothing
+          # accumulates and no live token is left at rest on a shared host.
+          echo "GIT_CONFIG_GLOBAL=$RUNNER_TEMP/gitconfig" >> "$GITHUB_ENV"
+          git config --file "$RUNNER_TEMP/gitconfig" url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "git@github.com:"
+          git config --file "$RUNNER_TEMP/gitconfig" --add url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
       - uses: subosito/flutter-action@v2
         with:
           flutter-version-file: .fvmrc
