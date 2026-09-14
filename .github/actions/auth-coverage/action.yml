@@ -14,7 +14,7 @@ description: >-
 # job, so the reported name is whatever the caller's job is called and nothing
 # moves underneath protection.
 #
-# ⛔ DO NOT convert this to a reusable workflow. Nine services have branch
+# ⛔ DO NOT convert this to a reusable workflow. Ten services have branch
 # protection requiring the bare context `auth-coverage`, with admin enforcement
 # on. Every one of them would sit blocked on a context nothing reports, which is
 # absence rather than failure and cannot be cleared by re-running.

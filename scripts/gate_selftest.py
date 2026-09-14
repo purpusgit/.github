@@ -54,6 +54,13 @@ depends on that value. Passing under `code_root: packages` is scored identically
 by a gate that reads the input and by one that hardcodes `packages`. See
 canary_sql_code_root.
 
+A fourth rule, added after PR #98: a behavioural fixture must supply every `env:`
+key its step reads UNGUARDED. This harness runs a step's `run:` with a hardcoded
+dict and never the step's own `env:`, so adding an env key to a gate and reading it
+under `set -u` reds the PASS fixture with "unbound variable" — a stale FIXTURE that
+reads as a broken gate, on a required context with no `paths:` filter. The check is
+structural and runs before the predicate; see unforwarded_env_keys.
+
 Exit 0 = all checks passed (green). Exit 1 = a predicate broke or a fixture
 assertion failed (red).
 """
@@ -349,7 +356,10 @@ BEHAVIOUR = {
         # uncovered ONLY because this harness did not forward `env:`. It does now.
         "step": "Validate gate inputs",
         "key": "sql-exec-inputs",
-        "env": {"DB_NAME": "orbit_japa", "HARNESS": "ci/x/run.sh",
+        # MYSQL_PORT joined the step's env: when the host port became an input. Omit it and
+        # the PASS fixture dies on "unbound variable" under set -u — red for the wrong reason,
+        # which is indistinguishable here from the gate itself being broken.
+        "env": {"DB_NAME": "orbit_japa", "HARNESS": "ci/x/run.sh", "MYSQL_PORT": "3306",
                 "SCHEMA_FILES": "db/schema.sql", "SEED_FILES": ""},
         # The two fixture trees are BYTE-IDENTICAL; the fail case differs ONLY by
         # environment, so what is asserted is unambiguously the input check and not a
@@ -382,6 +392,10 @@ BEHAVIOUR = {
         "reason": "org-wide GitHub API read/write job; needs a live installation"
                    " token this harness must not be handed. Not a gate: schedule +"
                    " workflow_dispatch only, comment-only output."},
+    # Scheduled org-wide monitor, not a PR gate: it queries the live GitHub API for
+    # every gated repo, so its exit code cannot be asserted from a fixture without
+    # faking that API -- which would assert the fake, not the detector.
+    "auth-coverage-drift.yml": {"kind": None, "reason": "scheduled org-wide monitor; needs live GitHub API access across every gated repo"},
     "reusable-critic-passed.yml":    {"kind": None, "reason": "pure actions/github-script gate, no run: predicate to extract; proven by the mandated live rollout, not by a fixture"},
 }
 FAILURES = []
@@ -416,6 +430,34 @@ def extract_named_runs(doc):
             if isinstance(step, dict) and step.get("run") and step.get("name"):
                 named[step["name"]] = step["run"]
     return named
+
+def extract_steps(doc):
+    """Every `run:` step as a dict, in order, with the JOB's `env:` merged under the
+    step's own.
+
+    extract_runs gives the `run:` body only; the env-forwarding guard below needs
+    the `env:` block as well — and the job-level one too, because a job `env:`
+    reaches every step in that job and this harness forwards it no more than it
+    forwards the step's own (reusable-sql-execution-gate.yml declares five DB_*
+    keys there, so that is not a hypothetical shape).
+
+    Ordering mirrors extract_runs, so the POSITIONAL behavioural kinds — dir, diff,
+    colors and barrel select runs[-1], rule84 selects runs[0..2] — can be guarded by
+    the same index they are run by. `jobs:` or a composite action's `runs:`, because
+    the auth-coverage gate is an action.yml with no jobs at all.
+    """
+    out = []
+    for job in (list((doc.get("jobs") or {}).values()) or [doc.get("runs") or {}]):
+        jenv = job.get("env") or {}
+        for s in (job.get("steps") or []):
+            if isinstance(s, dict) and s.get("run"):
+                out.append({**s, "env": {**jenv, **(s.get("env") or {})}})
+    return out
+
+
+def extract_named_steps(doc):
+    """{step name: step dict} over extract_steps — for fixtures pinned BY NAME."""
+    return {s["name"]: s for s in extract_steps(doc) if s.get("name")}
 
 def input_defaults(doc):
     """{input name: declared default} from a workflow's `on.workflow_call.inputs`
@@ -491,6 +533,88 @@ def run_predicate(script, workdir, env=None):
                        text=True, capture_output=True,
                        env={**os.environ, **env} if env else None)
     return r.returncode, r.stdout + r.stderr
+
+# ── the stale-fixture landmine: a step's `env:` is NOT forwarded by this harness ─
+# run_predicate passes a HARDCODED dict and never the step's own `env:`. So adding
+# an env key to a gate step and reading it under `set -u` reds the PASS fixture
+# with "unbound variable": the gate change is fine, the FIXTURE is stale, and the
+# red lands on self-test-gates.yml — a REQUIRED context with no `paths:` filter, so
+# it blocks every PR in this repo while reading as a broken gate. That is PR #98
+# (MYSQL_PORT), caught only because the step was run in a harness before merge.
+# These two functions stop it happening silently: the fixture's env is checked
+# against the step's BEFORE the predicate runs, and the message names the key.
+#
+# Only UNGUARDED reads are asserted. `os.environ.get(K, default)` and `${K:-}` are
+# legitimately fine unsupplied, and three live steps rely on that deliberately
+# (drizzle's MIGRATIONS_DIR, ancestry's PINS/PINS_COUNT) — flagging those would
+# make this guard itself the false red it exists to prevent.
+def unforwarded_env_keys(step, fixture_env):
+    """[(key, how)] for every `env:` key the step reads UNGUARDED that the fixture
+    does not supply.
+
+    Pure on purpose: it returns findings and never calls fail(), which is what
+    lets canary_env_forwarded() red-proof it without polluting FAILURES.
+    """
+    body = step.get("run") or ""
+    # Anchored per line, so a `set -uo pipefail` mentioned in a COMMENT does not make a
+    # step look like it runs under -u when it does not. reusable-consolidated-gates.yml's
+    # Verdict step is exactly that shape (`set +e`, plus a comment naming `set -uo
+    # pipefail`, plus an `env: ROWS` it reads bare) — unguarded today, and the one live
+    # false-red this guard could otherwise produce once it is.
+    setu = bool(re.search(r"^\s*set\s+-[a-zA-Z]*u", body, re.M)) \
+        or bool(re.search(r"^\s*set\s+-o\s+nounset", body, re.M))
+    out = []
+    for k in (step.get("env") or {}):
+        if k in (fixture_env or {}):
+            continue
+        if re.search(r"os\.environ\s*\[\s*['\"]" + re.escape(k) + r"['\"]", body):
+            out.append((k, "reads it as os.environ[...], which raises KeyError"))
+        elif setu and re.search(r"\$\{" + re.escape(k) + r"\}|\$" + re.escape(k)
+                                + r"(?![A-Za-z0-9_])", body):
+            out.append((k, "reads it bare under `set -u`, i.e. unbound variable"))
+    return out
+
+
+def assert_env_forwarded(step, fixture_env, label):
+    """fail() for each unforwarded key, naming the key and the fix."""
+    for k, how in unforwarded_env_keys(step, fixture_env):
+        fail(f"{label}: the step declares env key {k!r} and {how} — but this "
+             f"fixture does not supply it — add {k!r} to the entry's `env:` in "
+             "BEHAVIOUR, in the same commit as the gate change. The gate is fine; "
+             "the FIXTURE is stale, and left alone it reds the PASS fixture as "
+             '"unexpectedly RED", which reads as a broken gate and blocks this '
+             "repo's required self-test context.")
+
+
+def canary_env_forwarded():
+    """Red-proof of the guard, in the shape that actually happened on PR #98: a
+    step declaring MYSQL_PORT and reading it bare under `set -euo pipefail`.
+
+    Four assertions, because the guard has two ways to be useless — not firing on a
+    real shape, and firing on the shapes that are legitimately fine — and it has TWO
+    detection arms, so a regression breaking only the os.environ one has to be caught
+    too. It is the arm the ancestry fixtures depend on.
+    """
+    bad     = {"run": 'set -euo pipefail\necho "$MYSQL_PORT"\n', "env": {"MYSQL_PORT": "x"}}
+    hard    = {"run": 'python3 -c \'import os; os.environ["GH_TOKEN"]\'\n', "env": {"GH_TOKEN": "x"}}
+    guarded = {"run": 'set -euo pipefail\necho "${MYSQL_PORT:-3306}"\n', "env": {"MYSQL_PORT": "x"}}
+    if not unforwarded_env_keys(hard, {}):
+        fail("canary[env-forwarding]: an unsupplied os.environ[...] read was NOT "
+             "flagged — the KeyError arm is inert, and it is the arm the ancestry "
+             "fixtures rely on")
+    elif not unforwarded_env_keys(bad, {}):
+        fail("canary[env-forwarding]: an unsupplied, bare-read env key was NOT "
+             "flagged — the guard is inert and the PR #98 class can recur silently")
+    elif unforwarded_env_keys(bad, {"MYSQL_PORT": "3306"}):
+        fail("canary[env-forwarding]: a SUPPLIED key was flagged — the guard would "
+             "false-red on every healthy fixture")
+    elif unforwarded_env_keys(guarded, {}):
+        fail("canary[env-forwarding]: a `${K:-default}` read was flagged — the guard "
+             "would false-red on the three live steps that deliberately default")
+    else:
+        ok("canary[env-forwarding]: flags the unsupplied bare read, and ignores both "
+           "a supplied key and a defaulted read")
+
 
 def behavioural_dir(script, key, label, prep=None, expect=None, expect_pass=None,
                     env=None, env_fail=None, resolve=None):
@@ -723,7 +847,56 @@ def behavioural_barrel(runs, label):
                               origin_ref=origin_ref, extras=extras)
             _assert_diff(script, label, case, want_zero, tmp, expect=expect)
 
-def behavioural_consolidated(named, beh, label):
+def assert_rows_completeness(doc, label):
+    """Every `steps.<X>.outcome` in the Verdict ROWS env must match a real step
+    `id:` in the same job, and every gate step (`id:` + `continue-on-error: true`)
+    must have a matching row. Failing either half is a broken gate assertion:
+    a stale row resolves to "" and (until 2026-09-11) was printed as "not enabled
+    for this repo" — a comment reading as mitigation while nothing was checked. A
+    silent step (id present, no row) fails without appearing in the summary, and
+    with continue-on-error: true the job still passes.
+
+    Falsified by removing a row while keeping its step, or renaming a step id while
+    keeping the row — either produces a named RED here rather than a silent green
+    on a live consumer.
+    """
+    import re
+    job = next(iter((doc.get("jobs") or {}).values()), None)
+    if not job:
+        fail(f"{label}[rows-completeness]: no jobs in workflow — cannot audit rows")
+        return
+    steps = job.get("steps") or []
+    gate_ids = {s["id"] for s in steps
+                if isinstance(s, dict) and s.get("id") and s.get("continue-on-error")}
+    verdict = next((s for s in steps
+                    if isinstance(s, dict) and str(s.get("name", "")).startswith("Verdict")),
+                   None)
+    if not verdict:
+        fail(f"{label}[rows-completeness]: no Verdict step found — cannot audit rows")
+        return
+    rows_env = ((verdict.get("env") or {}).get("ROWS") or "")
+    if not rows_env:
+        fail(f"{label}[rows-completeness]: Verdict has no ROWS env — cannot audit rows")
+        return
+    row_refs = set(re.findall(r"steps\.([A-Za-z0-9_]+)\.outcome", rows_env))
+    missing_id = sorted(row_refs - gate_ids)
+    missing_row = sorted(gate_ids - row_refs)
+    if missing_id:
+        fail(f"{label}[rows-completeness]: ROWS references step id(s) that do not "
+             f"exist as `id:` on a gate step in this job — the row would resolve to "
+             f'"" at runtime and print as "not enabled for this repo" while holding '
+             f"nothing: {', '.join(missing_id)}. Either add the step or delete the row.")
+    if missing_row:
+        fail(f"{label}[rows-completeness]: gate step id(s) with no ROWS row — a "
+             f"failure would go uncounted (continue-on-error preserves the outcome "
+             f"but Verdict never reads it): {', '.join(missing_row)}. Either add a "
+             f"row or remove the id/continue-on-error.")
+    if not missing_id and not missing_row:
+        ok(f"{label}[rows-completeness]: {len(gate_ids)} gate id(s) all covered by "
+           f"{len(row_refs)} row(s), and vice versa — no silent step, no broken row")
+
+
+def behavioural_consolidated(named, beh, label, doc=None):
     """Assert every mirrored step is byte-identical to its source predicate, then
     red-proof one of them against a real fixture.
 
@@ -733,6 +906,17 @@ def behavioural_consolidated(named, beh, label):
     the LIVE source predicate on every PR to this repo, so editing one side alone
     reds here and says which pair disagrees. Nothing is duplicated silently.
     """
+    # Rows/ids completeness — the "not enabled for this repo" arm in Verdict is a
+    # legitimate opt-out ONLY if the row it prints refers to a real gate step in the
+    # same job. A row referring to a step that does not exist (typo, rename, delete)
+    # resolves to "" at runtime and used to print the same mitigation string; the
+    # orchestrator's ruling: a boundary whose loss is documented as "not enabled for
+    # this repo" is worse than one nobody noticed. This assertion refuses to ship a
+    # workflow that would print that comment while holding nothing, so the runtime
+    # arm that now fails on "" never has to.
+    if doc is not None:
+        assert_rows_completeness(doc, label)
+
     for step_name, (src_file, src_step) in beh["mirrors"].items():
         mine = named.get(step_name)
         if mine is None:
@@ -756,6 +940,17 @@ def behavioural_consolidated(named, beh, label):
             ok(f"{label}: {step_name!r} is byte-identical to {src_file}[{src_step!r}]")
     if beh.get("unmirrored"):
         print(f"  ⤳ PARTIAL: no equality assertion possible for — {beh['unmirrored']}")
+    # Same stale-fixture guard as the `step` entries: these three are run with a
+    # hardcoded env too (behavioural_secretscan supplies BASE_SHA, the other two
+    # supply nothing), so an env: key added to any of them has to land in the
+    # fixture in the same commit or the PASS side reds for the wrong reason.
+    nsteps = extract_named_steps(doc) if doc is not None else {}
+    for sn, fx in ([(beh["redproof"][0], {})]
+                   + [(s, {}) for s, _, _ in beh.get("b9_steps", [])]
+                   + [(beh["secretscan_step"], {"BASE_SHA": "<built from the fixture repo>"})]):
+        if sn in nsteps:
+            assert_env_forwarded(nsteps[sn], fx, f"{label}[{sn}]")
+
     rp_step, rp_key, rp_expect = beh["redproof"]
     script = named.get(rp_step)
     if script is None:
@@ -1059,14 +1254,16 @@ def actionlint_gate():
 
 
 # ── the M34 auth-coverage gate ───────────────────────────────────────────────
-# Required on NINE repos -- measured 2026-09-07 by reading branch protection on
+# Required on TEN repos -- measured 2026-09-12 by reading branch protection on
 # `sandbox` for every repo carrying a .github/auth-coverage.json: service_auth,
 # service_mongo_social, service_mongo_admin, service_orbit_orgs, service_orbit_kafka,
-# service_orbit_analytics, service_org_broadcast, service_marketplace_ecom,
-# service_nearyest. This comment said FOUR until then, understating the blast radius
-# of every change to this predicate by more than half; action.yml two directories over
-# has said "Nine services" the whole time. Counted, not remembered -- and the count is
-# dated because it will move again.
+# service_orbit_analytics, service_iap_web_commerce (formerly service_org_broadcast),
+# service_marketplace_ecom, service_nearyest, and service_broadcast_audience (added
+# 2026-09-12, SPEC_W E1 -- the broadcast eviction destination; auth-coverage is enforced
+# on its sandbox with both required contexts, verified via the branch-protection API).
+# This comment said FOUR, then NINE; action.yml two directories over is bumped to "Ten
+# services" in the same change. Counted, not remembered -- and the count is dated
+# because it will move again.
 # Deliberately a COMPOSITE ACTION rather than a reusable
 # workflow -- see action.yml for why. The side effect is that main()'s loop over
 # .github/workflows/ structurally cannot see it, so the org's most-required
@@ -1114,10 +1311,10 @@ def canary_auth_coverage(script, resolve):
 
 
 def auth_coverage_gate():
-    print("── .github/actions/auth-coverage (composite action; required on 9 repos)")
+    print("── .github/actions/auth-coverage (composite action; required on 10 repos)")
     action = os.path.join(AUTH_COVERAGE_DIR, "action.yml")
     if not os.path.exists(action):
-        fail("auth-coverage: action.yml is missing — a gate nine repos require has "
+        fail("auth-coverage: action.yml is missing — a gate ten repos require has "
              "no predicate on disk")
         return
     doc = load_yaml(action)
@@ -1184,6 +1381,14 @@ def auth_coverage_gate():
     # so asserting on it cannot tell "caught the ungated route" from "could not
     # find the directory". If the fixture's route is ever renamed, this must be
     # renamed with it, and failing loudly is the correct outcome.
+    # Same guard, for the two steps this gate actually executes. resolve_config
+    # supplies GITHUB_OUTPUT and RUNNER_TEMP; the predicate gets nothing.
+    ansteps = extract_named_steps(doc)
+    assert_env_forwarded(ansteps.get("Auth coverage") or {}, {}, "auth-coverage")
+    assert_env_forwarded(ansteps.get(CONFIG_STEP_NAME) or {},
+                         {"GITHUB_OUTPUT": 1, "RUNNER_TEMP": 1},
+                         f"auth-coverage[{CONFIG_STEP_NAME}]")
+
     behavioural_dir(script, "auth-coverage", "auth-coverage",
                     expect=PLANTED_ROUTE, resolve=resolve_config)
     canary_auth_coverage(script, resolve_config)
@@ -1203,6 +1408,8 @@ def main():
         doc = load_yaml(os.path.join(WF_DIR, fn))
         runs = extract_runs(doc)
         named = extract_named_runs(doc)
+        nsteps = extract_named_steps(doc)
+        steps = extract_steps(doc)
         if not runs:
             print("  (no run: steps)")
         for i, script in enumerate(runs):
@@ -1212,6 +1419,18 @@ def main():
             pycompile_heredocs(script, label)
 
         beh = BEHAVIOUR.get(fn)
+        # The env-forwarding guard for the POSITIONAL kinds, whose fixtures supply no
+        # env at all: anything those steps read unguarded out of `env:` is simply unset
+        # when the harness runs them. None of them declares an `env:` today, which is
+        # exactly why it has to be asserted — the first one to gain a key is the
+        # recurrence, and without this it would land as "PASS fixture unexpectedly RED"
+        # with nothing pointing at the fixture. The `step` and `consolidated` kinds are
+        # guarded at their own call sites, where the per-fixture env is known.
+        if beh and beh["kind"] in ("dir", "diff", "colors", "barrel") and steps:
+            assert_env_forwarded(steps[-1], {}, fn)
+        elif beh and beh["kind"] == "rule84":
+            for i in range(min(3, len(steps))):
+                assert_env_forwarded(steps[i], {}, f"{fn}[run#{i+1}]")
         if beh is None:
             print(f"  ! no behaviour entry for {fn} — add one (new gate?)")
             fail(f"{fn}: unmapped gate; refusing to silently skip")
@@ -1231,6 +1450,10 @@ def main():
                      "do NOT let it fall back to a positional guess.")
             else:
                 script = sub_inputs(script, fixture_inputs(doc, beh))
+                # Checked against the PASS env alone: `env_fail` only reaches the
+                # fail case, so a key supplied there and nowhere else still reds the
+                # pass side — which is the landmine, not a fix for it.
+                assert_env_forwarded(nsteps[beh["step"]], beh.get("env"), fn)
                 prep = beh.get("prep")
                 behavioural_dir(script, beh["key"], fn,
                                 prep=prep and prep.replace("{ROOT}", ROOT),
@@ -1253,6 +1476,8 @@ def main():
                          "this gate — the gate changed shape. Repoint or remove the "
                          "fixture; do NOT let it fall back to a positional guess.")
                     continue
+                assert_env_forwarded(nsteps[extra["step"]], extra.get("env"),
+                                     f"{fn}[{extra['step']}:{extra['key']}]")
                 behavioural_dir(sub_inputs(xscript, fixture_inputs(doc, extra)),
                                 extra["key"], f"{fn}[{extra['step']}:{extra['key']}]",
                                 expect=extra["expect"],
@@ -1269,7 +1494,7 @@ def main():
         elif beh["kind"] == "rule84":
             behavioural_rule84(runs, fn)
         elif beh["kind"] == "consolidated":
-            behavioural_consolidated(named, beh, fn)
+            behavioural_consolidated(named, beh, fn, doc=doc)
         print()
 
     actionlint_gate()
@@ -1285,6 +1510,7 @@ def main():
         canary_analyze(analyze_script)
     else:
         fail("canary[analyze]: analyze predicate not found")
+    canary_env_forwarded()
     if sql_default_script:
         canary_sql_code_root(sql_default_script)
     else:

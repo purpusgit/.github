@@ -24,9 +24,18 @@ on:
   # A push to `main` genuinely only matters for these paths, and keeping the
   # filter here caps the cost of the Flutter+Node install below. A push trigger
   # carries no obligation to report a status on anything.
+  #
+  # `.github/actions/auth-coverage/**` is here because that predicate and its
+  # DEFECT battery are now exercised by this job; without it a push changing only
+  # the predicate runs nothing on `main`. Scoped to that ONE action rather than
+  # `.github/actions/**`: the sibling `flutter-test` action is not exercised here,
+  # so a push touching it would buy a 95-second Flutter-installing job that
+  # verifies nothing about it — against a filter whose whole purpose is capping
+  # that cost. Widen this the day this job starts exercising another action.
   push:
     paths:
       - '.github/workflows/**'
+      - '.github/actions/auth-coverage/**'
       - 'scripts/**'
       - 'taxo-contract/**'
 
@@ -108,6 +117,54 @@ jobs:
           "$RUNNER_TEMP/actionlint" --version
       - name: Run gate self-test
         run: python3 scripts/gate_selftest.py
+      # ⛔ THE AUTH-COVERAGE BATTERY RAN NOWHERE IN THIS REPOSITORY UNTIL THIS STEP.
+      # `gate_selftest.py` contains ZERO occurrences of the string `selftest` — its
+      # auth-coverage entries are the pass/fail fixture directory and
+      # `canary_auth_coverage`. Those are complementary to this: they prove the
+      # predicate still catches an ungated route and that the fixture genuinely
+      # exercises it, while the numbered cases below cover the fifteen specific ways
+      # this predicate has been wrong — the commented-out middleware, the group-5
+      # offset arithmetic, the identifier splice, the zero-root floor, the
+      # environment override that once let a pull request disarm the gate judging it.
+      #
+      # Those assertions had exactly one runner: `action.yml`'s "Predicate self-test"
+      # step — which executes on CONSUMER repos. So a predicate change merged HERE
+      # green (#77 and #80 both did), and the battery only spoke later, on the next
+      # unrelated PR across nine services, where the red reads as their defect rather
+      # than as the change that caused it. The verification was never missing; it
+      # fired where the author could not see it and someone else paid.
+      #
+      # The script is cwd-independent by construction — `__dirname` for the
+      # predicate, `os.tmpdir()` for its fixtures, an explicit `cwd` on every run —
+      # so invoking it from the repository root is the same run `action.yml` gets.
+      #
+      # ⛔ AND THE COUNT IS CHECKED, because the battery itself has no floor.
+      # `check-route-auth-coverage.selftest.js` ends `process.exit(failures ? 1 : 0)`
+      # and prints "all self-tests passed" on zero failures — so a battery that ran
+      # ZERO assertions, or one truncated halfway by an early throw, exits 0 and reads
+      # as a pass. A checker that cannot tell "checked nothing" from "found nothing
+      # wrong" is the precise defect every gate in this repository exists to remove,
+      # and this step is what makes that battery a REQUIRED blocking context, so the
+      # floor belongs here. Raise the number when you add a case; that is the point —
+      # losing a case should cost an edit, not pass silently.
+      - name: Run auth-coverage predicate self-test (DEFECT battery)
+        env:
+          EXPECTED_ASSERTIONS: "37"
+        run: |
+          set -uo pipefail
+          rc=0
+          out="$(node .github/actions/auth-coverage/check-route-auth-coverage.selftest.js)" || rc=$?
+          printf '%s\n' "$out"
+          n="$(printf '%s\n' "$out" | grep -c '^  ok   ' || true)"
+          echo "assertions that passed: $n (expected $EXPECTED_ASSERTIONS)"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::auth-coverage battery reported failures (exit $rc)"
+            exit "$rc"
+          fi
+          if [ "$n" -lt "$EXPECTED_ASSERTIONS" ]; then
+            echo "::error::auth-coverage battery ran $n assertions, expected at least $EXPECTED_ASSERTIONS — cases were LOST, not passed. A battery that checked nothing exits 0 exactly like one that found nothing wrong."
+            exit 1
+          fi
       - name: Run taxo-contract checker self-test (block-scoped 2.2)
         run: python3 taxo-contract/test_checker.py
       - name: Run taxo_lint scan-scope self-test (glob broadening + template scoping)

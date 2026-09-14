@@ -18,11 +18,24 @@ name: reusable-critic-passed
 # Once this is a required context it does not matter who raised the PR, and the
 # push-approval setting can be retired.
 #
-# ⛔ THE JOB KEY BELOW IS THE REQUIRED STATUS CHECK NAME.
-# Branch protection requires the bare context `critic-passed`. Renaming the job
-# turns the gate into an ABSENCE — which blocks rather than passes, but reports
-# NOTHING to explain why, and presents as a PR that simply never becomes
-# mergeable. Do not rename it.
+# ⛔ THE REPORTED CONTEXT IS COMPOUND — IT IS NOT THE BARE JOB KEY.
+# This is a REUSABLE WORKFLOW. A caller job that `uses:` it reports
+# `<caller job id> / <job name inside this file>`. With the caller snippet at the
+# bottom (`jobs.critic-passed`) and this file's job key, the context GitHub emits
+# is:
+#
+#     critic-passed / critic-passed
+#
+# ⛔ DO NOT require the bare string `critic-passed` in branch protection. A bare
+# name that nothing reports is an ABSENCE, not a failure: the pull request never
+# becomes mergeable, no red X explains why, and no re-run, reopen or empty commit
+# can clear it. The sibling gate is a COMPOSITE ACTION for exactly this reason —
+# see .github/actions/auth-coverage/action.yml, whose header records six package
+# branches that sat in that state.
+#
+# Read the emitted name off a real completed check run (rollout step 2 below) and
+# require THAT string. Renaming either job changes it; never rename without
+# re-reading it.
 #
 # ⛔ STALENESS IS ANCHORED TO PUSH TIME, NOT COMMIT TIME.
 # `commit.committer.date` is settable and does not change on push, so a commit
@@ -185,8 +198,67 @@ jobs:
               return;
             }
 
+            // ---- 4. WHO applied it? Until now this value was captured and never
+            // compared, so a pull request's own author could label their own diff and
+            // this gate reported `reviewed by <author>`. Rule 78 needs someone who did
+            // not write it.
+            //
+            // ⚠ THIS CLOSES THE TRIVIAL CASE ONLY, and the limit is worth stating where
+            // someone reading the gate will see it. Under the bot-raise / dedicated-
+            // reviewer procedure the author is always the bot and any other credential
+            // passes this check — including one held by the same session. A comparison
+            // of logins cannot see that two identities are one actor. Enforcement of
+            // that needs a critic credential no executing session holds; this check is
+            // the floor, not the ceiling.
+            if (last.by === pr.user.login) {
+              core.setFailed(
+                `SELF-LABELLED.\n\n` +
+                `  \`${LABEL}\` applied by : ${last.by}\n` +
+                `  pull request author  : ${pr.user.login}\n\n` +
+                `Rule 78 needs a critic who did not write the diff. Remove the label and ` +
+                `have someone else review the current head.`
+              );
+              return;
+            }
+
+            // ---- 5. Is there anything to READ? A label is a click and leaves no record
+            // of what was examined. The critic must also post a verdict comment, and it
+            // must postdate the same anchor the label does — otherwise a comment written
+            // before the last push counts for code nobody saw.
+            //
+            // ⛔ The marker is what separates a critique from the approval that the
+            // bot-raise procedure posts on EVERY pull request at raise time. Without it
+            // this check would be satisfied by that approval and assert nothing.
+            const MARKER = 'CRITIC VERDICT:';
+            const [issueComments, reviews] = await Promise.all([
+              github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: pr.number, per_page: 100,
+              }),
+              github.paginate(github.rest.pulls.listReviews, {
+                owner: context.repo.owner, repo: context.repo.repo,
+                pull_number: pr.number, per_page: 100,
+              }),
+            ]);
+            const verdicts = [
+              ...issueComments.map((c) => ({ at: new Date(c.created_at), by: c.user && c.user.login, body: c.body || '' })),
+              ...reviews.map((r) => ({ at: new Date(r.submitted_at), by: r.user && r.user.login, body: r.body || '' })),
+            ].filter((c) => c.body.includes(MARKER) && c.by === last.by && c.at >= headTime);
+
+            if (!verdicts.length) {
+              core.setFailed(
+                `NO VERDICT.\n\n` +
+                `  \`${LABEL}\` applied by : ${last.by}\n` +
+                `  head became reviewable : ${headTime.toISOString()}\n\n` +
+                `The label says a critique happened; nothing on this pull request records ` +
+                `WHAT was examined. Post a comment or review from ${last.by} containing ` +
+                `"${MARKER}" and what you checked, then re-apply the label.`
+              );
+              return;
+            }
+
             core.info(`OK — \`${LABEL}\` applied ${last.at.toISOString()} by ${last.by}; covers head.`);
-            core.notice(`critic-passed: ${pr.head.sha.slice(0, 8)} reviewed by ${last.by}`);
+            core.notice(`critic-passed: ${pr.head.sha.slice(0, 8)} labelled by ${last.by}, verdict recorded`);
 
 # ---------------------------------------------------------------------------
 # Thin caller — copy into each consumer repo as

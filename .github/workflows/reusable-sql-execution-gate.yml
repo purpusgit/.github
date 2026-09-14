@@ -24,8 +24,10 @@ name: Reusable SQL Execution Gate
 on:
   workflow_call:
     inputs:
+      runner:        { type: string, default: ubuntu-latest }
       node_version:  { type: string, default: '20' }
       mysql_image:   { type: string, default: 'mysql:8.0' }
+      mysql_port:    { type: string, default: '3306' }  # HOST port. Container stays 3306 — see below.
       db_name:       { type: string, default: 'orbit_japa' }
       schema_files:  { type: string, required: true }   # newline-separated repo paths, applied IN ORDER
       seed_files:    { type: string, default: '' }      # newline-separated repo paths, optional
@@ -33,18 +35,25 @@ on:
 
 jobs:
   sql-exec:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     services:
       mysql:
         image: ${{ inputs.mysql_image }}
         env:
           MYSQL_ROOT_PASSWORD: ci_root_pw
-        ports: ['3306:3306']
+        ports: ['${{ inputs.mysql_port }}:3306']
+        # ⛔ The --health-cmd below runs INSIDE the container, where mysqld listens on 3306
+        # whatever the host mapping is. It must NOT take `mysql_port`. Adding it there is a
+        # plausible-looking edit that breaks the health gate on every non-default port.
         options: >-
           --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pci_root_pw --silent"
           --health-interval=5s --health-timeout=5s --health-retries=30
     env:
       DB_HOST: 127.0.0.1
+      # The harness opens its own connection. Without DB_PORT a client defaults to 3306 and
+      # would silently talk to whatever else bound 3306 — a wrong-database GREEN, which is
+      # worse than the port collision this input exists to remove. Harnesses must read it.
+      DB_PORT: ${{ inputs.mysql_port }}
       DB_USER: root
       DB_PASSWORD: ci_root_pw
       DB_DATABASE: ${{ inputs.db_name }}
@@ -55,6 +64,7 @@ jobs:
       - name: Validate gate inputs
         env:
           DB_NAME:      ${{ inputs.db_name }}
+          MYSQL_PORT:   ${{ inputs.mysql_port }}
           SCHEMA_FILES: ${{ inputs.schema_files }}
           SEED_FILES:   ${{ inputs.seed_files }}
           HARNESS:      ${{ inputs.harness }}
@@ -88,6 +98,11 @@ jobs:
           [[ "$DB_NAME" =~ ^[A-Za-z0-9_]+$ ]] \
             || reject "db_name is not a bare SQL identifier ^[A-Za-z0-9_]+\$: '$DB_NAME'"
 
+          # mysql_port reaches a shell as -P; a validated integer through env: is the pattern
+          # this file was hardened for on 2026-08-26. Unprivileged only — the runner is not root.
+          [[ "$MYSQL_PORT" =~ ^[0-9]+$ ]] && [ "$MYSQL_PORT" -ge 1024 ] && [ "$MYSQL_PORT" -le 65535 ] \
+            || reject "mysql_port must be an unprivileged integer 1024-65535: '$MYSQL_PORT'"
+
           # harness is a PATH, never a command line. It is invoked as `bash "$HARNESS"`.
           check_path "$HARNESS" "harness"
 
@@ -106,7 +121,7 @@ jobs:
             seed_count=$((seed_count + 1))
           done <<< "$SEED_FILES"
 
-          echo "inputs validated — db_name='$DB_NAME', harness='$HARNESS', ${schema_count} schema file(s), ${seed_count} seed file(s)"
+          echo "inputs validated — db_name='$DB_NAME', mysql_port='$MYSQL_PORT', harness='$HARNESS', ${schema_count} schema file(s), ${seed_count} seed file(s)"
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node_version }}
@@ -115,33 +130,38 @@ jobs:
       - name: Ensure mysql client
         run: mysql --version || (sudo apt-get update && sudo apt-get install -y mysql-client)
       - name: Wait for MySQL
+        env:
+          MYSQL_PORT: ${{ inputs.mysql_port }}
         run: |
           for i in $(seq 1 30); do
-            mysqladmin ping -h 127.0.0.1 -uroot -pci_root_pw --silent && break
+            mysqladmin ping -h 127.0.0.1 -P "$MYSQL_PORT" -uroot -pci_root_pw --silent && break
             echo "waiting for mysql ($i)"; sleep 2
           done
       - name: Create database
         env:
           DB_NAME: ${{ inputs.db_name }}
-        run: mysql -h127.0.0.1 -uroot -pci_root_pw -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`;"
+          MYSQL_PORT: ${{ inputs.mysql_port }}
+        run: mysql -h127.0.0.1 -P "$MYSQL_PORT" -uroot -pci_root_pw -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`;"
       - name: Load schema (in order)
         env:
           SCHEMA_FILES: ${{ inputs.schema_files }}
+          MYSQL_PORT: ${{ inputs.mysql_port }}
         run: |
           while IFS= read -r f; do
             [ -z "$f" ] && continue
             echo "-- loading schema: $f"
-            mysql -h127.0.0.1 -uroot -pci_root_pw < "$f"
+            mysql -h127.0.0.1 -P "$MYSQL_PORT" -uroot -pci_root_pw < "$f"
           done <<< "$SCHEMA_FILES"
       - name: Load seed
         if: ${{ inputs.seed_files != '' }}
         env:
           SEED_FILES: ${{ inputs.seed_files }}
+          MYSQL_PORT: ${{ inputs.mysql_port }}
         run: |
           while IFS= read -r f; do
             [ -z "$f" ] && continue
             echo "-- loading seed: $f"
-            mysql -h127.0.0.1 -uroot -pci_root_pw < "$f"
+            mysql -h127.0.0.1 -P "$MYSQL_PORT" -uroot -pci_root_pw < "$f"
           done <<< "$SEED_FILES"
       - name: Run SQL execution harness
         env:

@@ -1130,8 +1130,30 @@ jobs:
               success)
                 printf '| %s | PASS | |\n' "$gate" >> "$GITHUB_STEP_SUMMARY"
                 ;;
-              skipped|"")
+              skipped)
+                # Legitimate opt-out: the caller passed run_<gate>: false (or left
+                # it at the input's default), the step's `if:` short-circuited, and
+                # the row correctly records "not enabled for this repo" — an opt-out
+                # that HOLDS what it says.
                 printf '| %s | not enabled for this repo | |\n' "$gate" >> "$GITHUB_STEP_SUMMARY"
+                ;;
+              "")
+                # An empty outcome is a BROKEN row, not an opt-out. steps.X.outcome
+                # resolves to "" only when step id X does not exist in this job (a
+                # ROWS typo, a stale row referencing a removed step, a rename that
+                # touched one side only) or the step was never reached at all. Until
+                # 2026-09-11 this arm was folded into `skipped|""` above, which
+                # rendered it as "not enabled for this repo" — the shape the
+                # orchestrator ruled worse than a boundary nobody noticed, because
+                # the comment reads as mitigation while holding nothing. It now
+                # fails, loudly and by name. gate_selftest.py's rows-completeness
+                # step reds any PR to .github that lands such a row; this runtime
+                # arm is the backstop for anything that gets past the selftest
+                # (a rename mid-flight, a step deleted after the selftest last ran).
+                fail=1
+                REASON='referenced step never resolved (empty outcome — the row is broken, not opted out)'
+                printf '| %s | **FAIL** | %s |\n' "$gate" "$REASON" >> "$GITHUB_STEP_SUMMARY"
+                echo "::error title=$gate::$REASON"
                 ;;
               *)
                 # ADVISORY CARVE-OUT (Rule 85 gate, folded from wireframe-gate.yml):
