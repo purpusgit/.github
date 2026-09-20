@@ -346,7 +346,28 @@ jobs:
         with:
           flutter-version-file: .fvmrc
           channel: stable
-          cache: true
+          # Cache only where the filesystem is thrown away. `cache: true` gates BOTH the
+          # SDK cache and the pub cache (action.yaml runs two cache steps behind this one
+          # input, and a composite action collapses both post steps into one line).
+          #
+          # On orbit-ci neither earns its keep. setup.sh stats
+          # $RUNNER_TOOL_CACHE/flutter/<channel>-<version>-<arch> before downloading, and
+          # that path persists — 2.5 GB present on all four runners, untouched by the
+          # job-completed hook, runners not registered --ephemeral. ~/.pub-cache persists
+          # too (1.3-2.1 GB each).
+          #
+          # ⚠ The pub cache is worse than redundant here: /home/runner/runner-cleanup.sh
+          # deliberately deletes ~/.pub-cache/git each job (private-sibling Dart clones,
+          # filed under "persistent cross-job risk", LANE-48). A pub-cache RESTORE would
+          # put them straight back, undoing that control.
+          #
+          # Measured on orbit-ci-2: restore 3s, post-step save 54s.
+          #
+          # DENY-LIST, not an allow-list. An `== 'ubuntu-latest'` test would silently
+          # disable caching for a caller on ubuntu-24.04, macos-latest or a larger
+          # runner — an ephemeral VM re-downloading 2.5 GB per job with no error.
+          # Spec: purpusgit/specs ci-git/stop-paying-the-actions-cache-tax-on-self-hosted-runners.md
+          cache: ${{ inputs.runner != 'orbit-ci' }}
       - run: dart pub get --no-example
       # Behaviourally tested by scripts/gate_selftest.py, which pins this step
       # BY NAME. Renaming it reds the harness rather than silently dropping the
