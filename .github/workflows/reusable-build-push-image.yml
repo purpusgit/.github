@@ -1,0 +1,117 @@
+name: Reusable - Build & push image (S5)
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: '40-hex commit SHA to build. Must be reachable from `branch`.'
+        type: string
+        required: true
+      branch:
+        description: 'Integration branch the sha must be reachable from. The ops_mcp caller passes "main"; every other caller passes "sandbox".'
+        type: string
+        default: 'sandbox'
+      context:
+        description: 'Docker build context path, relative to the repo root.'
+        type: string
+        required: true
+      dockerfile:
+        description: 'Path to the Dockerfile, relative to the repo root.'
+        type: string
+        required: true
+      base:
+        description: 'Semicolon-separated list of "<FROM-ref>=<image>@sha256:<digest>" pins, one per Dockerfile FROM. May be empty string.'
+        type: string
+        required: true
+      submodules:
+        description: 'Passed through to actions/checkout `submodules` input.'
+        type: string
+        default: 'false'
+      image:
+        description: 'GHCR image name under ghcr.io/purpusgit/ (e.g. "service_auth", or "service_orbit_analytics/exact-count-worker").'
+        type: string
+        required: true
+    outputs:
+      digest:
+        description: 'Digest of the pushed image (sha256:...).'
+        value: ${{ jobs.build.outputs.digest }}
+
+jobs:
+  build:
+    # D12: hosted-only is the entire point of this spec. Never orbit-ci or any self-hosted label.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Checkout at pinned sha
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+          fetch-depth: 0
+          submodules: ${{ inputs.submodules }}
+
+      - name: Refuse to build a sha that is not on the integration branch
+        run: |
+          set -euo pipefail
+          git fetch origin "${{ inputs.branch }}"
+          if ! git merge-base --is-ancestor "${{ inputs.sha }}" "origin/${{ inputs.branch }}"; then
+            echo "::error::${{ inputs.sha }} is not an ancestor of origin/${{ inputs.branch }} - refusing to build a sha outside the integration branch (spec-sandbox-image-availability.md)."
+            exit 1
+          fi
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build --build-context flags from the base pins
+        id: basectx
+        run: |
+          set -euo pipefail
+          flags=""
+          if [ -n "${{ inputs.base }}" ]; then
+            IFS=';' read -ra entries <<< "${{ inputs.base }}"
+            for entry in "${entries[@]}"; do
+              trimmed="$(echo "$entry" | xargs)"
+              [ -z "$trimmed" ] && continue
+              from_ref="${trimmed%%=*}"
+              pin="${trimmed#*=}"
+              flags="$flags --build-context ${from_ref}=docker-image://${pin}"
+            done
+          fi
+          echo "flags=$flags" >> "$GITHUB_OUTPUT"
+
+      - name: Derive source URL from the checkout's own remote
+        id: source
+        run: |
+          set -euo pipefail
+          raw_url="$(git config --get remote.origin.url)"
+          slug="$(echo "$raw_url" | sed -E 's#.*github\.com[:/]+([^/]+/[^/.]+)(\.git)?$#\1#')"
+          echo "url=https://github.com/${slug}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push by digest (never :latest)
+        id: push
+        run: |
+          set -euo pipefail
+          tag="ghcr.io/purpusgit/${{ inputs.image }}:sha-${{ inputs.sha }}"
+          docker buildx build \
+            --platform linux/amd64 \
+            -f "${{ inputs.dockerfile }}" \
+            ${{ steps.basectx.outputs.flags }} \
+            --label "org.opencontainers.image.revision=${{ inputs.sha }}" \
+            --label "org.opencontainers.image.source=${{ steps.source.outputs.url }}" \
+            -t "$tag" \
+            --metadata-file metadata.json \
+            --push \
+            "${{ inputs.context }}"
+          digest="$(jq -r '.["containerimage.digest"]' metadata.json)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "${tag}@${digest}" >> "$GITHUB_STEP_SUMMARY"
