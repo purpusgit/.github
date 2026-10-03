@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   drift:
-    runs-on: ubuntu-latest
+    runs-on: orbit-ci
     name: auth-coverage-drift
     steps:
       - uses: actions/checkout@v5.1.0
