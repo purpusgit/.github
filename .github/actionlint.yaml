@@ -1,0 +1,13 @@
+# actionlint only knows GitHub's own runner labels, so every `runs-on:` naming one of
+# our self-hosted runners is reported as `label "orbit-ci" is unknown`. Declaring them
+# here is actionlint's supported mechanism for exactly this.
+#
+# Keep this list in step with the org's runner labels. A label that is live but missing
+# here reds the gate self-test; a label listed here that no longer exists is harmless to
+# actionlint but misleading to read, so remove it when a runner is retired.
+self-hosted-runner:
+  labels:
+    - orbit-ci           # orbit-ci-1..4, the general CI pool
+    - orbit-ci-heavy     # orbit-ci-3/4 only — the heavier Android and model builds
+    - orbit-ops-prod     # prod-ops-ci-1, ops_dispatch tier=prod
+    - orbit-ops-qa       # qa-ops-ci-1, ops_dispatch tier=qa

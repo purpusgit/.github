@@ -44,7 +44,7 @@ permissions:
 
 jobs:
   surface:
-    runs-on: ubuntu-latest
+    runs-on: orbit-ci
     name: Pushed-but-not-landed surfacer
     steps:
       - uses: actions/checkout@v5.1.0
