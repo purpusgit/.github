@@ -396,6 +396,9 @@ BEHAVIOUR = {
     # every gated repo, so its exit code cannot be asserted from a fixture without
     # faking that API -- which would assert the fake, not the detector.
     "auth-coverage-drift.yml": {"kind": None, "reason": "scheduled org-wide monitor; needs live GitHub API access across every gated repo"},
+    # Scheduled generator, not a PR gate: it reads lanes/specs and commits to specs as the bot.
+    # Its render/audit logic is tested offline by `lane_registry_gen.py --self-check`, the job's first step.
+    "lane-registry-gen.yml": {"kind": None, "reason": "scheduled registry generator; needs live lanes/specs reads and a specs write token. Not a gate: schedule + workflow_dispatch only"},
     "reusable-critic-passed.yml":    {"kind": None, "reason": "pure actions/github-script gate, no run: predicate to extract; proven by the mandated live rollout, not by a fixture"},
 }
 FAILURES = []
