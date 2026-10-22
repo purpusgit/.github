@@ -1,0 +1,80 @@
+name: Lane registry generator
+
+# REGISTRY-GEN-1 (T416, GIT-02): regenerates the "Every lane" tables of
+# purpusgit/specs orchestration/lane-registry.md from lane issue titles, open
+# inbox/* PRs and seat cards, commits the result to specs main as the bot, then
+# runs the registry audit. schedule + workflow_dispatch only -- no pull_request,
+# no push -- so no outside code ever runs on the self-hosted runner.
+# Logic and self-check: scripts/lane_registry_gen.py.
+
+on:
+  schedule:
+    # Every 3 hours at :17, so a new seat appears the same working day.
+    - cron: "17 */3 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lane-registry-gen
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: orbit-ci
+    name: Generate lane registry
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5.1.0
+
+      - name: Generator self-check
+        run: python3 scripts/lane_registry_gen.py --self-check
+
+      # Read token: lanes issues/comments and specs PRs, READ ONLY.
+      - name: Mint a read-only token for lanes and specs
+        id: read_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORBIT_BOT_APP_ID }}
+          private-key: ${{ secrets.ORBIT_BOT_PRIVATE_KEY }}
+          owner: purpusgit
+          repositories: lanes,specs
+          permission-issues: read
+          permission-pull-requests: read
+
+      # Write token: ONLY purpusgit/specs, contents:write, for the one commit.
+      - name: Mint a write token scoped to specs
+        id: write_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORBIT_BOT_APP_ID }}
+          private-key: ${{ secrets.ORBIT_BOT_PRIVATE_KEY }}
+          owner: purpusgit
+          repositories: specs
+          permission-contents: write
+
+      - uses: actions/checkout@v5.1.0
+        with:
+          repository: purpusgit/specs
+          ref: main
+          path: specs
+          token: ${{ steps.write_token.outputs.token }}
+
+      - name: Generate, commit and audit
+        env:
+          GH_TOKEN: ${{ steps.read_token.outputs.token }}
+        run: |
+          set -uo pipefail
+          python3 scripts/lane_registry_gen.py specs/orchestration/lane-registry.md; rc=$?
+          cd specs
+          if git diff --quiet; then
+            echo "registry unchanged"
+          else
+            git config user.name "orbit-sessions-bot[bot]"
+            git config user.email "315111384+orbit-sessions-bot[bot]@users.noreply.github.com"
+            git commit -qam "lane-registry: regenerate (REGISTRY-GEN-1, run ${{ github.run_id }})"
+            git push origin HEAD:main
+            echo "committed $(git rev-parse HEAD)"
+          fi
+          exit $rc
