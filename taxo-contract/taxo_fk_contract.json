@@ -193,10 +193,10 @@
     "org_purpose_category_idfr": {
       "entity_table": "meta.organization",
       "taxo_type": "match_purpose",
-      "hierarchy_level": "domain",
+      "hierarchy_level": "leaf",
       "space": "master",
       "concept": "organization purpose category (domain level)",
-      "source": "SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md §G2 (founder-approved 2026-08-13); corrected 2026-08-13 (this follow-up) from an earlier 'leaf' value that was sourced from the read-side predicate service_orbit_orgs PR #1130 removed as wrong. Ground truth is the write/validate path: org_purpus_category.sql.ts:addPredefinedPurposeCategory filters hierarchy_level='domain' when resolving this column; no code anywhere writes or validates it at any other level.",
+      "source": "SPEC-B rev 5 7c7f28b S-1 (GREEN; founder-cleared A269, A270): the tenant storage of purpose category adds (org_n.org_purpose_category.purpose_category_idfr) is leaf-only. Ground truth moves with service_orbit_orgs T290 PR-G1: org_purpus_category.sql.ts:addPredefinedPurposeCategory now filters hierarchy_level='leaf'. Superseded: the 2026-08-13 'domain' value (SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md §G2), whose ground truth was that same function before PR-G1.",
       "data_status": "ok"
     },
     "org_purpose_sub_category_idfr": {
@@ -211,10 +211,10 @@
     "org_mission_category_idfr": {
       "entity_table": "meta.organization",
       "taxo_type": "match_mission",
-      "hierarchy_level": "domain",
+      "hierarchy_level": "leaf",
       "space": "master",
       "concept": "organization mission category (domain level)",
-      "source": "SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md §G2 (founder-approved 2026-08-13); corrected 2026-08-13 (this follow-up) from an earlier 'leaf' value that was sourced from the read-side predicate service_orbit_orgs PR #1130 removed as wrong. Ground truth is the write/validate path: org_mission_category.validator.ts:validateMissionCetegoryId filters hierarchy_level='domain' when resolving this column.",
+      "source": "SPEC-B rev 5 7c7f28b S-1 (GREEN; founder-cleared A269, A270): the tenant storage of mission category adds (org_n.org_mission_category.mission_category_idfr) is leaf-only. Ground truth moves with service_orbit_orgs T290 PR-G1: org_mission_category.sql.ts now filters hierarchy_level='leaf'. Superseded: the 2026-08-13 'domain' value (SPEC_Taxo_IdSpace_And_Tenant_Scope_Gates.md §G2), whose ground truth was org_mission_category.validator.ts:validateMissionCetegoryId before PR-G1.",
       "data_status": "ok"
     },
     "org_mission_sub_category_idfr": {
@@ -229,10 +229,10 @@
     "org_goal_category_idfr": {
       "entity_table": "meta.organization",
       "taxo_type": "match_goals",
-      "hierarchy_level": "domain",
+      "hierarchy_level": "leaf",
       "space": "master",
       "concept": "organization goal category (domain level)",
-      "source": "Moved out of needs_founder_decision 2026-08-13 (this follow-up). org_goal_category.validator.ts filters type='match_goals' AND hierarchy_level='domain' when resolving this column -- the same reference-write-path shape as org_purpus_category.sql.ts and org_mission_category.validator.ts. discover.sql.ts's getDiscoverOrgByMissionPurpose resolves the same concept with no level filter at all (read-side, does not contradict a write-side assertion). org_n.org_goal.org_goal_category_idfr is a separate, out-of-scope column: a plain FK to a per-tenant org_goal_category table, not taxo.master.",
+      "source": "SPEC-B rev 5 7c7f28b S-1 (GREEN; founder-cleared A269, A270): the tenant storage of goal category adds (org_n.org_goal_category.goal_category_idfr) is leaf-only. Ground truth moves with service_orbit_orgs T290 PR-G1: org_goal_category.sql.ts now filters type='match_goals' AND hierarchy_level='leaf'; org_goal.sql.ts already did (#1464). Superseded: the 2026-08-13 'domain' value. org_n.org_goal.org_goal_category_idfr remains a separate column: a plain FK to a per-tenant org_goal_category table, not taxo.master.",
       "data_status": "ok"
     }
   },
