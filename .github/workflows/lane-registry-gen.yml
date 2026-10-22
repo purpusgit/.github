@@ -4,7 +4,9 @@ name: Lane registry generator
 # purpusgit/specs orchestration/lane-registry.md from lane issue titles, open
 # inbox/* PRs and seat cards, commits the result to specs main as the bot, then
 # runs the registry audit. schedule + workflow_dispatch only -- no pull_request,
-# no push -- so no outside code ever runs on the self-hosted runner.
+# no push. GitHub-hosted: this repo is public, the orbit-ci runner group does not
+# serve public repos (allows_public_repositories=false), and hosted minutes are
+# free for public repos.
 # Logic and self-check: scripts/lane_registry_gen.py.
 
 on:
@@ -22,7 +24,7 @@ concurrency:
 
 jobs:
   generate:
-    runs-on: orbit-ci
+    runs-on: ubuntu-latest
     name: Generate lane registry
     timeout-minutes: 10
     steps:
