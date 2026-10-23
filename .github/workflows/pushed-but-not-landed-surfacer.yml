@@ -44,7 +44,9 @@ permissions:
 
 jobs:
   surface:
-    runs-on: orbit-ci
+    # GitHub-hosted: this repo is public and the orbit-ci runner group does not serve
+    # public repos (allows_public_repositories=false); hosted minutes are free here.
+    runs-on: ubuntu-latest
     name: Pushed-but-not-landed surfacer
     steps:
       - uses: actions/checkout@v5.1.0
