@@ -90,9 +90,10 @@ on:
         default: false
       web_ban_allow:
         description: >-
-          Newline-separated path globs (fnmatch, relative to the repo root) the web
-          width ban skips, e.g. client_core's test_support harness and
-          lib/UI/page_content_width.widget.dart. Empty by default.
+          Newline-separated allowlist entries the web width ban skips. `glob` skips
+          whole files (fnmatch, repo-relative, e.g. `lib/test_support/**`);
+          `glob:regex` skips only lines in those files matching the regex (e.g.
+          `lib/UI/page_content_width.widget.dart:MediaQuery\.maybeSizeOf`). Empty by default.
         required: false
         type: string
         default: ''
@@ -592,7 +593,15 @@ jobs:
               r"|\bGet\.(width|height|size)\b|MediaQueryData\.fromView|physicalSize"
               r"|MediaQuery\.(of|maybeOf)\([^)]*\)\.size(?!\.height)"
               r"|MediaQuery\.(maybeS|s)izeOf\([^)]*\)(?!\.height)")
-          allow = [g.strip() for g in os.environ.get("WEB_BAN_ALLOW", "").splitlines() if g.strip()]
+          files_allow, line_allow = [], []
+          for e in (x.strip() for x in os.environ.get("WEB_BAN_ALLOW", "").splitlines()):
+              if not e:
+                  continue
+              if ":" in e:
+                  glob, rx = e.split(":", 1)
+                  line_allow.append((glob, re.compile(rx)))
+              else:
+                  files_allow.append(e)
 
           files = []
           for d, _, names in os.walk("lib"):
@@ -608,11 +617,16 @@ jobs:
 
           hits, skipped = [], 0
           for path in files:
-              if any(fnmatch.fnmatch(path, g) for g in allow):
+              if any(fnmatch.fnmatch(path, g) for g in files_allow):
                   skipped += 1
                   continue
+              line_rx = [rx for g, rx in line_allow if fnmatch.fnmatch(path, g)]
               with open(path, encoding="utf-8", errors="replace") as fh:
                   for n, line in enumerate(fh, 1):
+                      if line.lstrip().startswith("//"):
+                          continue  # a comment quoting the rule is not a use of it
+                      if any(rx.search(line) for rx in line_rx):
+                          continue
                       for m in BAN.finditer(line):
                           hits.append(path + ":" + str(n) + ":" + m.group(0))
 

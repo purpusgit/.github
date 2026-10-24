@@ -312,7 +312,9 @@ BEHAVIOUR = {
             ("Web width — no viewport-sized layout in lib/", "web-ban",
              "0.5.sw", {"WEB_BAN_ALLOW": ""}, None),
             ("Web width — no viewport-sized layout in lib/", "web-ban-allow",
-             "viewport-sized layout call", {"WEB_BAN_ALLOW": "lib/ui/screen_scaling.dart"},
+             "viewport-sized layout call",
+             {"WEB_BAN_ALLOW": "lib/ui/screen_scaling.dart\n"
+                               "lib/UI/page_content_width.widget.dart:MediaQuery\\.maybeSizeOf"},
              {"WEB_BAN_ALLOW": ""}),
             ("Web width — every routed screen is in the web_visual manifest", "web-manifest",
              "SettingsScreen (routed at lib/routes.dart:7) has no row", {}, None),
