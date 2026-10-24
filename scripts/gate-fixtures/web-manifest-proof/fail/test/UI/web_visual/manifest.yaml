@@ -1,0 +1,5 @@
+- class: SplashScreen
+  file: lib/splash.dart
+  cap: none
+  web_branch: false
+  exempt: not-routable

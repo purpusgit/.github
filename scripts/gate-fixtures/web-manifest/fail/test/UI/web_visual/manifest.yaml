@@ -1,0 +1,11 @@
+- class: HomeScreen
+  file: lib/home.dart
+  cap: 1200
+  web_branch: false
+  tested: home_390
+- class: SplashScreen
+  file: lib/splash.dart
+  cap: none
+  web_branch: false
+  exempt: mobile-only
+  proof: lib/splash.dart:12
