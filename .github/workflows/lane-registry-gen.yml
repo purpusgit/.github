@@ -1,8 +1,8 @@
 name: Lane registry generator
 
 # REGISTRY-GEN-1 (T416, GIT-02): regenerates the "Every lane" tables of
-# purpusgit/specs orchestration/lane-registry.md from lane issue titles, open
-# inbox/* PRs and seat cards, commits the result to specs main as the bot, then
+# purpusgit/specs orchestration/lane-registry.md from inbox/* PRs (INBOX-ONLY-1), lane
+# issues and seat cards, commits the result to specs main as the bot, then
 # runs the registry audit. schedule + workflow_dispatch only -- no pull_request,
 # no push. GitHub-hosted: this repo is public, the orbit-ci runner group does not
 # serve public repos (allows_public_repositories=false), and hosted minutes are
