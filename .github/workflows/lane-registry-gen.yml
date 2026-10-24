@@ -10,9 +10,12 @@ name: Lane registry generator
 # Logic and self-check: scripts/lane_registry_gen.py.
 
 on:
-  schedule:
-    # Every 3 hours at :17, so a new seat appears the same working day.
-    - cron: "17 */3 * * *"
+  # MOVED (T416, 2026-10-24): the scheduled generator now runs from the private
+  # purpusgit/ops_repo_provision .github/workflows/lane-registry-gen.yml, which sees
+  # the bot secrets; this public repo must not. That job checks out
+  # scripts/lane_registry_gen.py from here, so the script stays here as the source.
+  # This copy is dispatch-only and fails at the token mint (no bot secrets here): do not re-add
+  # a schedule here.
   workflow_dispatch: {}
 
 permissions:
