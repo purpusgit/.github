@@ -288,7 +288,7 @@ BEHAVIOUR = {
             "Rule 84 — a flavor must not own another package's screens":
                 ("reusable-rule84-flavor-fork-gate.yml", "A flavor must not own another package's screens"),
         },
-        "unmirrored": "exact-pin / A1 / contrast steps: source of record is the consumer repo, not this one. base-URL and self-mode-translation steps: this file is the ONLY copy, so there is no second copy to assert equality against. secret_scan is ALSO the only copy and so has no equality assertion either -- but it IS now fixture-covered behaviourally, in four assertions including that the matched text is never echoed. The Rule B9 step is likewise the only copy, and is likewise fixture-covered below, in two pairs. Do not re-add either to this list.",
+        "unmirrored": "exact-pin / A1 / contrast steps: source of record is the consumer repo, not this one. base-URL and self-mode-translation steps: this file is the ONLY copy, so there is no second copy to assert equality against. secret_scan is ALSO the only copy and so has no equality assertion either -- but it IS now fixture-covered behaviourally, in four assertions including that the matched text is never echoed. The Rule B9 step is likewise the only copy, and is likewise fixture-covered below, in two pairs. The two web width steps are also the only copy, fixture-covered below in four pairs. Do not re-add either to this list.",
         "secretscan_step": "Secret scan - no new secret-shaped string added by this PR",
         # Rule B9. Two fixture pairs, because the step makes two separate promises
         # and one of them is the promise the org has already been burned on.
@@ -304,6 +304,22 @@ BEHAVIOUR = {
              "b9-text-decoration", "unneutralised ambient-TextStyle adoption"),
             ("Rule B9 — an adopted ambient TextStyle must neutralise decoration",
              "b9-scan-root", "wrong scan root"),
+        ],
+        # Web width gates (T509 phase 1): the ONLY copy, so fixture pairs, not equality.
+        # (step, fixture key, expect on the FAIL side, env, env_fail). web-ban-allow's two
+        # trees are byte-identical: only the allowlist differs, which is the whole proof.
+        "web_steps": [
+            ("Web width — no viewport-sized layout in lib/", "web-ban",
+             "0.5.sw", {"WEB_BAN_ALLOW": ""}, None),
+            ("Web width — no viewport-sized layout in lib/", "web-ban-allow",
+             "viewport-sized layout call",
+             {"WEB_BAN_ALLOW": "lib/ui/screen_scaling.dart\n"
+                               "lib/UI/page_content_width.widget.dart:MediaQuery\\.maybeSizeOf"},
+             {"WEB_BAN_ALLOW": ""}),
+            ("Web width — every routed screen is in the web_visual manifest", "web-manifest",
+             "SettingsScreen (routed at lib/routes.dart:7) has no row", {}, None),
+            ("Web width — every routed screen is in the web_visual manifest", "web-manifest-proof",
+             "exempt needs proof", {}, None),
         ],
         "redproof": ("Dart escaped string interpolation check", "dart",
                      "ERROR: Dart interpolation safety gate FAILED")},
@@ -972,6 +988,17 @@ def behavioural_consolidated(named, beh, label, doc=None):
                  "wired into a consumer would go uncovered silently.")
         else:
             behavioural_dir(step, key, f"{label}[{key}]", expect=expect)
+
+    for step_name, key, expect, env, env_fail in beh.get("web_steps", []):
+        step = named.get(step_name)
+        if step is None:
+            fail(f"{label}: web width step {step_name!r} no longer exists — a gate "
+                 "wired into a consumer would go uncovered silently.")
+            continue
+        if step_name in nsteps:
+            assert_env_forwarded(nsteps[step_name], env, f"{label}[{key}]")
+        behavioural_dir(step, key, f"{label}[{key}]", expect=expect,
+                        env=env or None, env_fail=env_fail)
 
     ss = named.get(beh["secretscan_step"])
     if ss is None:

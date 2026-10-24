@@ -78,6 +78,36 @@ on:
         required: false
         type: boolean
         default: false
+      run_web_ban:
+        description: >-
+          Web width ban (spec flutter-ui/web-wide-screen-layout-spec.md §7.1, brief
+          flutter-ui/tasks/git-web-width-gates-brief.md §1). Fails on any viewport-sized
+          layout call in lib/**.dart (.sw/.sh units, ScreenUtil screen size, Get.width,
+          MediaQuery size other than .height, MediaQueryData.fromView, physicalSize).
+          DEFAULTS FALSE: flip a repo only when UX-01 reports its harness tests green.
+        required: false
+        type: boolean
+        default: false
+      web_ban_allow:
+        description: >-
+          Newline-separated allowlist entries the web width ban skips. `glob` skips
+          whole files (fnmatch, repo-relative, e.g. `lib/test_support/**`);
+          `glob:regex` skips only lines in those files matching the regex (e.g.
+          `lib/UI/page_content_width.widget.dart:MediaQuery\.maybeSizeOf`). Empty by default.
+        required: false
+        type: string
+        default: ''
+      run_web_manifest:
+        description: >-
+          Web width manifest (spec §7.2). Fails if a widget class registered as a route
+          in lib/ (GetPage page:, Get.to, Get.off*, MaterialPageRoute builder:) has no row
+          in test/UI/web_visual/manifest.yaml, or a row lacks class/file/cap/web_branch,
+          or has neither `tested:` nor `exempt:` + `proof:`. The pumped.json cross-check
+          needs the harness to have run, so it lives in the W-WIDTH test job, not here.
+          DEFAULTS FALSE, same flip rule as run_web_ban.
+        required: false
+        type: boolean
+        default: false
       run_barrel:
         description: 'Rule 66 — barrel & factory safety'
         required: false
@@ -538,6 +568,171 @@ jobs:
 
           print("Rule B9 passed: every adopted ambient TextStyle neutralises "
                 "decoration.")
+          PYEOF
+
+      # ── Web width gates (T509 phase 1; spec flutter-ui/web-wide-screen-layout-spec.md
+      # §7.1/§7.2). Both are the ONLY copy, so gate_selftest covers them with fixture
+      # pairs (web-ban, web-ban-allow, web-manifest, web-manifest-proof), not equality.
+      - name: Web width — no viewport-sized layout in lib/
+        id: web_ban
+        if: ${{ inputs.run_web_ban }}
+        continue-on-error: true
+        env:
+          WEB_BAN_ALLOW: ${{ inputs.web_ban_allow }}
+        run: |
+          set -euo pipefail
+          python3 <<'PYEOF'
+          import fnmatch
+          import os
+          import re
+          import sys
+
+          # The PCRE from the brief, verbatim; Python's re accepts every construct in it.
+          BAN = re.compile(
+              r"\b\d+(\.\d+)?\.(sw|sh)\b|ScreenUtil\(\)\.screen(Width|Height)"
+              r"|\bGet\.(width|height|size)\b|MediaQueryData\.fromView|physicalSize"
+              r"|MediaQuery\.(of|maybeOf)\([^)]*\)\.size(?!\.height)"
+              r"|MediaQuery\.(maybeS|s)izeOf\([^)]*\)(?!\.height)")
+          files_allow, line_allow = [], []
+          for e in (x.strip() for x in os.environ.get("WEB_BAN_ALLOW", "").splitlines()):
+              if not e:
+                  continue
+              if ":" in e:
+                  glob, rx = e.split(":", 1)
+                  line_allow.append((glob, re.compile(rx)))
+              else:
+                  files_allow.append(e)
+
+          files = []
+          for d, _, names in os.walk("lib"):
+              files += [os.path.join(d, n) for n in sorted(names) if n.endswith(".dart")]
+          if not files:
+              if os.path.exists("pubspec.yaml"):
+                  print("::error::Web width ban found no .dart file under lib/ in a repo "
+                        "that HAS a pubspec.yaml: a wrong scan root, not a clean tree.")
+                  sys.exit(1)
+              print("No pubspec.yaml and no lib/*.dart: the web width ban does not apply. "
+                    "Nothing was scanned.")
+              sys.exit(0)
+
+          hits, skipped = [], 0
+          for path in files:
+              if any(fnmatch.fnmatch(path, g) for g in files_allow):
+                  skipped += 1
+                  continue
+              line_rx = [rx for g, rx in line_allow if fnmatch.fnmatch(path, g)]
+              with open(path, encoding="utf-8", errors="replace") as fh:
+                  for n, line in enumerate(fh, 1):
+                      if line.lstrip().startswith("//"):
+                          continue  # a comment quoting the rule is not a use of it
+                      if any(rx.search(line) for rx in line_rx):
+                          continue
+                      for m in BAN.finditer(line):
+                          hits.append(path + ":" + str(n) + ":" + m.group(0))
+
+          print("Scanned " + str(len(files) - skipped) + " .dart file(s) under lib/ ("
+                + str(skipped) + " allowlisted).")
+          if hits:
+              for h in hits:
+                  print(h)
+                  print("::error file=" + h.split(":")[0] + ",line=" + h.split(":")[1]
+                        + "::Web width ban - this sizes layout from the viewport. Size from "
+                        "the parent (LayoutBuilder constraints) or PageContentWidth instead.")
+              print("")
+              print(str(len(hits)) + " viewport-sized layout call(s).")
+              sys.exit(1)
+          print("Web width ban passed: no viewport-sized layout call in lib/.")
+          PYEOF
+
+      - name: Web width — every routed screen is in the web_visual manifest
+        id: web_manifest
+        if: ${{ inputs.run_web_manifest }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          python3 <<'PYEOF'
+          import os
+          import re
+          import sys
+
+          MANIFEST = "test/UI/web_visual/manifest.yaml"
+          X = r"(?:const\s+)?([A-Z]\w*)\s*[(<]"
+          ROUTES = [
+              re.compile(r"GetPage\((?:(?!GetPage\().){0,600}?page:\s*\(\)\s*=>\s*" + X, re.S),
+              re.compile(r"Get\.to\(\s*\(\)\s*=>\s*" + X),
+              re.compile(r"Get\.off\w*\(\s*\(\)\s*=>\s*" + X),
+              re.compile(r"MaterialPageRoute\((?:(?!MaterialPageRoute\().){0,600}?"
+                         r"builder:\s*\(\s*\w*\s*\)\s*=>\s*" + X, re.S),
+          ]
+          EXEMPT = {"mobile-only", "not-routable", "web-twin-pair"}
+
+          files = []
+          for d, _, names in os.walk("lib"):
+              files += [os.path.join(d, n) for n in sorted(names) if n.endswith(".dart")]
+          if not files:
+              if os.path.exists("pubspec.yaml"):
+                  print("::error::Web width manifest gate found no .dart file under lib/ in a "
+                        "repo that HAS a pubspec.yaml: a wrong scan root, not a clean tree.")
+                  sys.exit(1)
+              print("No pubspec.yaml and no lib/*.dart: the manifest gate does not apply.")
+              sys.exit(0)
+
+          routed = {}
+          for path in files:
+              with open(path, encoding="utf-8", errors="replace") as fh:
+                  text = fh.read()
+              for rx in ROUTES:
+                  for m in rx.finditer(text):
+                      routed.setdefault(m.group(1), path + ":" + str(text.count("\n", 0, m.start(1)) + 1))
+
+          # shortcut: a flat parser for a list of `key: value` maps, which is the whole
+          # manifest row format; upgrade to a YAML library if rows ever nest.
+          rows, errors = [], []
+          if os.path.exists(MANIFEST):
+              cur = None
+              with open(MANIFEST, encoding="utf-8") as fh:
+                  for ln in fh:
+                      t = ln.split("#", 1)[0].rstrip()
+                      if not t.strip():
+                          continue
+                      if t.lstrip().startswith("- "):
+                          cur = {}
+                          rows.append(cur)
+                          t = t.lstrip()[2:]
+                      if cur is not None and ":" in t:
+                          k, v = t.split(":", 1)
+                          cur[k.strip()] = v.strip().strip("'\"")
+          elif routed:
+              errors.append(MANIFEST + " is missing, and lib/ registers " + str(len(routed))
+                            + " route(s).")
+
+          listed = set()
+          for i, r in enumerate(rows, 1):
+              name = r.get("class") or ("row " + str(i))
+              listed.add(r.get("class"))
+              miss = [k for k in ("class", "file", "cap", "web_branch") if not r.get(k)]
+              if miss:
+                  errors.append(name + ": missing " + ", ".join(miss))
+              if bool(r.get("tested")) == bool(r.get("exempt")):
+                  errors.append(name + ": needs exactly one of tested: or exempt:")
+              if r.get("exempt"):
+                  if r["exempt"] not in EXEMPT:
+                      errors.append(name + ": exempt must be one of " + "|".join(sorted(EXEMPT)))
+                  if not r.get("proof"):
+                      errors.append(name + ": exempt needs proof: <file:line>")
+          for cls, where in sorted(routed.items()):
+              if cls not in listed:
+                  errors.append(cls + " (routed at " + where + ") has no row in " + MANIFEST)
+
+          print("Found " + str(len(routed)) + " routed class(es) in lib/ and "
+                + str(len(rows)) + " manifest row(s).")
+          if errors:
+              for e in errors:
+                  print("::error::Web width manifest - " + e)
+              print("")
+              print(str(len(errors)) + " manifest problem(s).")
+              sys.exit(1)
+          print("Web width manifest passed: every routed screen has a valid row.")
           PYEOF
 
       - name: Rule 66 — barrel & factory safety
@@ -1091,6 +1286,8 @@ jobs:
             Rule 24 colours safety~${{ steps.colours.outcome }}~a hardcoded Colors.*, a deprecated .withOpacity(, or a non-null extension<X>()! was added on a changed lib/ line
             Dart escaped interpolation~${{ steps.dart.outcome }}~escaped string interpolation in lib/**.dart renders as literal text on screen
             Rule B9 ambient TextStyle decoration~${{ steps.b9_text_decoration.outcome }}~a TextStyle adopted from DefaultTextStyle.of(context) is handed to a span tree without neutralising `decoration`, so an ambient underline or strike paints through every child span that only set size, weight and colour - OR the gate found no lib/**.dart in a repo that has a pubspec.yaml, which is a wrong scan root and not a clean tree
+            Web width ban~${{ steps.web_ban.outcome }}~a lib/**.dart line sizes layout from the viewport (.sw/.sh, ScreenUtil screen size, Get.width/height/size, MediaQuery size other than .height, MediaQueryData.fromView or physicalSize) - OR the gate found no lib/**.dart in a repo that has a pubspec.yaml
+            Web width manifest~${{ steps.web_manifest.outcome }}~a widget class registered as a route in lib/ has no row in test/UI/web_visual/manifest.yaml, or a row is missing class/file/cap/web_branch, or an exempt row has no proof
             Rule 66 barrel and factory safety~${{ steps.barrel.outcome }}~a line was removed from a public barrel or factory index.dart, which is a silent breaking change for dependents
             Rule 84 hardcoded service host~${{ steps.rule84_url.outcome }}~a mypurpus.com or bookmyorbit.com host is hardcoded in lib/ instead of client_core flavor_config.dart
             Rule 84 base-URL fallback~${{ steps.rule84_fallback.outcome }}~String.fromEnvironment(defaultValue:) is used as a base-URL fallback; a missing base URL must be a compile error
