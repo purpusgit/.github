@@ -27,7 +27,8 @@ on:
       runner:        { type: string, default: ubuntu-latest }
       node_version:  { type: string, default: '20' }
       mysql_image:   { type: string, default: 'mysql:8.0' }
-      mysql_port:    { type: string, default: '3306' }  # HOST port. Container stays 3306 — see below.
+      # Accepted and validated for existing callers, no longer used: the host port is ephemeral (below).
+      mysql_port:    { type: string, default: '3306' }
       db_name:       { type: string, default: 'orbit_japa' }
       schema_files:  { type: string, required: true }   # newline-separated repo paths, applied IN ORDER
       seed_files:    { type: string, default: '' }      # newline-separated repo paths, optional
@@ -41,7 +42,10 @@ jobs:
         image: ${{ inputs.mysql_image }}
         env:
           MYSQL_ROOT_PASSWORD: ci_root_pw
-        ports: ['${{ inputs.mysql_port }}:3306']
+        # Ephemeral HOST port: Docker picks a free one per run. A fixed per-caller port raced
+        # between two runs of the same caller on one box ("Bind for 0.0.0.0:33410 failed: port
+        # is already allocated", analytics#392). Steps read it from job.services.mysql.ports.
+        ports: ['3306']
         # ⛔ The --health-cmd below runs INSIDE the container, where mysqld listens on 3306
         # whatever the host mapping is. It must NOT take `mysql_port`. Adding it there is a
         # plausible-looking edit that breaks the health gate on every non-default port.
@@ -50,10 +54,6 @@ jobs:
           --health-interval=5s --health-timeout=5s --health-retries=30
     env:
       DB_HOST: 127.0.0.1
-      # The harness opens its own connection. Without DB_PORT a client defaults to 3306 and
-      # would silently talk to whatever else bound 3306 — a wrong-database GREEN, which is
-      # worse than the port collision this input exists to remove. Harnesses must read it.
-      DB_PORT: ${{ inputs.mysql_port }}
       DB_USER: root
       DB_PASSWORD: ci_root_pw
       DB_DATABASE: ${{ inputs.db_name }}
@@ -131,7 +131,7 @@ jobs:
         run: mysql --version || (sudo apt-get update && sudo apt-get install -y mysql-client)
       - name: Wait for MySQL
         env:
-          MYSQL_PORT: ${{ inputs.mysql_port }}
+          MYSQL_PORT: ${{ job.services.mysql.ports['3306'] }}
         run: |
           for i in $(seq 1 30); do
             mysqladmin ping -h 127.0.0.1 -P "$MYSQL_PORT" -uroot -pci_root_pw --silent && break
@@ -140,12 +140,12 @@ jobs:
       - name: Create database
         env:
           DB_NAME: ${{ inputs.db_name }}
-          MYSQL_PORT: ${{ inputs.mysql_port }}
+          MYSQL_PORT: ${{ job.services.mysql.ports['3306'] }}
         run: mysql -h127.0.0.1 -P "$MYSQL_PORT" -uroot -pci_root_pw -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`;"
       - name: Load schema (in order)
         env:
           SCHEMA_FILES: ${{ inputs.schema_files }}
-          MYSQL_PORT: ${{ inputs.mysql_port }}
+          MYSQL_PORT: ${{ job.services.mysql.ports['3306'] }}
         run: |
           while IFS= read -r f; do
             [ -z "$f" ] && continue
@@ -156,7 +156,7 @@ jobs:
         if: ${{ inputs.seed_files != '' }}
         env:
           SEED_FILES: ${{ inputs.seed_files }}
-          MYSQL_PORT: ${{ inputs.mysql_port }}
+          MYSQL_PORT: ${{ job.services.mysql.ports['3306'] }}
         run: |
           while IFS= read -r f; do
             [ -z "$f" ] && continue
@@ -166,4 +166,8 @@ jobs:
       - name: Run SQL execution harness
         env:
           HARNESS: ${{ inputs.harness }}
+          # The harness opens its own connection. Without DB_PORT a client defaults to 3306 and
+          # would silently talk to whatever else bound 3306 (a wrong-database GREEN). Harnesses
+          # must read it. job context is step-only, so it is set here, not in the job env.
+          DB_PORT: ${{ job.services.mysql.ports['3306'] }}
         run: bash "$HARNESS"
