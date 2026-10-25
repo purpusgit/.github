@@ -26,6 +26,7 @@ on:
         type: boolean
 jobs:
   taxo-lint:
+    if: ${{ vars.MVP_GATES_PAUSED != 'true' }}  # item 3 pause (specs ci-git/tasks/ci-trim-and-qa-runners.md): skipped, so required contexts still report
     name: taxo-lint / G4 wrong-concept / wrong-level check
     runs-on: ${{ inputs.runner }}
     steps:

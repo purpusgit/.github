@@ -38,6 +38,7 @@ on:
 
 jobs:
   sql-typestring-gate:
+    if: ${{ vars.MVP_GATES_PAUSED != 'true' }}  # item 3 pause (specs ci-git/tasks/ci-trim-and-qa-runners.md): skipped, so required contexts still report
     runs-on: ${{ inputs.runner }}
     name: SQL taxo.master type-string check (Rule 58/59)
     steps:
