@@ -55,6 +55,7 @@ on:
 
 jobs:
   code-lint:
+    if: ${{ vars.MVP_GATES_PAUSED != 'true' }}  # item 3 pause (specs ci-git/tasks/ci-trim-and-qa-runners.md): skipped, so required contexts still report
     runs-on: ${{ inputs.runner }}
     name: Taxonomy code scan (*.sql.ts)
     steps:
@@ -78,7 +79,7 @@ jobs:
         run: python gate/scripts/taxo_lint.py --code "caller/${{ inputs.code_dir }}"
 
   data-lint:
-    if: ${{ inputs.run_data }}
+    if: ${{ inputs.run_data && vars.MVP_GATES_PAUSED != 'true' }}  # item 3 pause
     runs-on: ${{ inputs.runner }}
     name: Taxonomy data validation (FK:<Type> refs)
     steps:
