@@ -222,6 +222,7 @@ BEHAVIOUR = {
     # own pass/fail fixture pair under its own key, pinned BY STEP NAME like the
     # primary — a renamed step reds here rather than quietly asserting nothing.
     "reusable-flutter-analyze.yml":  {"kind": "step", "step": "Analyze (lib only)",
+        "source": "actions/flutter-analyze/action.yml",
         "key": "flutter-analyze", "prep": "dart pub get --no-example",
         "expect": "unused_element",
         "also": [
@@ -429,7 +430,8 @@ def load_yaml(path):
 def extract_runs(doc):
     """Every step.run script in the workflow, in order."""
     runs = []
-    for job in (doc.get("jobs") or {}).values():
+    # `jobs:`, or a composite action's `runs:` (the same fallback extract_steps uses).
+    for job in (list((doc.get("jobs") or {}).values()) or [doc.get("runs") or {}]):
         for step in (job.get("steps") or []):
             if isinstance(step, dict) and "run" in step and step["run"]:
                 runs.append(step["run"])
@@ -444,7 +446,7 @@ def extract_named_runs(doc):
     predicate than the one the fixture was written for.
     """
     named = {}
-    for job in (doc.get("jobs") or {}).values():
+    for job in (list((doc.get("jobs") or {}).values()) or [doc.get("runs") or {}]):
         for step in (job.get("steps") or []):
             if isinstance(step, dict) and step.get("run") and step.get("name"):
                 named[step["name"]] = step["run"]
@@ -1449,6 +1451,22 @@ def main():
             pycompile_heredocs(script, label)
 
         beh = BEHAVIOUR.get(fn)
+        # `source`: the gate's predicates live in a composite action this workflow calls
+        # (ci-trim item 4: one copy of each predicate). The BY-NAME lookups below read that
+        # action, so the fixtures follow the predicate rather than the thin wrapper.
+        if beh and beh.get("source"):
+            src = os.path.join(ROOT, ".github", beh["source"])
+            if not os.path.exists(src):
+                fail(f"{fn}: predicate source .github/{beh['source']} is missing")
+            else:
+                print(f"  (predicates read from .github/{beh['source']})")
+                doc = load_yaml(src)
+                named = extract_named_runs(doc)
+                nsteps = extract_named_steps(doc)
+                for i, script in enumerate(extract_runs(doc)):
+                    label = f"{beh['source']}[run#{i+1}]"
+                    if bash_n(script, label):
+                        ok(f"{label}: bash -n clean")
         # The env-forwarding guard for the POSITIONAL kinds, whose fixtures supply no
         # env at all: anything those steps read unguarded out of `env:` is simply unset
         # when the harness runs them. None of them declares an `env:` today, which is
