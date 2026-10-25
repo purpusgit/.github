@@ -243,7 +243,13 @@ jobs:
             const verdicts = [
               ...issueComments.map((c) => ({ at: new Date(c.created_at), by: c.user && c.user.login, body: c.body || '' })),
               ...reviews.map((r) => ({ at: new Date(r.submitted_at), by: r.user && r.user.login, body: r.body || '' })),
-            ].filter((c) => c.body.includes(MARKER) && c.by === last.by && c.at >= headTime);
+            // ⚠ Bound to NOT-THE-AUTHOR, deliberately NOT to the label-applier.
+            // An earlier draft required `c.by === last.by`. That reds a legitimate
+            // critique whenever the identity that comments and the identity that
+            // labels differ, which this fleet does routinely — and it bought nothing:
+            // what stops the bot-raise approval from satisfying this check is the
+            // MARKER, which that approval does not carry, not the login.
+            ].filter((c) => c.body.includes(MARKER) && c.by && c.by !== pr.user.login && c.at >= headTime);
 
             if (!verdicts.length) {
               core.setFailed(
@@ -276,11 +282,15 @@ jobs:
 #
 # ROLLOUT ORDER, and it matters:
 #   1. Merge this workflow.
-#   2. Add the caller to ONE repo and prove all four cases:
-#        no label            -> red
-#        label applied       -> green
-#        label, then a push  -> RED AGAIN   (the property above)
-#        label removed       -> red
+#   2. Add the caller to ONE repo and prove all SIX cases. Four was correct
+#      until the labeller and verdict checks landed; a label alone is no longer
+#      sufficient, and a checklist that says it is will be believed:
+#        no label                                  -> red
+#        label by the PR's own author              -> RED  (SELF-LABELLED)
+#        label, no `CRITIC VERDICT:` comment       -> RED  (NO VERDICT)
+#        label + verdict from a non-author         -> green
+#        label + verdict, then a push              -> RED AGAIN  (the property above)
+#        label removed                             -> red
 #   3. Only then add `critic-passed` to branch protection, and only then roll
 #      the caller out more widely.
 #
