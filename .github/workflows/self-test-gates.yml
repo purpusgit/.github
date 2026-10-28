@@ -36,6 +36,7 @@ on:
     paths:
       - '.github/workflows/**'
       - '.github/actions/auth-coverage/**'
+      - '.github/actions/anthropic-key/**'
       - 'scripts/**'
       - 'taxo-contract/**'
 
@@ -170,6 +171,8 @@ jobs:
             echo "::error::auth-coverage battery ran $n assertions, expected at least $EXPECTED_ASSERTIONS — cases were LOST, not passed. A battery that checked nothing exits 0 exactly like one that found nothing wrong."
             exit 1
           fi
+      - name: Run anthropic-key pool failover self-test (fake curl, no network)
+        run: bash .github/actions/anthropic-key/probe.test.sh
       - name: Run taxo-contract checker self-test (block-scoped 2.2)
         run: python3 taxo-contract/test_checker.py
       - name: Run taxo_lint scan-scope self-test (glob broadening + template scoping)
