@@ -1,9 +1,8 @@
 name: Anthropic key pool
 description: >-
-  Pick the first working Claude credential (specs#721): the four Console keys in
-  expiry order, then the OpenRouter fallback token as slot 5. Export it for the rest
-  of the job and never fail the job: when all five are out, `exhausted` is 'true' and
-  the caller skips its Claude step.
+  Pick the first working Claude key from the four-key pool (specs#721, expiry order),
+  export it as ANTHROPIC_API_KEY for the rest of the job, and never fail the job:
+  when every key is out, `exhausted` is 'true' and the caller skips its Claude step.
 
 # Usage:
 #   - id: claude-key
@@ -13,21 +12,18 @@ description: >-
 #       key-2: ${{ secrets.ANTHROPIC_API_KEY_2 }}
 #       key-3: ${{ secrets.ANTHROPIC_API_KEY_3 }}
 #       key-4: ${{ secrets.ANTHROPIC_API_KEY_4 }}
-#       fallback-token: ${{ secrets.CLAUDE_FALLBACK_AUTH_TOKEN }}
 #   - if: steps.claude-key.outputs.exhausted != 'true'
-#     run: ...   # slots 1-4 set $ANTHROPIC_API_KEY; slot 5 sets $ANTHROPIC_BASE_URL + $ANTHROPIC_AUTH_TOKEN
-#                # (Claude Code and the Anthropic SDKs read both; a raw curl must send Bearer to the base URL)
+#     run: ...   # reads $ANTHROPIC_API_KEY
 
 inputs:
   key-1: { description: ANTHROPIC_API_KEY_1 (renews 12th), required: false, default: '' }
   key-2: { description: ANTHROPIC_API_KEY_2 (renews 12th), required: false, default: '' }
   key-3: { description: ANTHROPIC_API_KEY_3 (renews 25th), required: false, default: '' }
   key-4: { description: ANTHROPIC_API_KEY_4 (renews 29th), required: false, default: '' }
-  fallback-token: { description: "CLAUDE_FALLBACK_AUTH_TOKEN (slot 5, OpenRouter): used only after slots 1-4 fail", required: false, default: '' }
 
 outputs:
   slot:
-    description: Slot number in use (1-4 Console keys, 5 OpenRouter fallback), empty when exhausted.
+    description: Slot number in use (1-4), empty when exhausted.
     value: ${{ steps.pick.outputs.slot }}
   exhausted:
     description: "'true' when no key answered; the caller skips its Claude step and passes."
@@ -43,5 +39,4 @@ runs:
         ANTHROPIC_KEY_2: ${{ inputs.key-2 }}
         ANTHROPIC_KEY_3: ${{ inputs.key-3 }}
         ANTHROPIC_KEY_4: ${{ inputs.key-4 }}
-        ANTHROPIC_FALLBACK_TOKEN: ${{ inputs.fallback-token }}
       run: bash "$GITHUB_ACTION_PATH/probe.sh"
