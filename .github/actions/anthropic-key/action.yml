@@ -1,0 +1,42 @@
+name: Anthropic key pool
+description: >-
+  Pick the first working Claude key from the four-key pool (specs#721, expiry order),
+  export it as ANTHROPIC_API_KEY for the rest of the job, and never fail the job:
+  when every key is out, `exhausted` is 'true' and the caller skips its Claude step.
+
+# Usage:
+#   - id: claude-key
+#     uses: purpusgit/.github/.github/actions/anthropic-key@main
+#     with:
+#       key-1: ${{ secrets.ANTHROPIC_API_KEY_1 }}
+#       key-2: ${{ secrets.ANTHROPIC_API_KEY_2 }}
+#       key-3: ${{ secrets.ANTHROPIC_API_KEY_3 }}
+#       key-4: ${{ secrets.ANTHROPIC_API_KEY_4 }}
+#   - if: steps.claude-key.outputs.exhausted != 'true'
+#     run: ...   # reads $ANTHROPIC_API_KEY
+
+inputs:
+  key-1: { description: ANTHROPIC_API_KEY_1 (renews 12th), required: false, default: '' }
+  key-2: { description: ANTHROPIC_API_KEY_2 (renews 12th), required: false, default: '' }
+  key-3: { description: ANTHROPIC_API_KEY_3 (renews 25th), required: false, default: '' }
+  key-4: { description: ANTHROPIC_API_KEY_4 (renews 29th), required: false, default: '' }
+
+outputs:
+  slot:
+    description: Slot number in use (1-4), empty when exhausted.
+    value: ${{ steps.pick.outputs.slot }}
+  exhausted:
+    description: "'true' when no key answered; the caller skips its Claude step and passes."
+    value: ${{ steps.pick.outputs.exhausted }}
+
+runs:
+  using: composite
+  steps:
+    - id: pick
+      shell: bash
+      env:
+        ANTHROPIC_KEY_1: ${{ inputs.key-1 }}
+        ANTHROPIC_KEY_2: ${{ inputs.key-2 }}
+        ANTHROPIC_KEY_3: ${{ inputs.key-3 }}
+        ANTHROPIC_KEY_4: ${{ inputs.key-4 }}
+      run: bash "$GITHUB_ACTION_PATH/probe.sh"
