@@ -15,7 +15,7 @@ name: Config & Fork Gate (Rule 84) — reusable
 on:
   workflow_call:
     inputs:
-      runner: { type: string, default: ubuntu-latest }
+      runner: { type: string, default: orbit-ci-light }
 
 permissions:
   contents: read

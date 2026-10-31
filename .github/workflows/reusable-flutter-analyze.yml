@@ -53,7 +53,7 @@ name: Flutter Analyze — reusable (pkg_* packages)
 on:
   workflow_call:
     inputs:
-      runner: { type: string, default: ubuntu-latest }
+      runner: { type: string, default: orbit-ci }
       run_web_build:
         description: >
           Build example/ for web with dart2js in THIS job, as a step, instead of as a

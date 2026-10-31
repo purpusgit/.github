@@ -16,7 +16,7 @@ name: Barrel & Factory Safety (Rule 66) — reusable
 on:
   workflow_call:
     inputs:
-      runner: { type: string, default: ubuntu-latest }
+      runner: { type: string, default: orbit-ci-light }
   # No `paths:` filter here or in callers. This is a REQUIRED status check:
   # when skipped it never reports, and GitHub blocks the PR on
   # "Expected — waiting for status". Observed live on pkg_orbit_binder #140,

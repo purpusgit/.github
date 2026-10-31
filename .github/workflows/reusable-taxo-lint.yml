@@ -13,7 +13,7 @@ name: Reusable — Taxonomy Lint Gate (stale-type / wrong-column / stale-FK-ref)
 on:
   workflow_call:
     inputs:
-      runner: { type: string, default: ubuntu-latest }
+      runner: { type: string, default: orbit-ci-light }
       code_dir:
         description: "Directory under the caller repo to scan for *.sql.ts"
         default: "src"

@@ -8,7 +8,7 @@ name: Taxo FK Contract Lint (G4)
 on:
   workflow_call:
     inputs:
-      runner: { type: string, default: ubuntu-latest }
+      runner: { type: string, default: orbit-ci-light }
       repo-checkout-ref:
         required: false
         type: string

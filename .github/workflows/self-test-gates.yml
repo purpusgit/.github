@@ -68,7 +68,7 @@ concurrency:
 
 jobs:
   gate-selftest:
-    runs-on: ubuntu-latest
+    runs-on: orbit-ci
     # ⚠️ This job `name:` IS the required status-check context. Renaming it
     # breaks branch protection on `main`. If it must ever change, rename the
     # required context FIRST, observe the new name reporting on a real PR head,

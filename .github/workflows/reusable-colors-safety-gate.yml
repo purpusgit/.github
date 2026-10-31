@@ -3,7 +3,7 @@ name: Reusable — Flutter Colours Safety Gate
 on:
   workflow_call:
     inputs:
-      runner: { type: string, default: ubuntu-latest }
+      runner: { type: string, default: orbit-ci-light }
       base_ref:
         description: 'Base branch to diff against'
         required: false

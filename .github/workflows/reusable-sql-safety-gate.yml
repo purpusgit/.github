@@ -3,7 +3,7 @@ name: Reusable — SQL Template Literal Safety Gate
 on:
   workflow_call:
     inputs:
-      runner: { type: string, default: ubuntu-latest }
+      runner: { type: string, default: orbit-ci-light }
       guard_workflows:
         description: >-
           Space-separated workflow files in the CALLING repo that back a required status

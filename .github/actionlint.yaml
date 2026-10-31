@@ -8,6 +8,8 @@
 self-hosted-runner:
   labels:
     - orbit-ci           # orbit-ci-1..4, the general CI pool
+    - orbit-ci-light     # orbit-ci-light-1/2 (sandbox) and qa-ci-3..6 (QA), jobs that mostly wait
+    - orbit-ci-data      # qa-ci-1/2, data-heavy DB tests on QA's large disk
     - orbit-ci-heavy     # orbit-ci-3/4 only — the heavier Android and model builds
     - orbit-ops-prod     # prod-ops-ci-1, ops_dispatch tier=prod
     - orbit-ops-qa       # qa-ops-ci-1, ops_dispatch tier=qa

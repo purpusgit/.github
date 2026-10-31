@@ -3,7 +3,7 @@ name: Reusable — Dart String Interpolation Safety Gate
 on:
   workflow_call:
     inputs:
-      runner: { type: string, default: ubuntu-latest }
+      runner: { type: string, default: orbit-ci-light }
 
 jobs:
   dart-safety-gate:
