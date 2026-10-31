@@ -17,14 +17,14 @@ name: Reusable SQL Execution Gate
 # validation below meaningful rather than decorative. `harness` is therefore a repo-relative
 # script PATH invoked as `bash "$HARNESS"`, not a command line.
 #
-# Cost (Rule 86b — only runner wall-clock bills; this is ubuntu-latest, x1): MySQL 8 service
+# Cost (Rule 86b — only runner wall-clock bills; this is our runners, x1): MySQL 8 service
 # pull+boot is cached on the runner image and healthchecks green in ~10-20s; npm ci dominates
 # and is npm-cached; schema load + harness are seconds. Budget ~1-2 min on top of an existing
 # node job. If a caller's schema or harness pushes it past that, say so in the caller.
 on:
   workflow_call:
     inputs:
-      runner:        { type: string, default: ubuntu-latest }
+      runner:        { type: string, default: orbit-ci }
       node_version:  { type: string, default: '20' }
       mysql_image:   { type: string, default: 'mysql:8.0' }
       # Accepted and validated for existing callers, no longer used: the host port is ephemeral (below).
