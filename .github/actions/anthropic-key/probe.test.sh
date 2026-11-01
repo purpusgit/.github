@@ -6,7 +6,11 @@ here=$(cd "$(dirname "$0")" && pwd); tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 cat > "$tmp/curl" <<'F'
 #!/usr/bin/env bash
 for a in "$@"; do case "$a" in @*) key=$(sed -n 's/^x-api-key: //p' "${a#@}");; esac; done
-f="$FAKE_DIR/status.$key"; s=$(head -1 "$f"); sed -i 1d "$f"; [ -s "$f" ] || echo "$s" > "$f"; printf '%s' "$s"
+for a in "$@"; do [ "$prev" = -o ] && out=$a; prev=$a; done
+f="$FAKE_DIR/status.$key"; s=$(head -1 "$f"); sed -i 1d "$f"; [ -s "$f" ] || echo "$s" > "$f"
+# 400c = a 400 naming credit; plain 400 = a 400 about the request itself
+case "$s" in 400c) printf '{"error":{"message":"Your credit balance is too low"}}' > "$out"; s=400 ;; *) printf '{"error":{"message":"max_tokens too small"}}' > "$out" ;; esac
+printf '%s' "$s"
 F
 chmod +x "$tmp/curl"; fail=0
 run() { # name, expected slot, expected exhausted, then key=status-seq pairs
@@ -22,11 +26,15 @@ run() { # name, expected slot, expected exhausted, then key=status-seq pairs
   if [ "$want_ex" = false ] && ! grep -qx "ANTHROPIC_API_KEY=sk-$want_slot" "$tmp/env"; then echo "FAIL $name: env"; fail=1; fi
 }
 run "first key works"            1 false sk-1=200 sk-2=200 sk-3=200 sk-4=200
-run "credit 400 -> next"         2 false sk-1=400 sk-2=200 sk-3=200 sk-4=200
+run "credit 400 -> next"         2 false sk-1=400c sk-2=200 sk-3=200 sk-4=200
+run "402 billing -> next"        2 false sk-1=402 sk-2=200 sk-3=200 sk-4=200
+run "other 400 judges no key"    "" true sk-1=400 sk-2=200 sk-3=200 sk-4=200
+run "404 model judges no key"    "" true sk-1=404 sk-2=200 sk-3=200 sk-4=200
+run "redirect -> next"           2 false sk-1=302 sk-2=200 sk-3=200 sk-4=200
 run "revoked 401 -> next"        3 false sk-1=401 sk-2=403 sk-3=200 sk-4=200
 run "one 429 then ok stays"      1 false sk-1=429,200 sk-2=200 sk-3=200 sk-4=200
 run "two 429 -> next"            2 false sk-1=429,429 sk-2=200 sk-3=200 sk-4=200
-run "5xx twice -> next"          4 false sk-1=500,503 sk-2=401 sk-3=400 sk-4=200
+run "5xx twice -> next"          4 false sk-1=500,503 sk-2=401 sk-3=400c sk-4=200
 run "unset slot skipped"         3 false =x =x sk-3=200 sk-4=200
-run "all exhausted"              "" true sk-1=400 sk-2=400 sk-3=401 sk-4=429,429
+run "all exhausted"              "" true sk-1=400c sk-2=400c sk-3=401 sk-4=429,429
 exit $fail
