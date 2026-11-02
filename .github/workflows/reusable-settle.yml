@@ -1,0 +1,26 @@
+name: Settle before heavy work (reusable)
+
+# GIT-00, 2026-11-01 (founder: "why are we running CIs on every push"). A heavy job `needs:` this one. On a PR,
+# it waits on a light runner first, so a newer push cancels the run (the caller's concurrency group, with
+# cancel-in-progress on pull_request) before the heavy job takes one of the scarce heavy runners. On 1 Nov,
+# 42 of the 79 orgs integration-test runs were cancelled after they had already taken a heavy runner.
+# Push and dispatch runs don't wait. Callers also skip the heavy job on drafts:
+#   if: github.event.pull_request.draft != true    (and add ready_for_review to pull_request types)
+
+on:
+  workflow_call:
+    inputs:
+      seconds:
+        description: Seconds to wait on a pull_request event.
+        required: false
+        type: number
+        default: 300
+
+jobs:
+  settle:
+    name: settle
+    runs-on: orbit-ci-light
+    steps:
+      - name: Wait for newer pushes
+        if: github.event_name == 'pull_request'
+        run: sleep "${{ inputs.seconds }}"
