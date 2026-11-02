@@ -418,6 +418,10 @@ BEHAVIOUR = {
     "lane-registry-gen.yml": {"kind": None, "reason": "scheduled registry generator; needs live lanes/specs reads and a specs write token. Not a gate: schedule + workflow_dispatch only"},
     "reusable-settle.yml":          {"kind": None, "reason": "a sleep on pull_request before heavy jobs; no predicate to exercise (GIT-00, 2026-11-01)"},
     "reusable-critic-passed.yml":    {"kind": None, "reason": "pure actions/github-script gate, no run: predicate to extract; proven by the mandated live rollout, not by a fixture"},
+    # On-request Claude critic, not a gate and never required (credit spec G7). Its gate logic (G2-G5, label
+    # removal, model choice, pack budget) lives in scripts/claude_critic.py and is tested by
+    # scripts/test_claude_critic.py, a separate step of this job; the workflow itself needs the API and a PR.
+    "reusable-claude-critic.yml":    {"kind": None, "reason": "on-request Claude critic, never required; its logic is tested by scripts/test_claude_critic.py (separate step)"},
 }
 FAILURES = []
 def fail(msg): FAILURES.append(msg); print(f"  ✗ {msg}")
