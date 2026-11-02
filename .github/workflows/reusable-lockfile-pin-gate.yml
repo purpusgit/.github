@@ -35,7 +35,7 @@ name: Reusable — Lockfile & Internal Pin Gate
 on:
   workflow_call:
     inputs:
-      runner: { type: string, default: ubuntu-latest }
+      runner: { type: string, default: orbit-ci-light }
       org:
         description: >-
           Org prefix whose git dependencies must be SHA-pinned. Dependencies

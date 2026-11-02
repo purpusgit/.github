@@ -3,7 +3,7 @@ name: Reusable — Drizzle Journal Completeness Gate
 on:
   workflow_call:
     inputs:
-      runner: { type: string, default: ubuntu-latest }
+      runner: { type: string, default: orbit-ci-light }
       migrations_dir:
         description: Path to the Drizzle migrations folder (containing the .sql files and meta/_journal.json)
         type: string

@@ -12,7 +12,7 @@ name: TypeScript Type Check — reusable
 on:
   workflow_call:
     inputs:
-      runner: { type: string, default: ubuntu-latest }
+      runner: { type: string, default: orbit-ci }
 
 permissions:
   contents: read

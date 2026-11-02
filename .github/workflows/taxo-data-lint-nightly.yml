@@ -31,7 +31,7 @@ permissions:
 
 jobs:
   data-lint:
-    runs-on: ubuntu-latest
+    runs-on: orbit-ci-light
     name: Taxonomy data validation (FK:<Type> refs)
     steps:
       - name: Checkout this repo (for scripts/taxo_lint.py)

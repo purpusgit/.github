@@ -44,7 +44,7 @@ name: Reusable — Consolidated one-grep gates (A2)
 on:
   workflow_call:
     inputs:
-      runner: { type: string, default: ubuntu-latest }
+      runner: { type: string, default: orbit-ci }
       base_ref:
         description: 'Base branch the diff-based gates compare against'
         required: false

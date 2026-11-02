@@ -416,6 +416,7 @@ BEHAVIOUR = {
     # Scheduled generator, not a PR gate: it reads lanes/specs and commits to specs as the bot.
     # Its render/audit logic is tested offline by `lane_registry_gen.py --self-check`, the job's first step.
     "lane-registry-gen.yml": {"kind": None, "reason": "scheduled registry generator; needs live lanes/specs reads and a specs write token. Not a gate: schedule + workflow_dispatch only"},
+    "reusable-settle.yml":          {"kind": None, "reason": "a sleep on pull_request before heavy jobs; no predicate to exercise (GIT-00, 2026-11-01)"},
     "reusable-critic-passed.yml":    {"kind": None, "reason": "pure actions/github-script gate, no run: predicate to extract; proven by the mandated live rollout, not by a fixture"},
 }
 FAILURES = []
