@@ -173,6 +173,8 @@ jobs:
           fi
       - name: Run anthropic-key pool failover self-test (fake curl, no network)
         run: bash .github/actions/anthropic-key/probe.test.sh
+      - name: Run shared Claude critic gate self-test (fake GitHub and API, no network)
+        run: python3 scripts/test_claude_critic.py
       - name: Run taxo-contract checker self-test (block-scoped 2.2)
         run: python3 taxo-contract/test_checker.py
       - name: Run taxo_lint scan-scope self-test (glob broadening + template scoping)
