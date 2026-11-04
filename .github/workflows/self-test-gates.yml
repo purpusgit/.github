@@ -174,3 +174,5 @@ jobs:
         run: python3 taxo-contract/test_checker.py
       - name: Run taxo_lint scan-scope self-test (glob broadening + template scoping)
         run: python3 scripts/test_taxo_lint.py
+      - name: Run G-CENTRAL self-test (central UI gates)
+        run: python3 scripts/test_central_ui_gate.py
