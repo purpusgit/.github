@@ -181,3 +181,5 @@ jobs:
         run: python3 scripts/test_taxo_lint.py
       - name: Run G-CENTRAL self-test (central UI gates)
         run: python3 scripts/test_central_ui_gate.py
+      - name: Run UX critic self-test
+        run: python3 scripts/test_ux_critic.py

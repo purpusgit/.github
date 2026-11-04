@@ -1,0 +1,98 @@
+name: Reusable — UX critic (advisory, capped)
+
+# The AI screen critic (specs flutter-ui/ux-critic-agent-spec.md §5). One Claude vision call per changed
+# screen, one PR comment updated in place. Advisory: never make this check required.
+#
+#   ux-critic:
+#     needs: test                      # the job that runs W-WIDTH with WEB_VISUAL_SHOTS=1 and uploads
+#     if: ${{ github.event_name == 'pull_request' }}
+#     uses: purpusgit/.github/.github/workflows/reusable-ux-critic.yml@main
+#     with: { artifact: "web-width-${{ github.event.pull_request.head.sha }}" }
+#     secrets: inherit
+#
+# The artifact must hold build/web_visual/critic.json and its PNGs (client_core #884). The script refuses
+# with one line when critic.json is missing, fonts_ok is false, the rubric is missing, or the key pool is
+# empty, and always exits 0. Logic and tests: scripts/ux_critic.py, scripts/test_ux_critic.py.
+# Safe for PRs: no step runs PR code; the script comes from this repo's main.
+
+on:
+  workflow_call:
+    inputs:
+      artifact:    { required: true, type: string }                  # the W-WIDTH upload of this run
+      max_screens: { required: false, type: number, default: 15 }
+      cap_usd:     { required: false, type: string, default: '3' }   # hard spend cap per PR run
+      rubric_path: { required: false, type: string, default: 'flutter-ui/ux-critic/rubric.md' }  # specs main
+    secrets:
+      ANTHROPIC_API_KEY_1: { required: false }
+      ANTHROPIC_API_KEY_2: { required: false }
+      ANTHROPIC_API_KEY_3: { required: false }
+      ANTHROPIC_API_KEY_4: { required: false }
+      ORBIT_BOT_APP_ID:    { required: false }
+      ORBIT_BOT_PRIVATE_KEY: { required: false }
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  ux-critic:
+    # CLAUDE_REVIEWS=off (org variable) stops every Claude review with one switch, this one included.
+    if: ${{ vars.CLAUDE_REVIEWS != 'off' && github.event.pull_request.number }}
+    runs-on: orbit-ci-light   # API calls and a comment only
+    timeout-minutes: 30
+    concurrency:
+      group: ux-critic-${{ github.repository }}-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - name: Download the W-WIDTH shots
+        continue-on-error: true   # no artifact = the script refuses with one line
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact }}
+          path: build/web_visual
+
+      - name: Pick a key from the pool
+        id: key
+        uses: purpusgit/.github/.github/actions/anthropic-key@main
+        with:
+          key-1: ${{ secrets.ANTHROPIC_API_KEY_1 }}
+          key-2: ${{ secrets.ANTHROPIC_API_KEY_2 }}
+          key-3: ${{ secrets.ANTHROPIC_API_KEY_3 }}
+          key-4: ${{ secrets.ANTHROPIC_API_KEY_4 }}
+
+      - name: Read-only token for the rubric (specs)
+        id: specs
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORBIT_BOT_APP_ID }}
+          private-key: ${{ secrets.ORBIT_BOT_PRIVATE_KEY }}
+          owner: purpusgit
+          repositories: specs
+          permission-contents: read
+
+      - name: Fetch the critic scripts from purpusgit/.github main
+        uses: actions/checkout@v4
+        with:
+          repository: purpusgit/.github
+          ref: main
+          path: .critic-src
+          sparse-checkout: |
+            scripts/ux_critic.py
+            scripts/claude_critic.py
+            scripts/central_ui_gate.py
+          sparse-checkout-cone-mode: false
+
+      - name: Critique the changed screens
+        env:
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+          PACK_TOKEN: ${{ steps.specs.outputs.token }}
+          KEY_EXHAUSTED: ${{ steps.key.outputs.exhausted }}
+          SHOTS_DIR: build/web_visual
+          MAX_SCREENS: ${{ inputs.max_screens }}
+          CAP_USD: ${{ inputs.cap_usd }}
+          RUBRIC_PATH: ${{ inputs.rubric_path }}
+        run: python3 .critic-src/scripts/ux_critic.py
