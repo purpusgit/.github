@@ -1099,7 +1099,8 @@ jobs:
       # back in through this step.
       - name: Secret scan - no new secret-shaped string added by this PR
         id: secret_scan
-        if: ${{ inputs.run_secret_scan }}
+        # PR events only: the scan diffs against the PR base, which a push or dispatch run doesn't have, so it would always fail there.
+        if: ${{ inputs.run_secret_scan && github.event_name == 'pull_request' }}
         continue-on-error: true
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
