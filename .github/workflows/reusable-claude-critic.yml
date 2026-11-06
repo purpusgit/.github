@@ -1,0 +1,95 @@
+name: Reusable — Claude critic (on request, capped)
+
+# The one shared Claude PR critic (specs orchestration/spec-claude-credit-use-during-development.md, §4 G1-G7).
+# A repo opts in with a thin caller; today only `specs` does (U1). Code repos stay off until U1 is proven (U2).
+#
+#   on:
+#     pull_request_target: { types: [labeled] }            # G1: a label only, never a push
+#     workflow_dispatch:   { inputs: { pr: { required: true, type: string }, deep: { type: boolean, default: false } } }
+#   permissions: { contents: read, pull-requests: write, issues: write }
+#   jobs:
+#     critic:
+#       uses: purpusgit/.github/.github/workflows/reusable-claude-critic.yml@main
+#       with: { daily_cap: 15, spec_repo: true, profile_path: platform/critic-profiles/specs.md }
+#       secrets: inherit
+#
+# Gates: G1 and G6 are this job's `if:`; G2 per-PR cap (3 verdicts), G3 per-repo daily cap, G4 60k diff limit and
+# the mid-call credit rule are in scripts/claude_critic.py; G5 is the anthropic-key step; G7: orbit-ci-light, and this
+# check is never made required. Every stop posts "skipped" with the session fallback and exits 0.
+#
+# Safe under pull_request_target: no step checks out or runs PR code. PR content is read through the API only, and
+# the critic script comes from this repo's main.
+
+on:
+  workflow_call:
+    inputs:
+      pr:           { required: false, type: string, default: '' }    # dispatch: the PR number
+      deep:         { required: false, type: boolean, default: false } # dispatch: Opus instead of Sonnet
+      daily_cap:    { required: false, type: number, default: 3 }      # G3: specs 15, others 3 (spec §3)
+      spec_repo:    { required: false, type: boolean, default: false } # true when the PR's own .md files are the spec
+      profile_path: { required: false, type: string, default: '' }     # owner checklists on the caller's default branch
+    secrets:
+      ANTHROPIC_API_KEY_1: { required: false }
+      ANTHROPIC_API_KEY_2: { required: false }
+      ANTHROPIC_API_KEY_3: { required: false }
+      ANTHROPIC_API_KEY_4: { required: false }
+      ORBIT_BOT_APP_ID:    { required: false }
+      ORBIT_BOT_PRIVATE_KEY: { required: false }
+
+jobs:
+  critic:
+    # G6: CLAUDE_REVIEWS=off (org variable, repo can override with `on`) stops every review with one call.
+    # G1: only the `critic` / `critic-deep` label, or a manual dispatch. Any other label costs zero calls.
+    if: >-
+      vars.CLAUDE_REVIEWS != 'off' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.action == 'labeled' && (github.event.label.name == 'critic' || github.event.label.name == 'critic-deep')))
+    runs-on: orbit-ci-light   # G7 (founder 31 Oct); this check is never required anywhere
+    timeout-minutes: 20
+    concurrency:
+      group: claude-critic-${{ github.repository }}-${{ github.event.pull_request.number || inputs.pr }}
+      cancel-in-progress: false
+    steps:
+      - name: Pick a key from the pool (G5)
+        id: key
+        uses: purpusgit/.github/.github/actions/anthropic-key@main
+        with:
+          key-1: ${{ secrets.ANTHROPIC_API_KEY_1 }}
+          key-2: ${{ secrets.ANTHROPIC_API_KEY_2 }}
+          key-3: ${{ secrets.ANTHROPIC_API_KEY_3 }}
+          key-4: ${{ secrets.ANTHROPIC_API_KEY_4 }}
+
+      - name: Read-only token for the context pack (coding-rules, specs)
+        id: pack
+        continue-on-error: true   # no token = no pack; the review still runs and says so
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORBIT_BOT_APP_ID }}
+          private-key: ${{ secrets.ORBIT_BOT_PRIVATE_KEY }}
+          owner: purpusgit
+          repositories: coding-rules,specs
+          permission-contents: read
+
+      - name: Fetch the critic script from purpusgit/.github main
+        uses: actions/checkout@v5.1.0
+        with:
+          repository: purpusgit/.github
+          ref: main
+          path: .critic-src
+          sparse-checkout: scripts/claude_critic.py
+          sparse-checkout-cone-mode: false
+
+      - name: Critique
+        env:
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          DEEP: ${{ (github.event.label.name == 'critic-deep' || inputs.deep) && 'true' || 'false' }}
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_LABEL: ${{ github.event.label.name }}
+          DAILY_CAP: ${{ inputs.daily_cap }}
+          SPEC_REPO: ${{ inputs.spec_repo }}
+          PROFILE_PATH: ${{ inputs.profile_path }}
+          KEY_EXHAUSTED: ${{ steps.key.outputs.exhausted }}
+          GH_TOKEN: ${{ github.token }}
+          PACK_TOKEN: ${{ steps.pack.outputs.token }}
+        run: python3 .critic-src/scripts/claude_critic.py
