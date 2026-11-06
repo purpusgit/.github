@@ -151,6 +151,18 @@ on:
         required: false
         type: boolean
         default: false
+      run_central:
+        description: >-
+          G-CENTRAL-1 and G-CENTRAL-2 (specs flutter-ui/wide-layout-decisions-spec.md §6): a new
+          web_visual manifest row must name its client_core CENTRAL_UI.md row (or be admitted in
+          central_exceptions.yaml), and no PR may add a copy of a central widget, route or wrapped
+          package. Findings are diffed against base_ref, so today's copies pass until removed.
+          Logic and tests: scripts/central_ui_gate.py, scripts/test_central_ui_gate.py. Mints the
+          same read-only client_core token as run_translation_keys, so the caller MUST pass
+          `secrets: inherit`. DEFAULTS FALSE.
+        required: false
+        type: boolean
+        default: false
       run_translation_keys_self:
         description: >
           Translation-key check, SELF mode — for pkg_orbit_client_core only, the repo
@@ -988,7 +1000,7 @@ jobs:
       # client_core's assets/translations at `cwb` — is unchanged.
       - name: Mint a short-lived installation token (translation source)
         id: tk_token
-        if: ${{ inputs.run_translation_keys }}
+        if: ${{ inputs.run_translation_keys || inputs.run_central }}
         continue-on-error: true
         uses: actions/create-github-app-token@v2
         with:
@@ -1064,6 +1076,32 @@ jobs:
           python3 scripts/check_translations.py \
             "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" \
             --translations-dir assets/translations
+
+      # ── G-CENTRAL (specs flutter-ui/wide-layout-decisions-spec.md §6) ───────────
+      # The script comes from this repo's main (never from the PR), like the shared critic.
+      - name: Fetch the G-CENTRAL script
+        id: central_src
+        if: ${{ inputs.run_central }}
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: purpusgit/.github
+          ref: main
+          path: .central-src
+          sparse-checkout: scripts/central_ui_gate.py
+          sparse-checkout-cone-mode: false
+
+      - name: G-CENTRAL — new screens name their central row; no copies of central pieces
+        id: central
+        if: ${{ inputs.run_central }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.tk_token.outputs.token }}
+          BASE_REF: origin/${{ inputs.base_ref || 'cwb' }}
+        run: |
+          set -euo pipefail
+          git fetch -q origin "${{ inputs.base_ref || 'cwb' }}"
+          python3 .central-src/scripts/central_ui_gate.py
 
       # ── Diff-scoped secret scan ───────────────────────────────────────
       # Stands in for the org-level push-protection / secret-scanning product, which
@@ -1307,6 +1345,8 @@ jobs:
             Translation keys~${{ steps.tk_check.outcome }}~a translation key added or changed in this PR is missing from one or more locales in pkg_orbit_client_core assets/translations
             Translation checker self-test~${{ steps.tk_self_demo.outcome }}~this repo's own scripts/check_translations.py failed its --demo assertions, so the checker is broken and not the locale files under review
             Secret scan (diff-scoped)~${{ steps.secret_scan.outcome }}~a line added by this PR matches a credential shape (private-key header, AKIA, sk_live/sk_test, ghp_/github_pat_, xox*, JWT, or a quoted api_key/secret/token/password assignment) - OR the scanner could not compute the PR diff and refused to pass on an uncomputable diff
+            G-CENTRAL script fetch~${{ steps.central_src.outcome }}~the G-CENTRAL script could not be checked out from purpusgit/.github main, so the central-UI rules were never checked
+            G-CENTRAL central UI~${{ steps.central.outcome }}~a new web_visual manifest row does not name its client_core CENTRAL_UI.md row (or lacks its central_exceptions.yaml entry), or the PR adds a copy of a central widget, route or wrapped package - OR an input could not be read and the gate refused to pass
             Translation keys (self)~${{ steps.tk_self_check.outcome }}~a translation key added or changed in this PR is missing from one or more locales in this repo's OWN assets/translations
             Wireframe declared (advisory, not required)~${{ steps.wireframe.outcome }}~this PR changes Dart under lib/ and no wireframe box is ticked in the PR body — a founder-issued directive, recorded here as a loud signal only; ticking it is NOT enforced by this job
         run: |
