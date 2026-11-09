@@ -163,6 +163,17 @@ on:
         required: false
         type: boolean
         default: false
+      run_web_safe:
+        description: >-
+          WEB-SAFE (founder 2026-11-09): a NEW use of a mobile-only API in lib/ (MethodChannel,
+          EventChannel, BasicMessageChannel, dart:io Platform/File/Directory, or an import of a
+          plugin with no web implementation) needs a web answer: a kIsWeb guard, a _mobile.dart
+          file with a _web.dart sibling wired by a conditional import, or a `// web: <why>` note.
+          Diffed against base_ref, so today's code passes until touched. Logic and self-test:
+          scripts/web_safe_gate.py (--demo, --backlog). DEFAULTS FALSE.
+        required: false
+        type: boolean
+        default: false
       run_translation_keys_self:
         description: >
           Translation-key check, SELF mode — for pkg_orbit_client_core only, the repo
@@ -1103,6 +1114,31 @@ jobs:
           git fetch -q origin "${{ inputs.base_ref || 'cwb' }}"
           python3 .central-src/scripts/central_ui_gate.py
 
+      # ── WEB-SAFE (founder 2026-11-09) ─────────────────────────────────────────
+      # Same shape as G-CENTRAL: the script comes from this repo's main, never from the PR.
+      - name: Fetch the WEB-SAFE script
+        id: web_safe_src
+        if: ${{ inputs.run_web_safe }}
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: purpusgit/.github
+          ref: main
+          path: .web-safe-src
+          sparse-checkout: scripts/web_safe_gate.py
+          sparse-checkout-cone-mode: false
+
+      - name: WEB-SAFE — new mobile-only code has a web answer
+        id: web_safe
+        if: ${{ inputs.run_web_safe }}
+        continue-on-error: true
+        env:
+          BASE_REF: origin/${{ inputs.base_ref || 'cwb' }}
+        run: |
+          set -euo pipefail
+          git fetch -q origin "${{ inputs.base_ref || 'cwb' }}"
+          python3 .web-safe-src/scripts/web_safe_gate.py
+
       # ── Diff-scoped secret scan ───────────────────────────────────────
       # Stands in for the org-level push-protection / secret-scanning product, which
       # was switched off org-wide for cost. It is NOT equivalent to it and must not be
@@ -1344,6 +1380,8 @@ jobs:
             Translation source checkout~${{ steps.tk_checkout.outcome }}~pkg_orbit_client_core assets/translations could not be checked out, so translation keys were never compared
             Translation keys~${{ steps.tk_check.outcome }}~a translation key added or changed in this PR is missing from one or more locales in pkg_orbit_client_core assets/translations
             Translation checker self-test~${{ steps.tk_self_demo.outcome }}~this repo's own scripts/check_translations.py failed its --demo assertions, so the checker is broken and not the locale files under review
+            WEB-SAFE script fetch~${{ steps.web_safe_src.outcome }}~the WEB-SAFE script could not be checked out from purpusgit/.github main, so mobile-only code was never checked
+            WEB-SAFE mobile-only code~${{ steps.web_safe.outcome }}~a lib/ change adds a MethodChannel/EventChannel/BasicMessageChannel, a dart:io Platform/File/Directory use, or an import of a plugin with no web implementation, with no kIsWeb guard, no _mobile/_web conditional-import pair and no `// web:` note - OR the base could not be diffed and the gate refused to pass
             Secret scan (diff-scoped)~${{ steps.secret_scan.outcome }}~a line added by this PR matches a credential shape (private-key header, AKIA, sk_live/sk_test, ghp_/github_pat_, xox*, JWT, or a quoted api_key/secret/token/password assignment) - OR the scanner could not compute the PR diff and refused to pass on an uncomputable diff
             G-CENTRAL script fetch~${{ steps.central_src.outcome }}~the G-CENTRAL script could not be checked out from purpusgit/.github main, so the central-UI rules were never checked
             G-CENTRAL central UI~${{ steps.central.outcome }}~a new web_visual manifest row does not name its client_core CENTRAL_UI.md row (or lacks its central_exceptions.yaml entry), or the PR adds a copy of a central widget, route or wrapped package - OR an input could not be read and the gate refused to pass
