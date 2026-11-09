@@ -181,5 +181,7 @@ jobs:
         run: python3 scripts/test_taxo_lint.py
       - name: Run G-CENTRAL self-test (central UI gates)
         run: python3 scripts/test_central_ui_gate.py
+      - name: Run WEB-SAFE self-test (mobile-only code needs a web answer)
+        run: python3 scripts/web_safe_gate.py --demo
       - name: Run UX critic self-test
         run: python3 scripts/test_ux_critic.py
