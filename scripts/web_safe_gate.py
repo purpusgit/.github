@@ -39,9 +39,13 @@ PKG_IMPORT = re.compile(r"""^\s*(?:import|export)\s+['"]package:([a-z0-9_]+)/"""
 KIS_WEB = re.compile(r"\bkIsWeb\b")
 WEB_NOTE = re.compile(r"//\s*web:\s*\S")
 COND_IMPORT = re.compile(r"""\bif\s*\(\s*dart\.library\.""")
-# Plugins with no web implementation that we already use (founder's list, 9 Nov 2026).
+# Plugins with no web implementation that we already use (founder's list, 9 Nov 2026, plus the
+# ones in pkg_orbit_japa's pubspec.yaml). Named here because library packages gitignore
+# pubspec.lock, so the federated-plugin check below finds nothing there.
 KNOWN_MOBILE = {"flutter_background_service", "flutter_contacts", "permission_handler",
-                "vosk", "vosk_flutter", "record"}
+                "vosk", "vosk_flutter", "record", "local_auth", "flutter_local_notifications",
+                "live_activities", "simple_pip_mode", "in_app_update", "in_app_purchase_storekit",
+                "mic_stream", "video_thumbnail"}
 
 FIXES = ("Give it a web answer, one of:\n"
          "  (a) guard it: if (kIsWeb) { <web path> } else { <this call> }\n"
