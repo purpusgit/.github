@@ -32,7 +32,7 @@ def sh(cwd, *args):
 
 
 def make_repo(base, head):
-    """base, head: {path: text or None}. Returns the repo dir with a `main` base commit and the PR checked out."""
+    """base, head: {path: text, None to delete, or ("symlink", target)}. Returns the repo dir with a `main` base commit and the PR checked out."""
     d = tempfile.mkdtemp(prefix="declgate-")
     sh(d, "git", "init", "-q", "-b", "main")
     sh(d, "git", "config", "user.email", "t@example.com"); sh(d, "git", "config", "user.name", "t")
@@ -45,6 +45,11 @@ def make_repo(base, head):
                     os.remove(fp)
                 continue
             os.makedirs(os.path.dirname(fp), exist_ok=True)
+            if isinstance(text, tuple) and text[0] == "symlink":
+                if os.path.lexists(fp):
+                    os.remove(fp)
+                os.symlink(text[1], fp)
+                continue
             with open(fp, "w") as fh:
                 fh.write(text)
     write(base); sh(d, "git", "add", "-A"); sh(d, "git", "commit", "-q", "--allow-empty", "-m", "base")
@@ -752,6 +757,65 @@ class CriticRound2(unittest.TestCase):
         self.assertEqual(sorted(f["rule"] for f in rep.findings), ["DC3", "DC4"])  # the placement key and a field are gone
         for keep in ("DROP INDEX idx_name", "DROP KEY k", "DROP FOREIGN KEY fk", "DROP PRIMARY KEY", "DROP CONSTRAINT c"):
             self.assertEqual(rules(run(base, {"migrations/002.sql": f"ALTER TABLE svc.t {keep};\n"})), [], keep)
+
+
+# ── the third critic's round on #127 @cc48bc5: three MAJORs (relayed by GIT-01) ──────────────────────────────
+LB_CFG = data(schema_paths=(("changelogs/**", "liquibase"),), default_schema="purpus_auth")
+LB_BASE = {"declarations/data.yaml": LB_CFG}
+
+
+def changelog(*changes):
+    return "databaseChangeLog:\n" + "".join(f"  - {c}\n" for c in changes)
+
+
+class CriticRound3(unittest.TestCase):
+    def test_major1_referenced_changelog_files_are_read_wherever_they_live_even_under_excluded_paths(self):
+        hidden = "CREATE TABLE purpus_auth.hidden (id INT);\n"
+        cases = {
+            "sqlFile": ({"changelogs/001.yaml": changelog("sqlFile:\n      path: ../docs/ddl.sql\n      relativeToChangelogFile: true"),
+                         "docs/ddl.sql": hidden}, "purpus_auth.hidden"),
+            "include": ({"changelogs/001.yaml": changelog("include:\n      file: ../tests/inc.yaml\n      relativeToChangelogFile: true"),
+                         "tests/inc.yaml": changelog("createTable:\n      tableName: viainclude\n      columns:\n        - column:\n            name: id")},
+                        "purpus_auth.viainclude"),
+            "includeAll": ({"changelogs/001.yaml": changelog("includeAll:\n      path: ../docs/changes/\n      relativeToChangelogFile: true"),
+                            "docs/changes/a.sql": "CREATE TABLE purpus_auth.viaall (id INT);\n"}, "purpus_auth.viaall"),
+        }
+        for name, (head, table) in cases.items():
+            self.assertEqual(rules(run(LB_BASE, head, "block"), "error"), [("DC1", table)], name)
+
+    def test_major2_a_symlink_under_schema_paths_is_an_error_in_block_mode_and_a_warning_in_report(self):
+        base = {"declarations/data.yaml": data(), "docs/ddl.sql": "-- nothing yet\n"}
+        head = {"migrations/002.sql": ("symlink", "../docs/ddl.sql"), "docs/ddl.sql": CREATE_T}
+        block, report = run(base, head, "block"), run(base, head, "report")
+        self.assertEqual([(f["rule"], f["level"]) for f in block.findings], [("DC9", "error")])
+        self.assertIn("symlink", block.findings[0]["msg"])
+        self.assertEqual([(f["rule"], f["level"]) for f in report.findings], [("DC9", "warning")])
+
+    def test_major2_a_symlink_that_already_exists_is_still_refused(self):
+        # the PR edits only the target (an excluded path); the schema file that points at it is untouched
+        base = {"declarations/data.yaml": data(), "docs/ddl.sql": "-- nothing yet\n", "migrations/002.sql": ("symlink", "../docs/ddl.sql")}
+        rep = run(base, {"docs/ddl.sql": CREATE_T}, "block")
+        self.assertEqual([(f["rule"], f["level"]) for f in rep.findings], [("DC9", "error")])
+
+    def test_major3_the_judge_step_needs_no_credentials_and_does_not_fetch(self):
+        # checkout used persist-credentials: false and fetch-depth: 0, so origin/<base> is already here; a second, authenticated
+        # `git fetch` would fail in a private repo. Prove the step works with an origin it cannot reach.
+        with open(WORKFLOW, encoding="utf-8") as fh:
+            judge = next(s["run"] for s in yaml.safe_load(fh)["jobs"]["declaration-gate"]["steps"] if s.get("name", "").startswith("Judge"))
+        with tempfile.TemporaryDirectory() as tmp:
+            work = make_repo({"declarations/data.yaml": data()}, {"migrations/001.sql": CREATE_T})
+            sh(work, "git", "remote", "add", "origin", os.path.join(tmp, "unreachable.git"))
+            sh(work, "git", "update-ref", "refs/remotes/origin/main", "main")  # what fetch-depth: 0 leaves behind
+            src = os.path.join(work, ".declaration-gate-src")
+            os.makedirs(os.path.join(src, "scripts")); os.makedirs(os.path.join(src, "declarations"))
+            shutil.copy(os.path.join(ROOT, "scripts", "declaration_gate.py"), os.path.join(src, "scripts"))
+            shutil.copy(SEED, os.path.join(src, "declarations"))
+            env = {**os.environ, "GITHUB_WORKSPACE": work, "RUNNER_TEMP": tmp, "MODE": "report", "BASE_REF": "main",
+                   "GITHUB_STEP_SUMMARY": os.path.join(tmp, "summary.md"), "GITHUB_REPOSITORY": "purpusgit/service_x"}
+            r = subprocess.run(["bash", "-eo", "pipefail", "-c", judge], cwd=work, env=env, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr[-400:])
+            with open(os.path.join(tmp, "summary.md")) as fh:
+                self.assertIn("DC1", fh.read())
 
 
 # ── part 4: modes and output ─────────────────────────────────────────────────────────────────────────────

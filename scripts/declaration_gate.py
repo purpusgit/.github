@@ -884,13 +884,35 @@ def build_knowledge(all_events):
 MONGO_IMPLICIT = {"_id", "__v", "createdat", "updatedat"}
 
 
+def tree_files(repo, rev):
+    """(paths, symlink paths) of a commit. `-z` keeps odd names intact; mode 120000 is a symlink, whose blob is its target string."""
+    paths, links = [], set()
+    for ent in git(repo, "ls-tree", "-r", "-z", rev).split("\0"):
+        if ent:
+            meta, path = ent.split("\t", 1)
+            paths.append(path)
+            if meta.startswith("120000"):
+                links.add(path)
+    return paths, links
+
+
+# Files a Liquibase changelog names. They are schema files wherever they live, even under exclude_paths (docs/, tests/):
+# that is where DDL would otherwise hide.
+LB_REFS = (("sql", r"sqlFile:\s*\n(?:\s+\w+:.*\n)*?\s+path:\s*['\"]?([\w./-]+)"),
+           ("include", r"include:\s*\n(?:\s+\w+:.*\n)*?\s+file:\s*['\"]?([\w./-]+)"),
+           ("all", r"includeAll:\s*\n(?:\s+\w+:.*\n)*?\s+path:\s*['\"]?([\w./-]+)"))
+
+
 class Tree:
     """What the gate knows about one tree (the PR's head, or its merge base): its schema files, the events in them,
     the tables created and each table's columns."""
 
-    def __init__(self, tracked, text_of, kind_of, dflt, known_names, exclude_paths):
-        self.schema_files = {p: kind_of(p) for p in tracked if kind_of(p) and text_of(p) is not None}
-        code = {p: text_of(p) for p in tracked if p.endswith((".js", ".ts")) and not matches_any(p, exclude_paths) and text_of(p) is not None}
+    def __init__(self, tracked, links, text_of, kind_of, dflt, known_names, exclude_paths):
+        # a symlink's content is its target's name: it is never read as a schema file, and the caller reports it
+        self.symlinks = sorted(p for p in tracked if p in links and kind_of(p))
+        self.schema_files = {p: kind_of(p) for p in tracked if kind_of(p) and p not in links and text_of(p) is not None}
+        code = {p: text_of(p) for p in tracked if p.endswith((".js", ".ts")) and p not in links and not matches_any(p, exclude_paths)
+                and text_of(p) is not None}
         consts = {}
         for t in code.values():
             for k, v in re.findall(r"export\s+const\s+(\w+)\s*=\s*['\"`]([^'\"`$\n]+)['\"`]", t):
@@ -906,14 +928,26 @@ class Tree:
         model_map, self.model_names, model_sites = mongo_model_map(code, dflt)
         ctx = {"model_map": model_map, "model_sites": model_sites, "known": set(known_names) | self.model_names}
         self.events = {p: extract(Src(p, text_of(p)), kind, res, ctx) for p, kind in self.schema_files.items()}
-        # a Liquibase sqlFile change names a file wherever it lives: read it as SQL too
-        for p in [q for q in self.schema_files if q.endswith((".yaml", ".yml"))]:
-            for ref in re.findall(r"sqlFile:\s*\n(?:\s+\w+:.*\n)*?\s+path:\s*['\"]?([\w./-]+)", text_of(p) or ""):
-                for c in (os.path.normpath(os.path.join(os.path.dirname(p), ref)), ref):
-                    if c in tracked and c not in self.events and text_of(c) is not None and not matches_any(c, exclude_paths):
-                        self.schema_files[c] = "sql"
-                        self.events[c] = extract(Src(c, text_of(c)), "sql", res, ctx)
-                        break
+        # Liquibase `sqlFile`, `include` and `includeAll` name files wherever they live: read them too, followed transitively
+        tracked_set, queue, budget = set(tracked), [q for q in self.schema_files if q.endswith((".yaml", ".yml"))], 500
+        while queue and budget:
+            budget -= 1
+            p = queue.pop()
+            for how, rx in LB_REFS:
+                for ref in re.findall(rx, text_of(p) or ""):
+                    for c in (os.path.normpath(os.path.join(os.path.dirname(p), ref)), os.path.normpath(ref)):
+                        found = [f for f in tracked if f.startswith(c + "/")] if how == "all" and c != "." else \
+                            [c] if c in tracked_set else []
+                        found = [f for f in found if f not in self.events and f not in links and text_of(f) is not None
+                                 and (how == "sql" or f.endswith((".yaml", ".yml", ".sql")))]
+                        for f in found:
+                            kind = "liquibase" if f.endswith((".yaml", ".yml")) else "sql"
+                            self.schema_files[f] = kind
+                            self.events[f] = extract(Src(f, text_of(f)), kind, res, ctx)
+                            if kind == "liquibase":
+                                queue.append(f)
+                        if found:
+                            break
         self.created, self.cols = build_knowledge(self.events)
         self.created |= self.model_names
         for p, colls in model_map.items():
@@ -937,8 +971,8 @@ def judge(repo, base_ref, mode, owners_path=None, calling_repo=None):
 def judge_trees(repo, mode, owners_path, mb, head_text, base_text, calling_repo=None):
     rep = Report(mode)
     added = added_lines(repo, mb)
-    tracked = [p for p in git(repo, "ls-tree", "-r", "-z", "--name-only", "HEAD").split("\0") if p]
-    base_tracked = [p for p in git(repo, "ls-tree", "-r", "-z", "--name-only", mb).split("\0") if p]
+    tracked, links = tree_files(repo, "HEAD")
+    base_tracked, base_links = tree_files(repo, mb)
 
     head = load_cfg(head_text)
     base = load_cfg(base_text)
@@ -980,9 +1014,12 @@ def judge_trees(repo, mode, owners_path, mb, head_text, base_text, calling_repo=
         return None
 
     known = set(base_entries)  # a collection name is "new" when the base did not know it
-    new = Tree(tracked, head_text, kind_of, dflt, known, exclude_paths)
-    old = Tree(base_tracked, base_text, kind_of, dflt, known, exclude_paths)
+    new = Tree(tracked, links, head_text, kind_of, dflt, known, exclude_paths)
+    old = Tree(base_tracked, base_links, base_text, kind_of, dflt, known, exclude_paths)
     rep.notes += new.notes
+    for p in new.symlinks:
+        rep.add("DC9", "-", "schema files must not be symlinks: a link's content is its target, which is not judged here", p,
+                level="error" if mode == "block" else None)
 
     for p in sorted(added):
         if added[p] and kind_of(p) and head_text(p) is None:

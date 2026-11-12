@@ -85,7 +85,7 @@ jobs:
           BASE_REF: ${{ inputs.base_ref || github.base_ref }}
         run: |
           set -euo pipefail
-          git fetch --no-tags --quiet origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          # No `git fetch` here: the checkout above (fetch-depth: 0) already holds origin/<base>, and it kept no credentials.
           # Run from our own checkout, never the PR's: python puts the working directory and the script's directory on its
           # path, and only the second is ours. PYTHONPATH is the install step's directory (`-I` would ignore it); `-s` drops
           # the user site.
