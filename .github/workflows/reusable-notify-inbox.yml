@@ -59,7 +59,7 @@ jobs:
           case " $RESULTS " in *" failure "*) c=failure;; *" cancelled "*) c=cancelled;; *) c=success;; esac
           body="**${WORKFLOW}** (${REPO}): **${c}**, head \`${SHA:0:7}\`, run ${RUN_URL}"
           [ -n "$NOTE" ] && body="$body · $NOTE"
-          B="$body" python3 -c 'import json,os;print(json.dumps({"body":os.environ["B"]}))' > "$RUNNER_TEMP/body.json"
+          B="$body" python3 -I -c 'import json,os;print(json.dumps({"body":os.environ["B"]}))' > "$RUNNER_TEMP/body.json"
           curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/purpusgit/specs/issues/$INBOX/comments" --data @"$RUNNER_TEMP/body.json" > /dev/null
           echo "posted on specs#$INBOX: $body"

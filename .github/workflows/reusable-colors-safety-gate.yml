@@ -53,7 +53,7 @@ jobs:
           # unindented lines would terminate the block. \x27 / \x22 are a quote and a
           # double quote, spelled that way so the script survives shell single-quoting.
           mask_comments() {
-            python3 -c 'if 1:
+            python3 -I -c 'if 1:
               import sys
               for raw in sys.stdin:
                   s = raw.rstrip("\n")

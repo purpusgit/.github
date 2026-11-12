@@ -19,7 +19,7 @@ jobs:
         env:
           MIGRATIONS_DIR: ${{ inputs.migrations_dir }}
         run: |
-          python3 - <<'PYEOF'
+          python3 -I - <<'PYEOF'
           import json, os, sys
 
           # Default mirrors the workflow input's own `default: src/db/migrations`.
