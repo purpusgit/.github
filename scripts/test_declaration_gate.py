@@ -692,11 +692,15 @@ class CriticRound1(unittest.TestCase):
             d = make_repo(OWN_FOREIGN_BASE, foreign_pr("meta.organization", "orbit_orgs", secret_like={"access_token_ct": decl}))
             self.assertEqual(rules(G.judge(d, "main", "report", SEED, calling_repo="service_iap_web_commerce"), "error"), [])
 
-    def test_minor_a_foreign_table_missing_from_owners_yaml_warns_but_a_listed_one_still_checks(self):
+    def test_a_foreign_table_missing_from_owners_yaml_is_an_error_once_the_file_exists(self):
+        # DC7 (b): the owner must be listed for the table. A warning only while the file is absent. (An earlier round
+        # made a missing row a warning; that let a repo call its own uncreated table foreign with a made-up owner.)
         d = make_repo(OWN_FOREIGN_BASE, foreign_pr("meta.zzz_unlisted", "someone"))
         rep = G.judge(d, "main", "block", SEED, calling_repo="service_x")
+        self.assertEqual([(f["rule"], f["level"]) for f in rep.findings if f["rule"] == "DC7"], [("DC7", "error")])
+        rep = G.judge(d, "main", "block", os.path.join(d, "no-such-owners.yaml"), calling_repo="service_x")  # file absent
         self.assertEqual([(f["rule"], f["level"]) for f in rep.findings if f["rule"] == "DC7"], [("DC7", "warning")])
-        d = make_repo(OWN_FOREIGN_BASE, foreign_pr("meta.wallet", "orbit_orgs"))  # seeded: iap_web_commerce owns it
+        d = make_repo(OWN_FOREIGN_BASE, foreign_pr("meta.wallet", "orbit_orgs"))  # listed, but another repo owns it
         rep = G.judge(d, "main", "block", SEED, calling_repo="service_x")
         self.assertEqual([(f["rule"], f["level"]) for f in rep.findings if f["rule"] == "DC7"], [("DC7", "error")])
 
@@ -705,6 +709,49 @@ class CriticRound1(unittest.TestCase):
         base, head = {"declarations/data.yaml": data()}, {"migrations/001.sql": big}
         self.assertEqual([(f["rule"], f["level"]) for f in run(base, head, "block").findings], [("DC9", "error")])
         self.assertEqual([(f["rule"], f["level"]) for f in run(base, head, "report").findings], [("DC9", "warning")])
+
+
+# ── the re-critic's round on #127 @0ffa463: two MAJORs and three MINORs (relayed by GIT-01) ─────────────────
+class CriticRound2(unittest.TestCase):
+    def test_major1_paths_with_spaces_quotes_and_backslashes_are_read(self):
+        # git C-quotes `"` and `\` in patch headers and tab-pads names with spaces; the gate must not parse headers
+        names = {"migrations/002 new.sql": "a", 'migrations/002"x.sql': "b", "migrations/002\\y.sql": "c"}
+        head = {path: f"CREATE TABLE svc.{tbl} (id INT);\n" for path, tbl in names.items()}
+        rep = run({"declarations/data.yaml": data()}, head, "block")
+        self.assertEqual(rules(rep, "error"), [("DC1", "svc.a"), ("DC1", "svc.b"), ("DC1", "svc.c")])
+
+    def test_major1_a_deleted_schema_file_is_not_reported_unreadable(self):
+        rep = run(dict(BASE_T, **{"migrations/009.sql": "CREATE TABLE svc.gone (id INT);\n"}), {"migrations/009.sql": None}, "block")
+        self.assertEqual(rules(rep, "error"), [])
+
+    def test_minor_postgres_rename_without_the_column_keyword_adds_the_new_name(self):
+        base = dict(BASE_T, **with_entry(T_ENTRY))
+        rep = run(base, {"migrations/002.sql": "ALTER TABLE svc.t RENAME name TO api_token;\n"})
+        self.assertEqual(rep.added["svc.t"], ["api_token"])
+        # the new name needs a decision (DC5) and a field (DC6); the entry still lists `name`, which the table no longer has (DC4)
+        self.assertEqual(rules(rep), [("DC4", "svc.t"), ("DC5", "svc.t"), ("DC6", "svc.t")])
+        # RENAME TO (the table), RENAME CONSTRAINT and RENAME INDEX are not column renames
+        for sql in ("ALTER TABLE svc.t RENAME TO svc.t2;\n", "ALTER TABLE svc.t RENAME CONSTRAINT a TO b;\n", "ALTER TABLE svc.t RENAME INDEX a TO b;\n"):
+            self.assertEqual(run(base, {"migrations/002.sql": sql}).added.get("svc.t", []), [], sql)
+
+    def test_minor_default_schema_is_judged_from_the_base_copy(self):
+        # the PR renames the default schema to one that already has an entry, so its unqualified CREATE TABLE would look declared
+        base = {"declarations/data.yaml": data(default_schema="svc")}
+        head = {"declarations/data.yaml": data([entry("evil.t", ["id"], placement_key="central")], default_schema="evil"),
+                "migrations/001.sql": "CREATE TABLE t (id INT);\n"}
+        rep = run(base, head)
+        self.assertIn(("DC1", "svc.t"), rules(rep))
+        self.assertTrue(any(f["rule"] == "DC8" and "default_schema" in f["msg"] for f in rep.findings))
+
+    def test_minor_drop_column_removes_the_column_from_what_the_table_has(self):
+        base = dict(BASE_T, **with_entry(T_ENTRY))
+        rep = run(base, {"migrations/002.sql": "ALTER TABLE svc.t DROP COLUMN name;\n"})
+        self.assertEqual(rules(rep), [("DC4", "svc.t")])  # the entry still lists `name`, which the table no longer has
+        self.assertIn("name", rep.findings[0]["msg"])
+        rep = run(base, {"migrations/002.sql": "ALTER TABLE svc.t DROP COLUMN IF EXISTS org_idfr;\n"})
+        self.assertEqual(sorted(f["rule"] for f in rep.findings), ["DC3", "DC4"])  # the placement key and a field are gone
+        for keep in ("DROP INDEX idx_name", "DROP KEY k", "DROP FOREIGN KEY fk", "DROP PRIMARY KEY", "DROP CONSTRAINT c"):
+            self.assertEqual(rules(run(base, {"migrations/002.sql": f"ALTER TABLE svc.t {keep};\n"})), [], keep)
 
 
 # ── part 4: modes and output ─────────────────────────────────────────────────────────────────────────────

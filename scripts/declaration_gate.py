@@ -372,7 +372,8 @@ def alter_event(src, res, work, m, end, table, raw, line0, line1):
         cm = re.match(rf"CHANGE[ \t\r\n]+(?:COLUMN[ \t\r\n]+)?({_ID})[ \t\r\n]+({_ID})", c, re.I)
         if cm:
             ev.drops.add(unquote(cm.group(1)).lower()); ev.cols[unquote(cm.group(2)).lower()] = cline; continue
-        cm = re.match(rf"RENAME[ \t\r\n]+COLUMN[ \t\r\n]+({_ID})[ \t\r\n]+TO[ \t\r\n]+({_ID})", c, re.I)
+        # RENAME [COLUMN] a TO b (PostgreSQL allows leaving COLUMN out); RENAME TO / CONSTRAINT / INDEX / KEY are not columns
+        cm = re.match(rf"RENAME[ \t\r\n]+(?:COLUMN[ \t\r\n]+|(?!(?:TO|AS|COLUMN|CONSTRAINT|INDEX|KEY)\b))({_ID})[ \t\r\n]+TO[ \t\r\n]+({_ID})", c, re.I)
         if cm:
             ev.drops.add(unquote(cm.group(1)).lower()); ev.cols[unquote(cm.group(2)).lower()] = cline; continue
         cm = re.match(rf"DROP[ \t\r\n]+(?:COLUMN[ \t\r\n]+)?(?:IF[ \t\r\n]+EXISTS[ \t\r\n]+)?({_ID})", c, re.I)
@@ -695,21 +696,21 @@ class Blobs:
 
 
 def added_lines(repo, mb):
-    # --text: a PR's .gitattributes (`*.sql -diff`) must not turn the diff into "Binary files differ"; --no-renames: a file moved
-    # out of exclude_paths into schema_paths must count as added, not as a rename with no hunks; no textconv or external diff.
-    out = git(repo, "diff", "--unified=0", "--no-color", "--text", "--no-textconv", "--no-ext-diff", "--no-renames", mb, "HEAD")
-    files, cur = {}, None
-    for ln in out.splitlines():
-        if ln.startswith("+++ "):
-            path = ln[4:]
-            cur = None if path == "/dev/null" else path[2:] if path.startswith("b/") else path
-            if cur is not None:
-                files.setdefault(cur, set())
-        elif ln.startswith("@@") and cur is not None:
+    """{path: set of added line numbers} for the PR. File names come from `--name-only -z` (NUL-separated, never quoted); the
+    hunks are read one file at a time, so no patch header is parsed (git C-quotes `"` and `\\` in them and tab-pads names with
+    spaces). --text: a PR's .gitattributes (`*.sql -diff`) must not turn the diff into "Binary files differ"; --no-renames: a
+    file moved out of exclude_paths into schema_paths must count as added; no textconv or external diff driver."""
+    flags = ["--no-color", "--text", "--no-textconv", "--no-ext-diff", "--no-renames"]
+    files = {}
+    for path in git(repo, "diff", "--name-only", "-z", *flags, mb, "HEAD").split("\0"):
+        if not path:
+            continue
+        files[path] = lines = set()
+        for ln in git(repo, "diff", "--unified=0", *flags, mb, "HEAD", "--", ":(literal)" + path).splitlines():
             m = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", ln)
             if m:
                 start, n = int(m.group(1)), int(m.group(2)) if m.group(2) is not None else 1
-                files[cur].update(range(start, start + n))
+                lines.update(range(start, start + n))
     return files
 
 
@@ -947,7 +948,8 @@ def judge_trees(repo, mode, owners_path, mb, head_text, base_text, calling_repo=
     exclude_paths = DEFAULT_EXCLUDE_PATHS + [p for p in (cfg_in.get("exclude_paths") or []) if isinstance(p, str)]
     exclude_tables = DEFAULT_EXCLUDE_TABLES + [str(p).lower() for p in (cfg_in.get("exclude_tables") or [])]
     hc = head or {}
-    dflt = str(hc.get("default_schema") or (cfg_in.get("default_schema") or "")).lower()
+    # like the other DC8 keys: judged from the base copy (the head's only when the PR creates data.yaml)
+    dflt = str((cfg_in if base is not None else hc).get("default_schema") or "").lower()
 
     def entries_of(cfg):
         return {norm_table(e["table"], dflt): e for e in ((cfg or {}).get("tables") or []) if isinstance(e, dict) and e.get("table")}
@@ -962,7 +964,7 @@ def judge_trees(repo, mode, owners_path, mb, head_text, base_text, calling_repo=
     if head is not None and base is None:
         rep.add("DC8", "-", f"{DATA} is created by this PR, so every path in the repo is judged as schema_paths", DATA)
     elif head is not None and base is not None:
-        for key in ("schema_paths", "exclude_paths", "exclude_tables", "foreign_changes"):
+        for key in ("schema_paths", "exclude_paths", "exclude_tables", "default_schema", "foreign_changes"):
             if json.dumps(head.get(key), sort_keys=True, default=str) != json.dumps(base.get(key), sort_keys=True, default=str):
                 # choice: foreign_changes is read from the PR's head so a PR can list its own foreign change (DC7 a);
                 # the other three are judged against the base copy, as the spec says.
@@ -983,7 +985,7 @@ def judge_trees(repo, mode, owners_path, mb, head_text, base_text, calling_repo=
     rep.notes += new.notes
 
     for p in sorted(added):
-        if kind_of(p) and head_text(p) is None:
+        if added[p] and kind_of(p) and head_text(p) is None:
             rep.add("DC9", "-", "schema path changed but the file could not be read (over 2 MB?); its tables are not judged", p,
                     level="error" if mode == "block" else None)  # block: an unjudged schema file must not pass
 
@@ -1043,8 +1045,8 @@ def judge_trees(repo, mode, owners_path, mb, head_text, base_text, calling_repo=
                 if owners is None:
                     rep.add("DC7", t, "owner not checked: declarations/owners.yaml does not exist yet", *where, level="warning")
                 elif t not in owners:
-                    rep.add("DC7", t, "owner not checked: the table is not in owners.yaml yet (it is regenerated as owners "
-                            "are settled)", *where, level="warning")
+                    rep.add("DC7", t, "is not listed in declarations/owners.yaml, so its owner cannot be checked; ask GIT-01 to "
+                            "regenerate the file with this table and its owner", *where)
                 elif canon_repo(owners[t]) != canon_repo(f.get("owner")):
                     rep.add("DC7", t, f"`{clean(f.get('owner'))}` is not the owner listed for this table in owners.yaml "
                             f"(`{clean(owners[t])}`)", *where)
