@@ -304,7 +304,7 @@ jobs:
           # unindented lines would terminate the block. \x27 / \x22 are a quote and a
           # double quote, spelled that way so the script survives shell single-quoting.
           mask_comments() {
-            python3 -c 'if 1:
+            python3 -I -c 'if 1:
               import sys
               for raw in sys.stdin:
                   s = raw.rstrip("\n")
@@ -515,7 +515,7 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          python3 <<'PYEOF'
+          python3 -I <<'PYEOF'
           import os
           import re
           import sys
@@ -604,7 +604,7 @@ jobs:
           WEB_BAN_ALLOW: ${{ inputs.web_ban_allow }}
         run: |
           set -euo pipefail
-          python3 <<'PYEOF'
+          python3 -I <<'PYEOF'
           import fnmatch
           import os
           import re
@@ -673,7 +673,7 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          python3 <<'PYEOF'
+          python3 -I <<'PYEOF'
           import os
           import re
           import sys
@@ -1186,7 +1186,7 @@ jobs:
           echo "This check runs at PR review time, not push time. Anything already on a branch is already in git history and still needs rotating through the founder-paced rotation queue - this step only stops NEW secrets from being added going forward."
           echo ""
 
-          python3 <<'PYEOF'
+          python3 -I <<'PYEOF'
           import os
           import re
           import subprocess
