@@ -216,6 +216,19 @@ def split_top(text, base):
     return parts
 
 
+# The schema placeholders orgs writes in migrations. Each stands for every tenant schema, which the spec reads as `org_n.T`
+# (section 9, "Per-tenant tables"). An EXPLICIT list, never a pattern: a placeholder not on it is reported as unresolved, so a
+# new one gets seen and is never merged silently. A report prints `<` and `>` as `?` (clean()), so `?schema?.t` in a report is
+# `<schema>.t` in the source.
+SCHEMA_PLACEHOLDERS = {"<schema>", "<tenant_schema>", "__schema__"}
+RE_PLACEHOLDER = re.compile(r"^(?:<[^<>\s]+>|\?[A-Za-z_]\w*\?|__[A-Za-z0-9_]+__)$")  # the shape of one, listed or not
+
+
+def unlisted_placeholder(qualifier):
+    q = unquote(qualifier).lower()
+    return q not in SCHEMA_PLACEHOLDERS and bool(RE_PLACEHOLDER.match(q))
+
+
 class Resolver:
     """Turns a raw table name from code into one qualified name, or None."""
 
@@ -226,10 +239,13 @@ class Resolver:
 
     def one(self, ident):
         ident = unquote(ident)
+        if ident.lower() in SCHEMA_PLACEHOLDERS:
+            return TENANT
 
         def sub(m):
             inner = (m.group(1) or m.group(2)).strip()
-            if re.search(r"schema|tenant", inner, re.I):
+            # a plain schema variable only: `${table(schema)}` names a table through a helper, not a schema
+            if re.fullmatch(r"[\w.]*(?:schema|tenant)[\w.]*", inner, re.I):
                 return TENANT
             return self.consts.get(inner, "\0")  # "\0" marks a name that stays unresolved
         ident = re.sub(r"\$\{([^}]*)\}|\{\{([^}]*)\}\}", sub, ident)
@@ -239,11 +255,13 @@ class Resolver:
         raw = raw.strip()
         m = re.match(rf"^({_ID})[ \t]*\.[ \t]*({_ID})$", raw)
         if m:
+            if unlisted_placeholder(m.group(1)):
+                return None  # reported as an unresolved schema placeholder
             a, b = self.one(m.group(1)), self.one(m.group(2))
             return f"{a}.{b}" if a and b else None
         t = self.one(raw)
-        if t is None:
-            return None
+        if t is None or t == TENANT:
+            return None  # a bare schema name is not a table: a name needs a table part
         schema = use_schema or self.default_schema
         return f"{schema}.{t}" if schema and "." not in t else t
 
@@ -1179,7 +1197,9 @@ def judge_trees(repo, mode, owners_path, mb, head_text, base_text, calling_repo=
                 continue
             hit = True
             if ev.table is None:
-                rep.add("DC9", ev.raw, f"could not resolve the table name `{clean(ev.raw)}`", p, ev.line)
+                q = ev.raw.split(".")[0] if "." in ev.raw else ""
+                what = "unresolved schema placeholder" if q and unlisted_placeholder(q.strip()) else "could not resolve the table name"
+                rep.add("DC9", ev.raw, f"{what} `{clean(ev.raw)}`", p, ev.line)
                 continue
             if ev.note and ev.table not in rep.unmasked:
                 rep.unmasked.append(ev.table)
