@@ -820,6 +820,7 @@ class Report:
     def __init__(self, mode):
         self.mode, self.findings = mode, []
         self.touched, self.added, self.secret_new, self.excluded, self.foreign, self.inventory, self.notes = {}, {}, [], [], [], [], []
+        self.removable, self.mongo = [], False  # dropped tables whose entry can go; a Mongo repo's inventory caveat
 
     def add(self, rule, table, msg, file=None, line=None, level=None):
         if rule in DISABLED:
@@ -1008,6 +1009,8 @@ def judge_trees(repo, mode, owners_path, mb, head_text, base_text):
         added_cols = {c: ln for c, (f, ln) in new.cols.get(t, {}).items() if c not in old.cols.get(t, {})}
         rep.added[t] = sorted(added_cols)
         if info["ops"] <= {"drop"}:
+            if t in entries:
+                rep.removable.append(t)  # a note in the summary, never an error
             continue  # choice: a dropped table needs no entry; the summary lists it
         entry, where = entries.get(t), (info["file"], info["line"])
         if entry is None and t not in new.created:
@@ -1108,6 +1111,7 @@ def judge_trees(repo, mode, owners_path, mb, head_text, base_text):
                     "to exclude_paths with a reason.", p, ln)
 
     rep.inventory = sorted(t for t in new.created if t not in entries and not excluded_table(t))
+    rep.mongo = bool(new.model_names) or any(k in ("mongoose", "mongodriver") for k in new.schema_files.values())
     return rep
 
 
@@ -1131,6 +1135,9 @@ def render(rep, base_ref):
         out += ["No rule fired.", ""]
     out += ["### Tables this PR touches", ""]
     out += [f"- `{esc(t)}`: {', '.join(ops)}" for t, ops in sorted(rep.touched.items())] or ["- none"]
+    if rep.removable:
+        out += ["", "### Entries that can be removed", ""]
+        out += [f"- `{esc(t)}`: this PR drops the table, so its entry in {DATA} can be removed (a note, not an error)" for t in rep.removable]
     if rep.secret_new:
         out += ["", "### Secret-like new columns", ""]
         out += [f"- `{esc(s['table'])}.{esc(s['col'])}`: {s['decision'] or 'NO DECISION'}" for s in rep.secret_new]
@@ -1145,6 +1152,8 @@ def render(rep, base_ref):
     if rep.excluded:
         out += ["", "### Excluded names (exclude_tables)", ""] + [f"- `{esc(t)}`" for t in rep.excluded]
     out += ["", f"### Inventory (report only, never fails): {len(rep.inventory)} table(s) with no entry", ""]
+    if rep.mongo:
+        out += ["_Collections registered by other means than mongoose.model(...) are not counted._", ""]
     out += [f"- `{esc(t)}`" for t in rep.inventory[:50]]
     if len(rep.inventory) > 50:
         out.append(f"- ... and {len(rep.inventory) - 50} more")

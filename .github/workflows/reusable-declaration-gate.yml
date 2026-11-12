@@ -15,6 +15,15 @@ name: Reusable — Declaration gate (a new or changed table needs its entry)
 # `mode: report` always passes and writes the summary. `mode: block` fails on any error rule. If the gate itself errors,
 # set the caller back to `mode: report`; nothing else changes. Owner: GIT-01 builds and runs it, OFFLINE-01 owns the rules.
 # The script is scripts/declaration_gate.py, tested by scripts/test_declaration_gate.py (a step of self-test-gates.yml).
+#
+# How a service answers a secret-like new column (DC5; names such as token_hash, access_token_ct, key_ciphertext) in its entry:
+#
+#   secret_like:
+#     access_token_ct: { decision: exclude }                                  # kept out of Level A, the lakehouse, NLQ and phones
+#     key_iv:          { decision: keep, reason: "needed to decrypt on device" }  # `keep` needs a reason; it is decided in review
+#
+# (`exclude` as a bare string and `{ keep: "<reason>" }` are read too, but write the `{decision, reason}` form.)
+# Who owns a table that another repo changes: declarations/owners.yaml in this repo (DC7 b), `owners:` as `schema.table: owner repo`.
 
 on:
   workflow_call:

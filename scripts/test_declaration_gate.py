@@ -8,9 +8,11 @@ rule off (or swaps a broken DC5 matcher in) and requires the rule's own test to 
 
 Run: python3 scripts/test_declaration_gate.py
 """
+import collections
 import contextlib
 import io
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -545,6 +547,72 @@ class ReviewFixes(unittest.TestCase):
         start = time.time()
         G.sql_events(G.Src("x.sql", text), G.Resolver("s"))
         self.assertLess(time.time() - start, 2)
+
+
+# ── OFFLINE-01's ruling on #127 (specs#411 6816056808, relayed by GIT-01) ───────────────────────────────────
+SEED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "declarations", "owners.yaml")
+
+
+class OffLineRuling(unittest.TestCase):
+    def test_the_seeded_owners_file_parses_in_the_one_shape_and_holds_d6s_26_owners(self):
+        with open(SEED, encoding="utf-8") as fh:
+            doc = G.load_yaml(fh.read())
+        self.assertEqual(list(doc), ["owners"])  # one shape for anything that writes it: `owners:` a map of schema.table: owner
+        owners = doc["owners"]
+        self.assertEqual(len(owners), 26)
+        self.assertEqual(dict(collections.Counter(owners.values())), {"orbit_orgs": 17, "iap_web_commerce": 8, "broadcast_audience": 1})
+        for table, owner in owners.items():
+            self.assertRegex(table, r"^[a-z0-9_]+\.[a-z0-9_]+$")
+            self.assertRegex(owner, r"^[a-z0-9_]+$")
+        self.assertEqual(G.load_owners(SEED), owners)
+        # the three contested rows, as D6 rules them
+        self.assertEqual((owners["meta.event_ticket_booking"], owners["org_n.org_broadcast"], owners["meta.wallet"]),
+                         ("orbit_orgs", "broadcast_audience", "iap_web_commerce"))
+
+    def test_the_reader_stays_tolerant_of_the_other_shapes(self):
+        with tempfile.TemporaryDirectory() as d:
+            for name, text in (("bare", "meta.wallet: iap_web_commerce\n"),
+                               ("list", "- {table: meta.wallet, owner: iap_web_commerce}\n")):
+                path = os.path.join(d, name + ".yaml")
+                with open(path, "w") as fh:
+                    fh.write(text)
+                self.assertEqual(G.load_owners(path), {"meta.wallet": "iap_web_commerce"})
+
+    def test_dc7_b_uses_the_seeded_file_in_block_mode(self):
+        def verdict(owner):
+            cfg = data([], default_schema="svc", foreign_changes=[{"table": "meta.wallet", "owner": owner, "reason": "balance column"}])
+            d = make_repo(BASE_T, {"migrations/002.sql": "ALTER TABLE meta.wallet ADD COLUMN c INT;\n", "declarations/data.yaml": cfg})
+            return [f for f in G.judge(d, "main", "block", SEED).findings if f["rule"] == "DC7"]
+        self.assertEqual(verdict("iap_web_commerce"), [])
+        wrong = verdict("orbit_orgs")
+        self.assertEqual([f["level"] for f in wrong], ["error"])
+        self.assertIn("iap_web_commerce", wrong[0]["msg"])
+
+    def test_the_documented_secret_like_form_is_accepted(self):
+        cols = ["id", "org_idfr", "access_token_ct"]
+
+        def verdict(decl):
+            return rules(run({"declarations/data.yaml": data()}, {"migrations/001.sql": SECRET_TABLE,
+                                                                  **with_entry(entry("svc.t", cols, secret_like={"access_token_ct": decl}))}))
+        self.assertEqual(verdict({"decision": "exclude"}), [])
+        self.assertEqual(verdict({"decision": "keep", "reason": "needed on the device"}), [])
+        self.assertEqual(verdict({"decision": "keep"}), [("DC5", "svc.t")])  # keep needs a reason
+
+    def test_a_dropped_table_with_an_entry_gets_a_note_not_an_error(self):
+        base = dict(BASE_T, **with_entry(T_ENTRY))
+        rep = run(base, {"migrations/002.sql": "DROP TABLE svc.t;\n"})
+        self.assertEqual(rules(rep), [])
+        self.assertEqual(rep.removable, ["svc.t"])
+        self.assertIn("entry in declarations/data.yaml can be removed", G.render(rep, "main"))
+        rep = run(BASE_T, {"migrations/002.sql": "DROP TABLE svc.t;\n"})  # no entry: nothing to remove
+        self.assertEqual((rules(rep), rep.removable), ([], []))
+
+    def test_a_mongo_inventory_says_what_it_does_not_count(self):
+        line = "collections registered by other means than mongoose.model(...) are not counted"
+        base = dict(SOCIAL_FILES, **{"declarations/data.yaml": data(**SOCIAL_CFG), "orbit-social/models/schema/posts_collection.schema.js": POSTS_BASE_SCHEMA})
+        rep = run(base, {"orbit-social/models/schema/posts_collection.schema.js": POSTS_HEAD_SCHEMA})
+        self.assertIn(line, G.render(rep, "main").lower())
+        self.assertNotIn(line, G.render(run(BASE_T, {"migrations/002.sql": "ALTER TABLE svc.t ADD COLUMN z INT;\n"}), "main").lower())
 
 
 # ── part 4: modes and output ─────────────────────────────────────────────────────────────────────────────
