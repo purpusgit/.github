@@ -460,6 +460,42 @@ class OtherStacks(unittest.TestCase):
         _, t = touches({"declarations/data.yaml": cfg}, head)
         self.assertEqual(sorted(t), ["meta.booking_slots", "org_n.org_leads"])
 
+    def test_each_listed_schema_placeholder_becomes_org_n(self):
+        # OFFLINE-01 ruling on orgs' first run (specs#411 6821647751). A report prints `<` as `?`, so `?schema?.t` is `<schema>.t`.
+        for ph in ("`<schema>`", "`<tenant_schema>`", "__SCHEMA__", "`__schema__`"):
+            with self.subTest(placeholder=ph):
+                head = {"migrations/002.sql": f"CREATE TABLE IF NOT EXISTS {ph}.org_leads (id INT);\n"}
+                _, t = touches(BASE_T, head)
+                self.assertEqual(sorted(t), ["org_n.org_leads"])
+
+    def test_a_placeholder_off_the_list_is_reported_unresolved_and_never_merged(self):
+        for ph in ("`<reference>`", "`<other_schema>`", "__tenant__", "`?x?`"):
+            with self.subTest(placeholder=ph):
+                head = {"migrations/002.sql": f"CREATE TABLE {ph}.org_leads (id INT);\n"}
+                rep, t = touches(BASE_T, head)
+                self.assertEqual(t, {})  # not a table of any schema
+                self.assertEqual(codes(rep), ["DC9"])
+                self.assertIn("unresolved schema placeholder", rep.findings[0]["msg"])
+
+    def test_a_table_named_like_a_dunder_is_not_a_placeholder(self):
+        _, t = touches(BASE_T, {"migrations/002.sql": "CREATE TABLE __drizzle_migrations__ (id INT);\n"})
+        self.assertEqual(sorted(t), ["svc.__drizzle_migrations__"])
+
+    def test_a_bare_schema_name_is_not_a_table(self):
+        # The orgs lines that made a row `org_n` (service_orbit_orgs sandbox 7d4bc70, src/migrations/org_leads_hardening.ts 127/139):
+        # `${table(schema)}` is a helper call that builds the table's full name, so its name has no table part the gate can read.
+        cfg = data(schema_paths=(("src/migrations/*.ts", "tsdl"),), default_schema="meta")
+        head = {"src/migrations/org_leads_hardening.ts":
+                "await apply(conn, `CREATE TABLE IF NOT EXISTS ${table(schema)} LIKE ${table(reference)}`, dryRun, out, log);\n"
+                "if (!columns.has(column.name)) await apply(conn, `ALTER TABLE ${table(schema)} ADD COLUMN ${escapeId(column.name)} ${column.definition}`, dryRun, out, log);\n"}
+        rep, t = touches({"declarations/data.yaml": cfg}, head)
+        self.assertNotIn("org_n", t)
+        self.assertEqual(t, {})
+        self.assertEqual(sorted(codes(rep)), ["DC9", "DC9"])  # reported as unresolved, not as a phantom table
+        # and a plain `${schema}` alone is not a table either
+        rep, t = touches({"declarations/data.yaml": cfg}, {"src/migrations/a.ts": "const q = `ALTER TABLE ${schema} ADD COLUMN c INT`;\n"})
+        self.assertEqual(t, {})
+
     def test_liquibase_yaml_and_sqlfile_anywhere(self):
         cfg = data(schema_paths=(("changelogs/**", "liquibase"),), default_schema="purpus_auth")
         yml = ("databaseChangeLog:\n  - changeSet:\n      id: 1\n      author: a\n      changes:\n"
