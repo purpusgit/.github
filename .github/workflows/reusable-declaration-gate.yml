@@ -55,11 +55,27 @@ jobs:
     runs-on: ${{ inputs.runner }}
     name: Declaration gate
     timeout-minutes: 10
+    # Report mode always passes: a checkout or PyPI hiccup must not turn a report-only run red. Block mode stays fail-closed.
+    continue-on-error: ${{ inputs.mode == 'report' }}
     steps:
       - uses: actions/checkout@v5.1.0
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      # The next step checks the gate's own files out to .declaration-gate-src. A PR that commits that path (say a symlink to
+      # somewhere else) would steer where they land: refuse it in block mode, and in report mode remove it (the link, not its
+      # target) and go on.
+      - name: Refuse a PR that owns the gate's checkout path
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          if [ -L .declaration-gate-src ] || [ -e .declaration-gate-src ]; then
+            echo "::error title=declaration gate::this PR commits .declaration-gate-src, the path the gate's own files are checked out to"
+            [ "${MODE}" = "block" ] && exit 1
+            rm -rf -- .declaration-gate-src
+          fi
 
       - name: Fetch the gate script and the owners file from purpusgit/.github main
         uses: actions/checkout@v5.1.0
@@ -77,6 +93,7 @@ jobs:
       # `yaml.py` or `pip/` committed in the PR would be imported and run on this runner. The fallback installs into a
       # directory of ours (`--target`), because `-I` also ignores the user site.
       - name: Install PyYAML if the runner lacks it
+        continue-on-error: ${{ inputs.mode == 'report' }}
         run: python3 -I -c "import yaml" 2>/dev/null || python3 -I -m pip install --quiet --target "${RUNNER_TEMP}/pydeps" "pyyaml==6.0.2"
 
       - name: Judge the tables this PR touches

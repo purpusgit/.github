@@ -818,6 +818,128 @@ class CriticRound3(unittest.TestCase):
                 self.assertIn("DC1", fh.read())
 
 
+# ── the fourth critic's round on #127 @6196706: two MAJORs and two MINORs (relayed by GIT-01) ─────────────────
+HID = "CREATE TABLE svc.hid (id INT);\n"
+# each of these desyncs the comment masker and the live DDL after it would be swallowed
+DESYNC = {
+    "a dollar-quoted string holding /*": "SELECT $$ /* $$;\n",
+    "--don't (no space after the dashes)": "--don't\nSELECT 'a /* b';\n",
+    "a PostgreSQL string ending in a backslash": "SELECT 'C:\\';\nSELECT 'a /* b';\n",
+    "a MySQL # comment with an apostrophe": "SELECT 1; # it's\nSELECT 'a /* b';\n",
+}
+NOTE = "found outside the comment-masked pass"
+
+
+def copy_gate(dst):
+    os.makedirs(os.path.join(dst, "scripts")); os.makedirs(os.path.join(dst, "declarations"))
+    shutil.copy(os.path.join(ROOT, "scripts", "declaration_gate.py"), os.path.join(dst, "scripts"))
+    shutil.copy(SEED, os.path.join(dst, "declarations"))
+
+
+class CriticRound4(unittest.TestCase):
+    def test_major1_a_desynced_comment_masker_cannot_hide_a_table(self):
+        for name, prefix in DESYNC.items():
+            rep = run({"declarations/data.yaml": data()}, {"migrations/001.sql": prefix + HID}, "block")
+            self.assertEqual(rules(rep, "error"), [("DC1", "svc.hid")], name)
+            self.assertIn("svc.hid", rep.unmasked, name)
+            self.assertIn(NOTE, G.render(rep, "main"), name)
+
+    def test_major1_a_hidden_column_is_found_too(self):
+        base = dict(BASE_T, **with_entry(T_ENTRY))
+        rep = run(base, {"migrations/002.sql": "SELECT $$ /* $$;\nALTER TABLE svc.t ADD COLUMN access_token_ct INT;\n"})
+        self.assertEqual(rep.added["svc.t"], ["access_token_ct"])
+        self.assertEqual(rules(rep), [("DC5", "svc.t"), ("DC6", "svc.t")])
+
+    def test_major1_a_normal_file_gets_no_note(self):
+        rep = run({"declarations/data.yaml": data()}, {"migrations/001.sql": "-- a header comment\n/* and a block */\n" + HID})
+        self.assertEqual(rep.unmasked, [])
+        self.assertNotIn(NOTE, G.render(rep, "main"))
+
+    def test_major1_comments_inside_a_statement_add_no_garbage_columns_and_no_note(self):
+        # a real file shape (chat 007): commas, parentheses and apostrophes inside the comments of a CREATE TABLE body
+        body = ("CREATE TABLE svc.t (\n  id INT NOT NULL,   -- the id, stable (UUID), it's ours\n  org_idfr INT NULL, -- FK x.y WHERE type='a_type' (see 3, 4)\n"
+                "  name VARCHAR(10)    -- 'audio' | 'video', denorm cache\n);\n")
+        rep = run({"declarations/data.yaml": data()}, {"migrations/001.sql": body})
+        self.assertEqual(rep.added["svc.t"], ["id", "name", "org_idfr"])
+        self.assertEqual(rep.unmasked, [])
+
+    def test_major1_a_column_hidden_mid_statement_by_a_desync_is_found(self):
+        base = dict(BASE_T, **with_entry(T_ENTRY))
+        sql = "--don't\nALTER TABLE svc.t ADD COLUMN a INT DEFAULT 'x /* y', ADD COLUMN access_token_ct INT;\n"
+        rep = run(base, {"migrations/002.sql": sql})
+        self.assertIn("access_token_ct", rep.added["svc.t"])
+        self.assertEqual(rep.unmasked, ["svc.t"])
+
+    def test_major2_missing_pyyaml_never_fails_report_mode_and_fails_block_mode_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "shadow"))
+            with open(os.path.join(tmp, "shadow", "yaml.py"), "w") as fh:
+                fh.write("raise ImportError('PyYAML is not installed here')\n")
+            repo = make_repo(*NEW_T)
+            for mode, rc in (("report", 0), ("block", 2)):
+                r = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "declaration_gate.py"), "--repo", repo, "--base-ref", "main",
+                                    "--mode", mode, "--summary", os.path.join(tmp, "s.md")],
+                                   env={**os.environ, "PYTHONPATH": os.path.join(tmp, "shadow")}, capture_output=True, text=True)
+                self.assertEqual(r.returncode, rc, f"{mode}: {r.stderr[-300:]}")
+                self.assertIn("PyYAML", r.stdout, mode)
+                self.assertNotIn("Traceback", r.stderr, mode)
+
+    def test_major2_the_workflow_steps_that_can_fail_for_the_environment_do_not_fail_report_mode(self):
+        with open(WORKFLOW, encoding="utf-8") as fh:
+            job = yaml.safe_load(fh)["jobs"]["declaration-gate"]
+        expr = "${{ inputs.mode == 'report' }}"
+        self.assertEqual(job.get("continue-on-error"), expr)  # block mode stays fail-closed: the expression is false there
+        install = next(s for s in job["steps"] if s.get("name", "").startswith("Install PyYAML"))
+        self.assertEqual(install.get("continue-on-error"), expr)
+
+    def test_minor_a_gitlink_in_the_tree_does_not_misalign_the_reads_after_it(self):
+        # a gitlink (mode 160000) to a commit that exists makes `cat-file --batch` print a whole commit; an unread body would
+        # shift every later answer. Keep the gitlink in BOTH trees, with schema files after it.
+        with tempfile.TemporaryDirectory() as tmp:
+            d = os.path.join(tmp, "r")
+            os.makedirs(d); sh(d, "git", "init", "-q", "-b", "main")
+            sh(d, "git", "config", "user.email", "t@example.com"); sh(d, "git", "config", "user.name", "t")
+            with open(os.path.join(d, "README"), "w") as fh:
+                fh.write("x\n")
+            sh(d, "git", "add", "README"); sh(d, "git", "commit", "-q", "-m", "first")
+            first = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d, capture_output=True, text=True, check=True).stdout.strip()
+            os.makedirs(os.path.join(d, "declarations")); os.makedirs(os.path.join(d, "migrations"))
+            with open(os.path.join(d, "declarations", "data.yaml"), "w") as fh:
+                fh.write(data(schema_paths=(("migrations/*", "sql"),)))
+            with open(os.path.join(d, "migrations", "zzz_base.sql"), "w") as fh:
+                fh.write("CREATE TABLE svc.old (id INT);\n")
+            sh(d, "git", "add", "declarations", "migrations/zzz_base.sql")
+            sh(d, "git", "update-index", "--add", "--cacheinfo", f"160000,{first},migrations/aaa_sub")
+            sh(d, "git", "commit", "-q", "-m", "base")
+            sh(d, "git", "checkout", "-q", "-b", "pr")
+            with open(os.path.join(d, "migrations", "zzz_pr.sql"), "w") as fh:
+                fh.write("CREATE TABLE svc.new (id INT);\n")
+            sh(d, "git", "add", "migrations/zzz_pr.sql")  # not -A: that would stage the gitlink's deletion
+            sh(d, "git", "commit", "-q", "-m", "pr")
+            ls = subprocess.run(["git", "ls-tree", "-r", "HEAD"], cwd=d, capture_output=True, text=True, check=True).stdout
+            self.assertIn("160000 commit", ls)  # the gitlink really is in the head tree
+            self.assertEqual(rules(G.judge(d, "main", "block")), [("DC1", "svc.new")])
+
+    def test_minor_a_pr_that_owns_the_gates_checkout_path_is_refused_in_block_mode_and_cleared_in_report(self):
+        with open(WORKFLOW, encoding="utf-8") as fh:
+            steps = yaml.safe_load(fh)["jobs"]["declaration-gate"]["steps"]
+        names = [s.get("name", "") for s in steps]
+        guard = next(i for i, n in enumerate(names) if n.startswith("Refuse"))
+        self.assertLess(guard, next(i for i, n in enumerate(names) if n.startswith("Fetch the gate script")))  # before the checkout
+        for mode, rc in (("block", 1), ("report", 0)):
+            with tempfile.TemporaryDirectory() as tmp:
+                work, outside = os.path.join(tmp, "work"), os.path.join(tmp, "outside")
+                os.makedirs(work); os.makedirs(outside)
+                with open(os.path.join(outside, "keep.txt"), "w") as fh:
+                    fh.write("not the PR's to touch")
+                os.symlink(outside, os.path.join(work, ".declaration-gate-src"))
+                r = subprocess.run(["bash", "-eo", "pipefail", "-c", steps[guard]["run"]], cwd=work, env={**os.environ, "MODE": mode},
+                                   capture_output=True, text=True)
+                self.assertEqual(r.returncode, rc, f"{mode}: {r.stdout[-200:]}{r.stderr[-200:]}")
+                self.assertTrue(os.path.exists(os.path.join(outside, "keep.txt")), f"{mode}: the link's target was touched")
+                self.assertEqual(os.path.lexists(os.path.join(work, ".declaration-gate-src")), mode == "block", mode)  # report removed the link
+
+
 # ── part 4: modes and output ─────────────────────────────────────────────────────────────────────────────
 def main_in(base, head, *args):
     d = make_repo(base, head)

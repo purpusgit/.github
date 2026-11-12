@@ -23,7 +23,10 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 
-import yaml
+try:
+    import yaml
+except ImportError:  # main() says so: report mode still passes, block mode fails closed
+    yaml = None
 
 LEVEL = {"DC1": "error", "DC2": "error", "DC3": "error", "DC4": "error", "DC5": "error", "DC6": "error",
          "DC7": "error", "DC8": "warning", "DC9": "warning", "DC10": "error"}
@@ -99,6 +102,7 @@ class Ev:
     drops: set = field(default_factory=set)
     raw: str = ""
     old: str = ""  # a rename: the table's old name
+    note: str = ""  # set when only the unmasked scan found it
 
 
 # ── plain SQL (also the engine under TS runners, Go, Drizzle, knex.raw and Liquibase sql: blocks) ───────────
@@ -261,12 +265,13 @@ def reads_like_ddl(verb, tail):
     return m is not None and m.group(1).upper() in AFTER_NAME[verb]
 
 
-def sql_events(src, res, masked=True):
+def _sql_events(src, res, masked=True, uses_masked=False):
     text = src.text
     work = reveal_record_blocks(text)
-    if masked:
-        work = mask_sql_comments(work)
-    uses = [(m.start(), res.one(m.group(1))) for m in RE_USE.finditer(work)]
+    work = mask_sql_comments(work) if masked else light_strip(work) if uses_masked else work
+    # `USE x;` inside a comment must not rename the tables after it, also in the unmasked scan (uses_masked)
+    use_work = mask_sql_comments(reveal_record_blocks(text)) if uses_masked else work
+    uses = [(m.start(), res.one(m.group(1))) for m in RE_USE.finditer(use_work)]
 
     def use_at(off):
         cur = ""
@@ -334,6 +339,45 @@ def sql_events(src, res, masked=True):
         use = use_at(m.start())
         evs.append(Ev(res.qualify(m.group("name"), use), "index", src.path, src.line(m.start()), src.line(m.end()),
                       raw=m.group("name")))
+    return evs
+
+
+RE_DDLISH = re.compile(r"\b(?:CREATE|ALTER|DROP|RENAME)\s+(?:UNIQUE\s+|FULLTEXT\s+|SPATIAL\s+)?(?:TABLE|INDEX)\b", re.I)
+
+
+def light_strip(text):
+    """The fail-safe scan's view of a file: only comments that cannot hide DDL are blanked. A `/* ... */` block that is closed, and
+    a `-- ...` or `# ...` line comment, go (so commas and apostrophes in comments make no phantom columns), but never an
+    unterminated block and never a comment that mentions CREATE/ALTER/DROP/RENAME TABLE or INDEX. It knows nothing about quotes,
+    which is why it cannot be desynced by them."""
+    def blank(m):
+        return m.group(0) if RE_DDLISH.search(m.group(0)) else re.sub(r"[^\n]", " ", m.group(0))
+    text = re.sub(r"/\*.*?\*/", blank, text, flags=re.S)
+    return re.sub(r"(?m)(?:--(?=[ \t\r]|$)|^[ \t]*#).*$", blank, text)
+
+
+FOUND_UNMASKED = "found outside the comment-masked pass"
+
+
+def sql_events(src, res, masked=True):
+    """DDL events of a file. The comment masker is a heuristic: a `$$ /* $$` string, `--don't`, a PostgreSQL `'C:\\'` or a MySQL
+    `# it's` can desync it so that a `/*` swallows live DDL. So a masked file is also scanned a second way (light_strip, which
+    knows nothing about quotes), and anything only that scan finds (a table, or a column of a table) counts as touched and is
+    noted. A false positive (DDL that really sits in a comment) is accepted; a false pass is not."""
+    evs = _sql_events(src, res, masked)
+    if not masked:
+        return evs
+    have = {(e.op, e.table, e.raw, e.line): e for e in evs}
+    for e in _sql_events(src, res, False, uses_masked=True):
+        mine = have.get((e.op, e.table, e.raw, e.line))
+        if mine is None:
+            e.note = FOUND_UNMASKED
+            evs.append(e)
+        else:
+            extra = {c: ln for c, ln in e.cols.items() if c not in mine.cols}
+            if extra:
+                mine.cols.update(extra)
+                mine.note = FOUND_UNMASKED
     return evs
 
 
@@ -682,10 +726,11 @@ class Blobs:
         self.proc.stdin.flush()
         head = self.proc.stdout.readline().split()
         text = None
-        if len(head) == 3 and head[1] == b"blob":
-            data = self.proc.stdout.read(int(head[2]))
+        if len(head) == 3:  # "<sha> <type> <size>"; "<name> missing" has two parts. Read every object to its end:
+            data = self.proc.stdout.read(int(head[2]))  # a gitlink is a commit, and an unread body shifts every later answer
             self.proc.stdout.read(1)
-            text = data.decode("utf-8", "replace") if len(data) < 2_000_000 else None
+            if head[1] == b"blob":
+                text = data.decode("utf-8", "replace") if len(data) < 2_000_000 else None
         self.cache[path] = text
         return text
 
@@ -714,17 +759,18 @@ def added_lines(repo, mb):
     return files
 
 
-class NoAliasLoader(yaml.SafeLoader):
+def _no_alias_loader():
     """data.yaml and owners.yaml are read from a PR: no aliases, so a file cannot expand itself into gigabytes."""
-
-    def compose_node(self, parent, index):
-        if self.check_event(yaml.events.AliasEvent):
-            raise yaml.YAMLError("aliases are not allowed")
-        return super().compose_node(parent, index)
+    class NoAliasLoader(yaml.SafeLoader):
+        def compose_node(self, parent, index):
+            if self.check_event(yaml.events.AliasEvent):
+                raise yaml.YAMLError("aliases are not allowed")
+            return super().compose_node(parent, index)
+    return NoAliasLoader
 
 
 def load_yaml(text):
-    return yaml.load(text, Loader=NoAliasLoader)  # noqa: S506 - a SafeLoader subclass
+    return yaml.load(text, Loader=_no_alias_loader())  # noqa: S506 - a SafeLoader subclass
 
 
 # ── config (declarations/data.yaml, or social's interim p4-collections.js through an adapter) ───────────────
@@ -830,7 +876,7 @@ class Report:
     def __init__(self, mode):
         self.mode, self.findings = mode, []
         self.touched, self.added, self.secret_new, self.excluded, self.foreign, self.inventory, self.notes = {}, {}, [], [], [], [], []
-        self.removable, self.mongo = [], False  # dropped tables whose entry can go; a Mongo repo's inventory caveat
+        self.removable, self.mongo, self.unmasked = [], False, []  # dropped tables whose entry can go; a Mongo inventory caveat; tables only the unmasked scan found
 
     def add(self, rule, table, msg, file=None, line=None, level=None):
         if rule in DISABLED:
@@ -1040,6 +1086,8 @@ def judge_trees(repo, mode, owners_path, mb, head_text, base_text, calling_repo=
             if ev.table is None:
                 rep.add("DC9", ev.raw, f"could not resolve the table name `{clean(ev.raw)}`", p, ev.line)
                 continue
+            if ev.note and ev.table not in rep.unmasked:
+                rep.unmasked.append(ev.table)
             t = touched.setdefault(ev.table, {"ops": set(), "file": p, "line": ev.line})
             t["ops"].add(ev.op)
         # "auto" is the judged-by-everything mode of a PR that creates data.yaml: most files hold no schema, so no warning
@@ -1205,6 +1253,10 @@ def render(rep, base_ref):
         out += ["No rule fired.", ""]
     out += ["### Tables this PR touches", ""]
     out += [f"- `{esc(t)}`: {', '.join(ops)}" for t, ops in sorted(rep.touched.items())] or ["- none"]
+    if rep.unmasked:
+        out += ["", f"### Tables {FOUND_UNMASKED}", ""]
+        out += [f"- `{esc(t)}`: only the second, unmasked scan saw it (it may sit in a comment, or the comment scan lost its place); "
+                "it is judged as touched" for t in sorted(rep.unmasked)]
     if rep.removable:
         out += ["", "### Entries that can be removed", ""]
         out += [f"- `{esc(t)}`: this PR drops the table, so its entry in {DATA} can be removed (a note, not an error)" for t in rep.removable]
@@ -1252,6 +1304,10 @@ def main(argv=None):
     if a.mode not in ("report", "block"):
         print(f"::error title=declaration gate::mode must be `report` or `block`, got `{clean(a.mode)}`")
         return 2
+    if yaml is None:
+        print(f"::{'error' if a.mode == 'block' else 'warning'} title=declaration gate::PyYAML is not installed on this runner; "
+              f"{'blocking (fail closed)' if a.mode == 'block' else 'report mode, not blocking'}")
+        return 2 if a.mode == "block" else 0
     try:
         rep = judge(a.repo, a.base_ref, a.mode, a.owners, a.calling_repo)
     except GateError as e:
