@@ -1,0 +1,76 @@
+name: Reusable — Declaration gate (a new or changed table needs its entry)
+
+# OFFLINE-01's declaration CI check (specs offline-first/declaration-ci-check.md). A pull request that adds or changes a
+# table or collection fails unless the same PR carries that table's entry in declarations/data.yaml, complete. It judges
+# only the tables the PR touches (rules DC1 to DC10, spec section 4); every other table goes to a report-only inventory.
+# It reads the PR's diff and the committed files only: no database, no API key, and no repo code is ever run.
+#
+# Each service repo calls it from a job named `declaration-gate`, on `pull_request` (never `pull_request_target`):
+#
+#   jobs:
+#     declaration-gate:
+#       uses: purpusgit/.github/.github/workflows/reusable-declaration-gate.yml@main
+#       with: { mode: report }          # `block` only after the spec's section 7 step 3
+#
+# `mode: report` always passes and writes the summary. `mode: block` fails on any error rule. If the gate itself errors,
+# set the caller back to `mode: report`; nothing else changes. Owner: GIT-01 builds and runs it, OFFLINE-01 owns the rules.
+# The script is scripts/declaration_gate.py, tested by scripts/test_declaration_gate.py (a step of self-test-gates.yml).
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: report (never fails) or block (fails on any error)
+        type: string
+        default: report
+      base_ref:
+        description: Branch to diff against. Default is the PR's base branch.
+        type: string
+        default: ''
+      runner:
+        type: string
+        default: orbit-ci-light
+
+permissions:
+  contents: read
+
+jobs:
+  declaration-gate:
+    # Pull requests only: the check needs a base to diff against.
+    if: github.event_name == 'pull_request'
+    runs-on: ${{ inputs.runner }}
+    name: Declaration gate
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch the gate script and the owners file from purpusgit/.github main
+        uses: actions/checkout@v5.1.0
+        with:
+          repository: purpusgit/.github
+          ref: main
+          path: .declaration-gate-src
+          sparse-checkout: |
+            scripts/declaration_gate.py
+            declarations
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Install PyYAML if the runner lacks it
+        run: python3 -c "import yaml" 2>/dev/null || python3 -m pip install --quiet --user "pyyaml==6.0.2"
+
+      - name: Judge the tables this PR touches
+        env:
+          MODE: ${{ inputs.mode }}
+          BASE_REF: ${{ inputs.base_ref || github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --quiet origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          python3 .declaration-gate-src/scripts/declaration_gate.py \
+            --repo . \
+            --base-ref "origin/${BASE_REF}" \
+            --mode "${MODE}" \
+            --owners .declaration-gate-src/declarations/owners.yaml

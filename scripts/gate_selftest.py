@@ -423,6 +423,11 @@ BEHAVIOUR = {
     # scripts/test_claude_critic.py, a separate step of this job; the workflow itself needs the API and a PR.
     "reusable-claude-critic.yml":    {"kind": None, "reason": "on-request Claude critic, never required; its logic is tested by scripts/test_claude_critic.py (separate step)"},
     "reusable-ux-critic.yml": {"kind": None, "reason": "advisory UX critic, never required; its logic is tested by scripts/test_ux_critic.py (separate step)"},
+    # OFFLINE-01's declaration gate. Its logic is scripts/declaration_gate.py, tested end to end (four replayed PRs, one check per
+    # rule, one extractor per stack, and each rule's test proven red with the rule broken) by scripts/test_declaration_gate.py,
+    # a separate step of this job. The workflow itself only checks out two trees and calls the script, so there is no `run:`
+    # predicate worth extracting; the report/block switch is exercised in the script's own tests.
+    "reusable-declaration-gate.yml": {"kind": None, "reason": "declaration gate: logic in scripts/declaration_gate.py, tested by scripts/test_declaration_gate.py (separate step); the workflow only checks out and calls it"},
 }
 FAILURES = []
 def fail(msg): FAILURES.append(msg); print(f"  ✗ {msg}")

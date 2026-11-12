@@ -21,6 +21,7 @@ Org-level GitHub Actions reusable workflows for all `purpusgit` repositories.
 | `reusable-taxo-lint.yml` | Taxonomy type/column lint — delegates to `scripts/taxo_lint.py` |
 | `reusable-taxo-contract-lint.yml` | Taxonomy FK contract: wrong `hierarchy_level` / wrong concept |
 | `reusable-drizzle-journal-gate.yml` | Every Drizzle `.sql` migration has a `meta/_journal.json` entry |
+| `reusable-declaration-gate.yml` | A new or changed table or collection needs its entry in `declarations/data.yaml` (OFFLINE-01; `mode: report` or `block`; `scripts/declaration_gate.py`) |
 | `taxo-data-lint-nightly.yml` | Scheduled DB-backed taxonomy data lint |
 
 Consumers call these from a thin caller workflow. The reported check-run context
