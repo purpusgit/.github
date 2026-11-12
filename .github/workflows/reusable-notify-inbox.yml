@@ -1,0 +1,65 @@
+name: Reusable — notify a specs inbox when a run ends
+
+# A dispatched build or deploy belongs to no PR, so nothing wakes the seat that started it.
+# A caller adds an optional `notify_inbox` input and one last job:
+#
+#   notify:
+#     needs: [web]
+#     if: ${{ always() && inputs.notify_inbox != '' }}
+#     uses: purpusgit/.github/.github/workflows/reusable-notify-inbox.yml@main
+#     with:
+#       inbox: ${{ inputs.notify_inbox }}
+#       results: ${{ join(needs.*.result, ' ') }}
+#     secrets: inherit
+#
+# It posts one line on that specs PR as the bot (the comment wakes its subscriber, WAKE-POST-1):
+# workflow, run link, conclusion, head sha, and an optional note (e.g. the roll PR's link).
+
+on:
+  workflow_call:
+    inputs:
+      inbox:   { required: true, type: string }                  # specs PR number of the seat's inbox
+      results: { required: true, type: string }                  # space-separated needs.*.result
+      note:    { required: false, type: string, default: '' }
+    secrets:
+      ORBIT_BOT_APP_ID:      { required: false }
+      ORBIT_BOT_PRIVATE_KEY: { required: false }
+
+permissions: {}
+
+jobs:
+  notify:
+    runs-on: orbit-ci-light
+    timeout-minutes: 5
+    steps:
+      - name: Token for the specs inbox
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORBIT_BOT_APP_ID }}
+          private-key: ${{ secrets.ORBIT_BOT_PRIVATE_KEY }}
+          owner: purpusgit
+          repositories: specs
+          permission-issues: write
+
+      - name: Post one line
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          INBOX: ${{ inputs.inbox }}
+          RESULTS: ${{ inputs.results }}
+          NOTE: ${{ inputs.note }}
+          WORKFLOW: ${{ github.workflow }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          case "$INBOX" in ''|*[!0-9]*) echo "::error::inbox must be a specs PR number, got '$INBOX'"; exit 1;; esac
+          # failure beats cancelled beats success; skipped jobs alone count as success
+          case " $RESULTS " in *" failure "*) c=failure;; *" cancelled "*) c=cancelled;; *) c=success;; esac
+          body="**${WORKFLOW}** (${REPO}): **${c}**, head \`${SHA:0:7}\`, run ${RUN_URL}"
+          [ -n "$NOTE" ] && body="$body · $NOTE"
+          B="$body" python3 -c 'import json,os;print(json.dumps({"body":os.environ["B"]}))' > "$RUNNER_TEMP/body.json"
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/purpusgit/specs/issues/$INBOX/comments" --data @"$RUNNER_TEMP/body.json" > /dev/null
+          echo "posted on specs#$INBOX: $body"

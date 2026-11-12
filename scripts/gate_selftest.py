@@ -428,6 +428,7 @@ BEHAVIOUR = {
     # a separate step of this job. The workflow itself only checks out two trees and calls the script, so there is no `run:`
     # predicate worth extracting; the report/block switch is exercised in the script's own tests.
     "reusable-declaration-gate.yml": {"kind": None, "reason": "declaration gate: logic in scripts/declaration_gate.py, tested by scripts/test_declaration_gate.py (separate step); the workflow only checks out and calls it"},
+    "reusable-notify-inbox.yml": {"kind": None, "reason": "posts one comment on a specs inbox when a dispatched run ends; not a gate, no predicate"},
 }
 FAILURES = []
 def fail(msg): FAILURES.append(msg); print(f"  ✗ {msg}")
