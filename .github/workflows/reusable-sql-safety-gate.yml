@@ -82,7 +82,7 @@ jobs:
           exit $fail
       - name: Check for stray semicolons in SQL template literals
         run: |
-          python3 - <<'PYEOF'
+          python3 -I - <<'PYEOF'
           import re, glob, sys
 
           # code_root is SPLICED into this body rather than passed through `env:`, and

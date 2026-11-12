@@ -79,7 +79,7 @@ jobs:
       - name: Check internal pins and lockfile agreement
         id: pins
         run: |
-          python3 - "${{ inputs.org }}" <<'PY'
+          python3 -I - "${{ inputs.org }}" <<'PY'
           import json, os, re, sys
 
           org = sys.argv[1]
@@ -307,7 +307,7 @@ jobs:
           PINS: ${{ needs.lockfile-pin-gate.outputs.pins }}
           PINS_COUNT: ${{ needs.lockfile-pin-gate.outputs.pins_count }}
         run: |
-          python3 - <<'PY'
+          python3 -I - <<'PY'
           import http.client, json, os, urllib.request, urllib.error
 
           # ⭐ THREE OUTCOMES, NOT TWO -- and this is the same contract the shared auth
