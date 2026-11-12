@@ -423,6 +423,7 @@ BEHAVIOUR = {
     # scripts/test_claude_critic.py, a separate step of this job; the workflow itself needs the API and a PR.
     "reusable-claude-critic.yml":    {"kind": None, "reason": "on-request Claude critic, never required; its logic is tested by scripts/test_claude_critic.py (separate step)"},
     "reusable-ux-critic.yml": {"kind": None, "reason": "advisory UX critic, never required; its logic is tested by scripts/test_ux_critic.py (separate step)"},
+    "reusable-notify-inbox.yml": {"kind": None, "reason": "posts one comment on a specs inbox when a dispatched run ends; not a gate, no predicate"},
 }
 FAILURES = []
 def fail(msg): FAILURES.append(msg); print(f"  ✗ {msg}")
