@@ -1,0 +1,114 @@
+name: Reusable — Declaration gate (a new or changed table needs its entry)
+
+# OFFLINE-01's declaration CI check (specs offline-first/declaration-ci-check.md). A pull request that adds or changes a
+# table or collection fails unless the same PR carries that table's entry in declarations/data.yaml, complete. It judges
+# only the tables the PR touches (rules DC1 to DC10, spec section 4); every other table goes to a report-only inventory.
+# It reads the PR's diff and the committed files only: no database, no API key, and no repo code is ever run.
+#
+# Each service repo calls it from a job named `declaration-gate`, on `pull_request` (never `pull_request_target`):
+#
+#   jobs:
+#     declaration-gate:
+#       uses: purpusgit/.github/.github/workflows/reusable-declaration-gate.yml@main
+#       with: { mode: report }          # `block` only after the spec's section 7 step 3
+#
+# `mode: report` always passes and writes the summary. `mode: block` fails on any error rule. If the gate itself errors,
+# set the caller back to `mode: report`; nothing else changes. Owner: GIT-01 builds and runs it, OFFLINE-01 owns the rules.
+# The script is scripts/declaration_gate.py, tested by scripts/test_declaration_gate.py (a step of self-test-gates.yml).
+#
+# How a service answers a secret-like new column (DC5; names such as token_hash, access_token_ct, key_ciphertext) in its entry:
+#
+#   secret_like:
+#     access_token_ct: { decision: exclude }                                  # kept out of Level A, the lakehouse, NLQ and phones
+#     key_iv:          { decision: keep, reason: "needed to decrypt on device" }  # `keep` needs a reason; it is decided in review
+#
+# (`exclude` as a bare string and `{ keep: "<reason>" }` are read too, but write the `{decision, reason}` form.)
+# Who owns a table that another repo changes: declarations/owners.yaml in this repo (DC7 b), `owners:` as `schema.table: owner repo`.
+#
+# A repo cannot declare its own table as a foreign change: if owners.yaml names the calling repo as the table's owner (or the
+# foreign_changes item does), the table needs an entry like any other. Repo names are compared with `service_` removed:
+# service_orbit_orgs = orbit_orgs (owners.yaml names repos without it). A foreign_changes item can carry its own `secret_like:`
+# for secret-like columns it adds, answered the same way as in an entry.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: report (never fails) or block (fails on any error)
+        type: string
+        default: report
+      base_ref:
+        description: Branch to diff against. Default is the PR's base branch.
+        type: string
+        default: ''
+      runner:
+        type: string
+        default: orbit-ci-light
+
+permissions:
+  contents: read
+
+jobs:
+  declaration-gate:
+    # Pull requests only: the check needs a base to diff against.
+    if: github.event_name == 'pull_request'
+    runs-on: ${{ inputs.runner }}
+    name: Declaration gate
+    timeout-minutes: 10
+    # Report mode always passes: a checkout or PyPI hiccup must not turn a report-only run red. Block mode stays fail-closed.
+    continue-on-error: ${{ inputs.mode == 'report' }}
+    steps:
+      - uses: actions/checkout@v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The next step checks the gate's own files out to .declaration-gate-src. A PR that commits that path (say a symlink to
+      # somewhere else) would steer where they land: refuse it in block mode, and in report mode remove it (the link, not its
+      # target) and go on.
+      - name: Refuse a PR that owns the gate's checkout path
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          if [ -L .declaration-gate-src ] || [ -e .declaration-gate-src ]; then
+            echo "::error title=declaration gate::this PR commits .declaration-gate-src, the path the gate's own files are checked out to"
+            [ "${MODE}" = "block" ] && exit 1
+            rm -rf -- .declaration-gate-src
+          fi
+
+      - name: Fetch the gate script and the owners file from purpusgit/.github main
+        uses: actions/checkout@v5.1.0
+        with:
+          repository: purpusgit/.github
+          ref: main
+          path: .declaration-gate-src
+          sparse-checkout: |
+            scripts/declaration_gate.py
+            declarations
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # Every python call here is isolated (`-I`): this step's working directory is the PR's checkout, and without `-I` a
+      # `yaml.py` or `pip/` committed in the PR would be imported and run on this runner. The fallback installs into a
+      # directory of ours (`--target`), because `-I` also ignores the user site.
+      - name: Install PyYAML if the runner lacks it
+        continue-on-error: ${{ inputs.mode == 'report' }}
+        run: python3 -I -c "import yaml" 2>/dev/null || python3 -I -m pip install --quiet --target "${RUNNER_TEMP}/pydeps" "pyyaml==6.0.2"
+
+      - name: Judge the tables this PR touches
+        env:
+          MODE: ${{ inputs.mode }}
+          BASE_REF: ${{ inputs.base_ref || github.base_ref }}
+        run: |
+          set -euo pipefail
+          # No `git fetch` here: the checkout above (fetch-depth: 0) already holds origin/<base>, and it kept no credentials.
+          # Run from our own checkout, never the PR's: python puts the working directory and the script's directory on its
+          # path, and only the second is ours. PYTHONPATH is the install step's directory (`-I` would ignore it); `-s` drops
+          # the user site.
+          cd .declaration-gate-src
+          PYTHONPATH="${RUNNER_TEMP}/pydeps" python3 -s scripts/declaration_gate.py \
+            --repo "${GITHUB_WORKSPACE}" \
+            --base-ref "origin/${BASE_REF}" \
+            --mode "${MODE}" \
+            --owners declarations/owners.yaml

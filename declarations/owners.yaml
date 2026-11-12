@@ -1,0 +1,36 @@
+# Who owns each table that another repo changes (DC7 b of the declaration gate; specs offline-first/declaration-ci-check.md).
+#
+# One shape, for anything that writes this file: `owners:` is a map of `schema.table: <owner repo>`. The gate also reads
+# a bare map or a list of {table, owner} (tolerant reader), but nothing should write those.
+#
+# Seeded from decisions D6 (ruled by OFFLINE-01, 11 Nov 2026; specs offline-first/decisions.md) and spec section 5.1: the 26
+# tables that no current repo creates. The repo that creates and migrates a table owns it; every other writer lists it under
+# `foreign_changes:` in its data.yaml and names that owner. orbit_orgs 17, iap_web_commerce 8, broadcast_audience 1.
+# GIT-01 regenerates this file from every repo's data.yaml and inventory as owners are settled.
+owners:
+  meta.disciple: orbit_orgs
+  meta.event: orbit_orgs
+  meta.event_attendee: orbit_orgs
+  meta.event_ticket_booking: orbit_orgs
+  meta.influencers: orbit_orgs
+  meta.item_orders: iap_web_commerce
+  meta.item_payment_refunds: iap_web_commerce
+  meta.item_payments: iap_web_commerce
+  meta.org_creation_request: orbit_orgs
+  meta.org_member_join_request: orbit_orgs
+  meta.organization: orbit_orgs
+  meta.organization_multi_tenants_config: orbit_orgs
+  meta.organization_relationships: orbit_orgs
+  meta.organization_subscription_plan: iap_web_commerce
+  meta.user_subscription: iap_web_commerce
+  meta.user_subscription_plan: iap_web_commerce
+  meta.user_subscription_plan_widget: iap_web_commerce
+  meta.wallet: iap_web_commerce
+  org_n.local_user: orbit_orgs
+  org_n.org_broadcast: broadcast_audience
+  org_n.org_leads: orbit_orgs
+  org_n.org_question: orbit_orgs
+  org_n.org_question_override: orbit_orgs
+  org_n.org_user_type: orbit_orgs
+  org_n.organization: orbit_orgs
+  taxo.field_registry: orbit_orgs
