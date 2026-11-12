@@ -434,7 +434,97 @@ LB_CHANGES = ("createTable", "addColumn", "dropColumn", "renameColumn", "modifyD
               "createIndex", "dropIndex", "addUniqueConstraint")
 
 
+def _sval(node):
+    return node.value if isinstance(node, yaml.ScalarNode) else None
+
+
+def _mget(node, key):
+    """The value node of `key` in a mapping node, or None."""
+    if isinstance(node, yaml.MappingNode):
+        for k, v in node.value:
+            if _sval(k) == key:
+                return v
+    return None
+
+
+def lb_entries(text):
+    """Every (key node, value node) pair of a YAML changelog in document order, block or flow style, quoted keys too; None when
+    the text is not YAML we can read (aliases are refused), so the caller falls back to the line scanner."""
+    if yaml is None:
+        return None
+    try:
+        docs = [d for d in yaml.compose_all(text, Loader=_no_alias_loader()) if d is not None]
+    except (yaml.YAMLError, RecursionError):
+        return None
+    out, stack = [], list(reversed(docs))
+    while stack:  # iterative: a deeply nested file cannot exhaust the stack
+        n = stack.pop()
+        if isinstance(n, yaml.MappingNode):
+            out.extend(n.value)
+            stack.extend(v for _, v in reversed(n.value))
+        elif isinstance(n, yaml.SequenceNode):
+            stack.extend(reversed(n.value))
+    return out
+
+
+def _lb_column_names(columns):
+    """(name, line) of each column in a Liquibase `columns:` list, whether an item is {column: {name: x}} or {name: x}."""
+    for item in (columns.value if isinstance(columns, yaml.SequenceNode) else []):
+        node = _mget(item, "column") or item
+        name = _mget(node, "name")
+        if _sval(name):
+            yield _sval(name).lower(), name.start_mark.line + 1
+
+
+def liquibase_events_yaml(src, res, entries):
+    evs = []
+    for k, v in entries:
+        kind = _sval(k)
+        if kind not in LB_CHANGES or not isinstance(v, yaml.MappingNode):
+            continue
+        get = lambda key: _sval(_mget(v, key))  # noqa: E731
+        tname, old, cols, drops = get("tableName"), "", {}, set()
+        if kind in ("createTable", "addColumn"):
+            cols = dict(_lb_column_names(_mget(v, "columns")))
+        elif kind == "dropColumn":
+            drops = {c for c, _ in _lb_column_names(_mget(v, "columns"))} | ({get("columnName").lower()} if get("columnName") else set())
+        elif kind == "renameColumn":
+            if get("oldColumnName"):
+                drops.add(get("oldColumnName").lower())
+            if get("newColumnName"):
+                cols[get("newColumnName").lower()] = _mget(v, "newColumnName").start_mark.line + 1
+        elif kind == "renameTable":
+            old, tname = get("oldTableName") or tname, get("newTableName")
+        schema = get("schemaName")
+        qualify = lambda n: res.qualify(f"{schema}.{n}" if schema and "." not in n else n) if n else None  # noqa: E731
+        op = {"createTable": "create", "dropTable": "drop", "renameTable": "rename", "createIndex": "index",
+              "dropIndex": "index", "addUniqueConstraint": "index"}.get(kind, "alter")
+        line = k.start_mark.line + 1
+        end = max(line, v.end_mark.line + (0 if v.end_mark.column == 0 else 1))
+        evs.append(Ev(qualify(tname), op, src.path, line, end, cols, drops, raw=tname or "", old=qualify(old) or ""))
+    return evs
+
+
+def lb_refs(text):
+    """[(how, path)] of the files a changelog names: sqlFile path, include file, includeAll path. Read as YAML (block, flow,
+    quoted) and also by line pattern; the union, so neither reader's blind spot is a way past."""
+    refs = {(how, r) for how, rx in LB_REFS for r in re.findall(rx, text)}
+    for k, v in lb_entries(text) or []:
+        how = {"sqlFile": "sql", "include": "include", "includeAll": "all"}.get(_sval(k))
+        ref = _sval(_mget(v, "file" if how == "include" else "path")) if how else None
+        if ref:
+            refs.add((how, ref))
+    return sorted(refs)
+
+
 def liquibase_events(src, res):
+    entries = lb_entries(src.text)
+    if entries is not None:
+        return liquibase_events_yaml(src, res, entries) + sql_events(src, res, masked=False)
+    return _liquibase_lines(src, res)
+
+
+def _liquibase_lines(src, res):
     lines = src.text.split("\n")
     evs, i = [], 0
     while i < len(lines):
@@ -479,30 +569,36 @@ def liquibase_events(src, res):
 
 
 # ── knex ─────────────────────────────────────────────────────────────────────────────────────────────────
-RE_KNEX = re.compile(r"\b(?:schema|knex\.schema)\s*\.\s*(createTable|alterTable|renameTable|dropTable|dropTableIfExists|createTableIfNotExists)\s*\(\s*(?P<arg>[^,)]+)")
+# `schema.table(...)` is knex's alias of alterTable; `.withSchema('s')` may sit between `schema` and the call and names the schema
+RE_KNEX = re.compile(r"\b(?:schema|knex\.schema)\s*\.\s*(?:withSchema\(\s*['\"](?P<ws>[\w$]+)['\"]\s*\)\s*\.\s*)?"
+                     r"(?P<kind>createTable|alterTable|table|renameTable|dropTable|dropTableIfExists|createTableIfNotExists)\s*\(\s*(?P<arg>[^,)]+)")
+KNEX_CALL = re.compile(r"\bschema\s*\.\s*(?:withSchema\([^)]*\)\s*\.\s*)?(?:createTable|alterTable|table|renameTable|dropTable|"
+                       r"dropTableIfExists|createTableIfNotExists)\s*\(")
 KNEX_NOT_COLS = {"dropcolumn", "dropcolumns", "dropindex", "index", "unique", "foreign", "primary", "dropforeign", "dropprimary",
                  "dropunique", "comment", "engine", "charset", "collate", "renamecolumn", "specifictype", "inherits"}
 
 
-def knex_table(arg, res):
+def knex_table(arg, res, schema=None):
     arg = arg.strip()
-    lit = re.match(r"^['\"`]([^'\"`]+)['\"`]$", arg)
+    name, lit = None, re.match(r"^['\"`]([^'\"`]+)['\"`]$", arg)
     if lit:
-        return res.qualify(lit.group(1))
-    mem = re.match(r"^\w+(?:\.(\w+)|\[['\"](\w+)['\"]\])$", arg)
-    if mem:
-        key = mem.group(1) or mem.group(2)
-        val = res.tables_json.get(key) or res.tables_json.get(key.upper()) or res.tables_json.get(key.lower())
-        if isinstance(val, str):
-            return res.qualify(val)
-    return None
+        name = lit.group(1)
+    else:
+        mem = re.match(r"^\w+(?:\.(\w+)|\[['\"](\w+)['\"]\])$", arg)
+        if mem:
+            key = mem.group(1) or mem.group(2)
+            val = res.tables_json.get(key) or res.tables_json.get(key.upper()) or res.tables_json.get(key.lower())
+            name = val if isinstance(val, str) else None
+    if name is None:
+        return None
+    return res.qualify(f"{schema}.{name}" if schema and "." not in name else name)
 
 
 def knex_builder_events(src, res):
     evs = []
     for m in RE_KNEX.finditer(src.text):
-        kind, start = m.group(1), m.start()
-        table = knex_table(m.group("arg"), res)
+        kind, start = m.group("kind"), m.start()
+        table = knex_table(m.group("arg"), res, m.group("ws"))
         depth, j, seen = 0, m.end(), False
         while j < len(src.text):
             c = src.text[j]
@@ -525,7 +621,7 @@ def knex_builder_events(src, res):
                 for nm in ("created_at", "updated_at"):
                     cols[nm] = src.line(m.end() + cm.start())
         drops = {cm.group(1).lower() for cm in re.finditer(r"\.dropColumn\(\s*['\"]([\w$]+)", body)}
-        op = {"createTable": "create", "createTableIfNotExists": "create", "alterTable": "alter", "renameTable": "rename"}.get(kind, "drop")
+        op = {"createTable": "create", "createTableIfNotExists": "create", "alterTable": "alter", "table": "alter", "renameTable": "rename"}.get(kind, "drop")
         evs.append(Ev(table, op, src.path, src.line(start), src.line(j), cols, drops, raw=m.group("arg").strip()))
     return evs
 
@@ -689,7 +785,7 @@ def extract(src, kind, res, ctx):
         return sql_events(src, res, masked=False)
     if p.endswith((".ts", ".js")):
         evs = fix_placeholders(src, res, sql_events(src, res, masked=False))
-        if re.search(r"\bschema\s*\.\s*(?:createTable|alterTable|renameTable|dropTable)", src.text):
+        if RE_KNEX.search(src.text):
             evs += knex_builder_events(src, res)
         return evs + mongoose_events(src, res, ctx) + driver_events(src, res, ctx)
     return []
@@ -730,7 +826,7 @@ class Blobs:
             data = self.proc.stdout.read(int(head[2]))  # a gitlink is a commit, and an unread body shifts every later answer
             self.proc.stdout.read(1)
             if head[1] == b"blob":
-                text = data.decode("utf-8", "replace") if len(data) < 2_000_000 else None
+                text = data.decode("utf-8-sig", "replace") if len(data) < 2_000_000 else None  # -sig: drop a BOM
         self.cache[path] = text
         return text
 
@@ -979,21 +1075,20 @@ class Tree:
         while queue and budget:
             budget -= 1
             p = queue.pop()
-            for how, rx in LB_REFS:
-                for ref in re.findall(rx, text_of(p) or ""):
-                    for c in (os.path.normpath(os.path.join(os.path.dirname(p), ref)), os.path.normpath(ref)):
-                        found = [f for f in tracked if f.startswith(c + "/")] if how == "all" and c != "." else \
-                            [c] if c in tracked_set else []
-                        found = [f for f in found if f not in self.events and f not in links and text_of(f) is not None
-                                 and (how == "sql" or f.endswith((".yaml", ".yml", ".sql")))]
-                        for f in found:
-                            kind = "liquibase" if f.endswith((".yaml", ".yml")) else "sql"
-                            self.schema_files[f] = kind
-                            self.events[f] = extract(Src(f, text_of(f)), kind, res, ctx)
-                            if kind == "liquibase":
-                                queue.append(f)
-                        if found:
-                            break
+            for how, ref in lb_refs(text_of(p) or ""):
+                for c in (os.path.normpath(os.path.join(os.path.dirname(p), ref)), os.path.normpath(ref)):
+                    found = [f for f in tracked if f.startswith(c + "/")] if how == "all" and c != "." else \
+                        [c] if c in tracked_set else []
+                    found = [f for f in found if f not in self.events and f not in links and text_of(f) is not None
+                             and (how == "sql" or f.endswith((".yaml", ".yml", ".sql")))]
+                    for f in found:
+                        kind = "liquibase" if f.endswith((".yaml", ".yml")) else "sql"
+                        self.schema_files[f] = kind
+                        self.events[f] = extract(Src(f, text_of(f)), kind, res, ctx)
+                        if kind == "liquibase":
+                            queue.append(f)
+                    if found:
+                        break
         self.created, self.cols = build_knowledge(self.events)
         self.created |= self.model_names
         for p, colls in model_map.items():
@@ -1210,7 +1305,7 @@ def judge_trees(repo, mode, owners_path, mb, head_text, base_text, calling_repo=
         for ev in sql_events(src, new.res, masked=p.endswith(".sql")):
             if any(ln in lines for ln in range(ev.line, ev.end + 1)):
                 hits.append((ev.line, "DDL on " + clean(ev.raw)))
-        for m in re.finditer(r"createTable\(|\bcreateIndex\b", text):
+        for m in list(re.finditer(r"createTable\(|\bcreateIndex\b", text)) + list(KNEX_CALL.finditer(text)):
             if src.line(m.start()) in lines:
                 hits.append((src.line(m.start()), clean(m.group(0))))
         for m in list(RE_COLL.finditer(text)) + list(RE_MODEL.finditer(text)):

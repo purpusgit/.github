@@ -940,6 +940,60 @@ class CriticRound4(unittest.TestCase):
                 self.assertEqual(os.path.lexists(os.path.join(work, ".declaration-gate-src")), mode == "block", mode)  # report removed the link
 
 
+# ── the fifth critic's round on #127 @e80cfba: one MAJOR and two MINORs (relayed by GIT-01) ───────────────────
+KNEX_CFG = data(schema_paths=(("migrations/*/*.js", "knex"),), default_schema="shop")
+
+
+class CriticRound5(unittest.TestCase):
+    def test_major_knex_with_schema_uses_that_schema(self):
+        js = "exports.up = (knex) => knex.schema.withSchema('billing').createTable('invoices', (table) => {\n  table.increments('id');\n  table.string('card_token');\n});\n"
+        rep, t = touches({"declarations/data.yaml": KNEX_CFG}, {"migrations/0.0.1/a.js": js})
+        self.assertEqual(t, {"billing.invoices": (["create"], ["card_token", "id"])})
+
+    def test_major_knex_table_is_the_alias_of_alter_table(self):
+        js = "exports.up = (knex) => knex.schema.table('orders', (t) => {\n  t.string('note');\n  t.dropColumn('old');\n});\n"
+        rep, t = touches({"declarations/data.yaml": KNEX_CFG}, {"migrations/0.0.1/a.js": js})
+        self.assertEqual(t, {"shop.orders": (["alter"], ["note"])})
+        js = "exports.up = (knex) => knex.schema.withSchema('billing').table('invoices', (t) => { t.string('api_token'); });\n"
+        _, t = touches({"declarations/data.yaml": KNEX_CFG}, {"migrations/0.0.2/b.js": js})
+        self.assertEqual(t, {"billing.invoices": (["alter"], ["api_token"])})
+
+    def test_major_the_dc10_scan_sees_the_same_knex_calls_outside_schema_paths(self):
+        base = {"declarations/data.yaml": KNEX_CFG}
+        for call in ("knex.schema.table('t', (x) => { x.string('a'); })", "knex.schema.withSchema('s').createTable('t', (x) => {})",
+                     "db.schema.alterTable('t', (x) => {})", "knex.schema.withSchema('s').table('t', (x) => {})"):
+            rep = run(base, {"src/scripts/fix.js": f"await {call};\n"})
+            self.assertEqual(rules(rep), [("DC10", "-")], call)
+        self.assertEqual(rules(run(base, {"src/scripts/fix.js": "console.table(rows);\n"})), [])  # not the schema builder
+
+    def test_minor_a_utf8_bom_does_not_hide_the_first_line(self):
+        rep = run({"declarations/data.yaml": data()}, {"migrations/001.sql": "\ufeff" + CREATE_T}, "block")
+        self.assertEqual(rules(rep, "error"), [("DC1", "svc.t")])
+        # and a BOM on data.yaml itself is read, not rejected
+        d = make_repo(NEW_T[0], {"migrations/001.sql": CREATE_T, "declarations/data.yaml": "\ufeff" + data([T_ENTRY])})
+        self.assertEqual(rules(G.judge(d, "main", "block"), "error"), [])
+
+    def test_minor_flow_style_and_quoted_key_liquibase_yaml_is_parsed_as_yaml(self):
+        yml = ("databaseChangeLog:\n  - changeSet:\n      id: 1\n      author: a\n      changes:\n"
+               "        - createTable: {tableName: flowed, columns: [{column: {name: id, type: int}}, {column: {name: api_key_ct, type: varbinary}}]}\n"
+               "        - \"addColumn\": {\"tableName\": \"flowed\", \"columns\": [{\"column\": {\"name\": \"color\"}}]}\n"
+               "        - 'renameColumn': {tableName: flowed, oldColumnName: color, newColumnName: shade}\n")
+        rep, t = touches(LB_BASE, {"changelogs/001.yaml": yml})
+        self.assertEqual(t, {"purpus_auth.flowed": (["alter", "create"], ["api_key_ct", "id", "shade"])})
+
+    def test_minor_flow_style_references_are_followed_too(self):
+        hidden = "CREATE TABLE purpus_auth.hidden (id INT);\n"
+        cases = {
+            "sqlFile": ({"changelogs/001.yaml": "databaseChangeLog:\n  - sqlFile: {path: ../docs/ddl.sql, relativeToChangelogFile: true}\n",
+                         "docs/ddl.sql": hidden}, "purpus_auth.hidden"),
+            "include": ({"changelogs/001.yaml": "databaseChangeLog:\n  - include: {file: ../tests/inc.yaml, relativeToChangelogFile: true}\n",
+                         "tests/inc.yaml": "databaseChangeLog:\n  - createTable: {tableName: viainclude, columns: [{column: {name: id}}]}\n"},
+                        "purpus_auth.viainclude"),
+        }
+        for name, (head, table) in cases.items():
+            self.assertEqual(rules(run(LB_BASE, head, "block"), "error"), [("DC1", table)], name)
+
+
 # ── part 4: modes and output ─────────────────────────────────────────────────────────────────────────────
 def main_in(base, head, *args):
     d = make_repo(base, head)
