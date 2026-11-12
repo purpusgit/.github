@@ -24,6 +24,11 @@ name: Reusable — Declaration gate (a new or changed table needs its entry)
 #
 # (`exclude` as a bare string and `{ keep: "<reason>" }` are read too, but write the `{decision, reason}` form.)
 # Who owns a table that another repo changes: declarations/owners.yaml in this repo (DC7 b), `owners:` as `schema.table: owner repo`.
+#
+# A repo cannot declare its own table as a foreign change: if owners.yaml names the calling repo as the table's owner (or the
+# foreign_changes item does), the table needs an entry like any other. Repo names are compared with `service_` removed:
+# service_orbit_orgs = orbit_orgs (owners.yaml names repos without it). A foreign_changes item can carry its own `secret_like:`
+# for secret-like columns it adds, answered the same way as in an entry.
 
 on:
   workflow_call:
@@ -68,8 +73,11 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
+      # Every python call here is isolated (`-I`): this step's working directory is the PR's checkout, and without `-I` a
+      # `yaml.py` or `pip/` committed in the PR would be imported and run on this runner. The fallback installs into a
+      # directory of ours (`--target`), because `-I` also ignores the user site.
       - name: Install PyYAML if the runner lacks it
-        run: python3 -c "import yaml" 2>/dev/null || python3 -m pip install --quiet --user "pyyaml==6.0.2"
+        run: python3 -I -c "import yaml" 2>/dev/null || python3 -I -m pip install --quiet --target "${RUNNER_TEMP}/pydeps" "pyyaml==6.0.2"
 
       - name: Judge the tables this PR touches
         env:
@@ -78,8 +86,12 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --no-tags --quiet origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
-          python3 .declaration-gate-src/scripts/declaration_gate.py \
-            --repo . \
+          # Run from our own checkout, never the PR's: python puts the working directory and the script's directory on its
+          # path, and only the second is ours. PYTHONPATH is the install step's directory (`-I` would ignore it); `-s` drops
+          # the user site.
+          cd .declaration-gate-src
+          PYTHONPATH="${RUNNER_TEMP}/pydeps" python3 -s scripts/declaration_gate.py \
+            --repo "${GITHUB_WORKSPACE}" \
             --base-ref "origin/${BASE_REF}" \
             --mode "${MODE}" \
-            --owners .declaration-gate-src/declarations/owners.yaml
+            --owners declarations/owners.yaml

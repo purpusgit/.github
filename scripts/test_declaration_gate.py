@@ -13,6 +13,7 @@ import contextlib
 import io
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -66,14 +67,14 @@ def entry(table, fields, **over):
     return e
 
 
-def run(base, head, mode="report", owners=None):
+def run(base, head, mode="report", owners=None, repo=None):
     d = make_repo(base, head)
     own = None
     if owners is not None:
         own = os.path.join(d, ".owners.yaml")
         with open(own, "w") as fh:
             fh.write(yaml.safe_dump(owners))
-    return G.judge(d, "main", mode, own)
+    return G.judge(d, "main", mode, own, calling_repo=repo)
 
 
 def rules(rep, level=None):
@@ -424,9 +425,11 @@ class SqlExtractor(unittest.TestCase):
         self.assertEqual(t, {"svc.t": (["create"], ["extra"])})
         self.assertEqual(rules(rep), [("DC6", "svc.t")])  # the table was not created here, so not every column is new
 
-    def test_a_pure_rename_of_a_schema_file_touches_nothing(self):
+    def test_a_renamed_schema_file_counts_as_added_so_nothing_hides_in_a_move(self):
+        # No rename detection: a moved file is all-new lines, so its tables are touched (see CriticRound1 for the hole this closes).
         rep, t = touches(BASE_T, {"migrations/001.sql": None, "migrations/001_renamed.sql": CREATE_T})
-        self.assertEqual(t, {})
+        self.assertEqual(t, {"svc.t": (["create"], [])})  # touched, but the table had these columns at the merge base: none are new
+        self.assertEqual(rules(rep), [("DC1", "svc.t")])
 
     def test_only_touched_tables_are_judged_the_rest_is_inventory(self):
         base = dict(BASE_T, **{"migrations/005.sql": "CREATE TABLE svc.older (id INT);\n"})
@@ -613,6 +616,95 @@ class OffLineRuling(unittest.TestCase):
         rep = run(base, {"orbit-social/models/schema/posts_collection.schema.js": POSTS_HEAD_SCHEMA})
         self.assertIn(line, G.render(rep, "main").lower())
         self.assertNotIn(line, G.render(run(BASE_T, {"migrations/002.sql": "ALTER TABLE svc.t ADD COLUMN z INT;\n"}), "main").lower())
+
+
+# ── the fresh critic's round on #127 @2144157: four MAJORs and two MINORs (relayed by GIT-01) ─────────────────
+ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+WORKFLOW = os.path.join(ROOT, ".github", "workflows", "reusable-declaration-gate.yml")
+HOSTILE_YAML = "import os\nopen(os.environ['PWN'], 'w').write('a PR file ran on the runner')\n"
+OWN_FOREIGN_BASE = {"declarations/data.yaml": data(default_schema="meta"), "migrations/001.sql": "CREATE TABLE meta.other (id INT);\n"}
+ALTER_ORG = "ALTER TABLE meta.organization ADD COLUMN access_token_ct VARBINARY(64);\n"
+
+
+def foreign_pr(table, owner, **item):
+    cfg = data([], default_schema="meta", foreign_changes=[{"table": table, "owner": owner, "reason": "x", **item}])
+    return {"migrations/002.sql": f"ALTER TABLE {table} ADD COLUMN access_token_ct VARBINARY(64);\n", "declarations/data.yaml": cfg}
+
+
+class CriticRound1(unittest.TestCase):
+    def test_major1_a_pr_checkout_cannot_shadow_the_workflows_python(self):
+        with open(WORKFLOW, encoding="utf-8") as fh:
+            steps = {s.get("name", ""): s for s in yaml.safe_load(fh)["jobs"]["declaration-gate"]["steps"]}
+        install = next(s["run"] for n, s in steps.items() if n.startswith("Install PyYAML"))
+        judge = next(s["run"] for n, s in steps.items() if n.startswith("Judge"))
+        with tempfile.TemporaryDirectory() as tmp:
+            work = make_repo({"declarations/data.yaml": data()},
+                             {"migrations/001.sql": CREATE_T, "yaml.py": HOSTILE_YAML, "pip/__init__.py": HOSTILE_YAML, "pip/__main__.py": HOSTILE_YAML})
+            origin = os.path.join(tmp, "origin.git")
+            sh(tmp, "git", "init", "-q", "--bare", "-b", "main", origin)
+            sh(work, "git", "remote", "add", "origin", origin)
+            sh(work, "git", "push", "-q", "origin", "main")
+            src = os.path.join(work, ".declaration-gate-src")  # what the second checkout step puts there
+            os.makedirs(os.path.join(src, "scripts")); os.makedirs(os.path.join(src, "declarations"))
+            shutil.copy(os.path.join(ROOT, "scripts", "declaration_gate.py"), os.path.join(src, "scripts"))
+            shutil.copy(SEED, os.path.join(src, "declarations"))
+            marker = os.path.join(tmp, "PWNED")
+            env = {**os.environ, "PWN": marker, "GITHUB_WORKSPACE": work, "RUNNER_TEMP": tmp, "MODE": "report", "BASE_REF": "main",
+                   "GITHUB_STEP_SUMMARY": os.path.join(tmp, "summary.md"), "GITHUB_REPOSITORY": "purpusgit/service_x"}
+            for name, script in (("install", install), ("judge", judge)):
+                r = subprocess.run(["bash", "-eo", "pipefail", "-c", script], cwd=work, env=env, capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0, f"{name}: {r.stderr[-400:]}")
+            self.assertFalse(os.path.exists(marker), "a file from the PR checkout was imported and ran on the runner")
+            with open(os.path.join(tmp, "summary.md")) as fh:
+                self.assertIn("DC1", fh.read())  # and the gate itself still ran and judged the PR
+
+    def test_major2_a_pr_gitattributes_cannot_hide_the_diff(self):
+        head = {".gitattributes": "*.sql -diff\n*.sql binary\n", "migrations/001.sql": CREATE_T}
+        self.assertEqual(rules(run({"declarations/data.yaml": data()}, head)), [("DC1", "svc.t")])
+
+    def test_major3_moving_an_excluded_file_into_schema_paths_is_not_invisible(self):
+        base = {"declarations/data.yaml": data(), "tests/fx.sql": CREATE_T}
+        rep = run(base, {"tests/fx.sql": None, "migrations/002.sql": CREATE_T})
+        self.assertEqual(rules(rep), [("DC1", "svc.t")])
+
+    def test_major4_a_repo_cannot_declare_its_own_table_as_foreign(self):
+        # the critic's case: orbit_orgs, meta.organization (owners.yaml: orbit_orgs) + a secret-like column, listed as a foreign change
+        for name in ("service_orbit_orgs", "purpusgit/service_orbit_orgs", "orbit_orgs", "Service_Orbit_Orgs"):
+            d = make_repo(OWN_FOREIGN_BASE, foreign_pr("meta.organization", "goalcaller_contact_graph"))
+            errs = rules(G.judge(d, "main", "report", SEED, calling_repo=name), "error")
+            self.assertEqual(errs, [("DC1", "meta.organization"), ("DC7", "meta.organization")], name)
+
+    def test_major4_the_item_naming_the_calling_repo_as_owner_is_refused_even_without_owners_yaml(self):
+        d = make_repo(OWN_FOREIGN_BASE, foreign_pr("meta.zzz_unlisted", "service_orbit_orgs"))
+        errs = rules(G.judge(d, "main", "report", None, calling_repo="purpusgit/service_orbit_orgs"), "error")
+        self.assertIn(("DC7", "meta.zzz_unlisted"), errs)
+
+    def test_major4_another_repo_may_still_declare_the_real_owners_table(self):
+        d = make_repo(OWN_FOREIGN_BASE, foreign_pr("meta.organization", "orbit_orgs", secret_like={"access_token_ct": {"decision": "exclude"}}))
+        rep = G.judge(d, "main", "block", SEED, calling_repo="purpusgit/service_iap_web_commerce")
+        self.assertEqual(rules(rep, "error"), [])
+
+    def test_major4_secret_like_columns_added_by_a_foreign_change_need_a_decision(self):
+        d = make_repo(OWN_FOREIGN_BASE, foreign_pr("meta.organization", "orbit_orgs"))
+        rep = G.judge(d, "main", "report", SEED, calling_repo="service_iap_web_commerce")
+        self.assertEqual(rules(rep, "error"), [("DC5", "meta.organization")])
+        for decl in ({"decision": "exclude"}, {"decision": "keep", "reason": "the owner needs it on the device"}):
+            d = make_repo(OWN_FOREIGN_BASE, foreign_pr("meta.organization", "orbit_orgs", secret_like={"access_token_ct": decl}))
+            self.assertEqual(rules(G.judge(d, "main", "report", SEED, calling_repo="service_iap_web_commerce"), "error"), [])
+
+    def test_minor_a_foreign_table_missing_from_owners_yaml_warns_but_a_listed_one_still_checks(self):
+        d = make_repo(OWN_FOREIGN_BASE, foreign_pr("meta.zzz_unlisted", "someone"))
+        rep = G.judge(d, "main", "block", SEED, calling_repo="service_x")
+        self.assertEqual([(f["rule"], f["level"]) for f in rep.findings if f["rule"] == "DC7"], [("DC7", "warning")])
+        d = make_repo(OWN_FOREIGN_BASE, foreign_pr("meta.wallet", "orbit_orgs"))  # seeded: iap_web_commerce owns it
+        rep = G.judge(d, "main", "block", SEED, calling_repo="service_x")
+        self.assertEqual([(f["rule"], f["level"]) for f in rep.findings if f["rule"] == "DC7"], [("DC7", "error")])
+
+    def test_minor_an_unreadable_schema_file_is_an_error_in_block_mode_a_warning_in_report(self):
+        big = "-- " + "x" * 2_100_000 + "\n" + CREATE_T
+        base, head = {"declarations/data.yaml": data()}, {"migrations/001.sql": big}
+        self.assertEqual([(f["rule"], f["level"]) for f in run(base, head, "block").findings], [("DC9", "error")])
+        self.assertEqual([(f["rule"], f["level"]) for f in run(base, head, "report").findings], [("DC9", "warning")])
 
 
 # ── part 4: modes and output ─────────────────────────────────────────────────────────────────────────────

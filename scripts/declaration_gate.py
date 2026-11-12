@@ -695,7 +695,9 @@ class Blobs:
 
 
 def added_lines(repo, mb):
-    out = git(repo, "diff", "--unified=0", "--no-color", "-M", mb, "HEAD")
+    # --text: a PR's .gitattributes (`*.sql -diff`) must not turn the diff into "Binary files differ"; --no-renames: a file moved
+    # out of exclude_paths into schema_paths must count as added, not as a rename with no hunks; no textconv or external diff.
+    out = git(repo, "diff", "--unified=0", "--no-color", "--text", "--no-textconv", "--no-ext-diff", "--no-renames", mb, "HEAD")
     files, cur = {}, None
     for ln in out.splitlines():
         if ln.startswith("+++ "):
@@ -802,6 +804,13 @@ def load_cfg(read):
 def norm_table(name, default_schema):
     n = str(name).strip().strip("`\"").lower()
     return n if "." in n or not default_schema else f"{default_schema.lower()}.{n}"
+
+
+def canon_repo(name):
+    """The same repo under its different spellings: `purpusgit/service_orbit_orgs`, `service_orbit_orgs` and `orbit_orgs`
+    (owners.yaml names repos without the `service_` prefix) all become `orbit_orgs`."""
+    n = str(name or "").strip().lower().rsplit("/", 1)[-1]
+    return n[len("service_"):] if n.startswith("service_") else n
 
 
 def load_owners(path):
@@ -915,16 +924,16 @@ class Tree:
                         self.cols.setdefault(coll, {}).setdefault(fm.group(1), (p, i))
 
 
-def judge(repo, base_ref, mode, owners_path=None):
+def judge(repo, base_ref, mode, owners_path=None, calling_repo=None):
     mb = git(repo, "merge-base", base_ref, "HEAD").strip()
     hb, bb = Blobs(repo, "HEAD"), Blobs(repo, mb)
     try:
-        return judge_trees(repo, mode, owners_path, mb, hb.get, bb.get)
+        return judge_trees(repo, mode, owners_path, mb, hb.get, bb.get, calling_repo)
     finally:
         hb.close(); bb.close()
 
 
-def judge_trees(repo, mode, owners_path, mb, head_text, base_text):
+def judge_trees(repo, mode, owners_path, mb, head_text, base_text, calling_repo=None):
     rep = Report(mode)
     added = added_lines(repo, mb)
     tracked = [p for p in git(repo, "ls-tree", "-r", "-z", "--name-only", "HEAD").split("\0") if p]
@@ -975,7 +984,8 @@ def judge_trees(repo, mode, owners_path, mb, head_text, base_text):
 
     for p in sorted(added):
         if kind_of(p) and head_text(p) is None:
-            rep.add("DC9", "-", "schema path changed but the file could not be read (over 2 MB?); its tables are not judged", p)
+            rep.add("DC9", "-", "schema path changed but the file could not be read (over 2 MB?); its tables are not judged", p,
+                    level="error" if mode == "block" else None)  # block: an unjudged schema file must not pass
 
     # ── what this PR touches ─────────────────────────────────────────────────────────────────────────────
     touched = {}
@@ -999,6 +1009,7 @@ def judge_trees(repo, mode, owners_path, mb, head_text, base_text):
 
     # ── the rules, table by table ────────────────────────────────────────────────────────────────────────
     owners = load_owners(owners_path)
+    me = canon_repo(calling_repo)
     for t in sorted(touched):
         info = touched[t]
         if excluded_table(t):
@@ -1015,16 +1026,36 @@ def judge_trees(repo, mode, owners_path, mb, head_text, base_text):
         entry, where = entries.get(t), (info["file"], info["line"])
         if entry is None and t not in new.created:
             f = foreign_decl.get(t)
+            if me and me in (canon_repo((owners or {}).get(t)), canon_repo((f or {}).get("owner"))):
+                # the calling repo owns this table (owners.yaml) or the item says it does: not a foreign change, so no
+                # shortcut past DC2 to DC6. It needs an entry like any table of its own.
+                if f is not None:
+                    rep.add("DC7", t, "is listed under foreign_changes, but this repo owns the table (owners.yaml, or the "
+                            "item's owner): a foreign change names another repo. Give the table an entry instead.", *where)
+                rep.add("DC1", t, "is changed by this repo, which owns it, and has no entry in " + DATA, *where)
+                continue
             rep.foreign.append({"table": t, "owner": (f or {}).get("owner"), "cols": sorted(added_cols)})
             if f is None:
                 rep.add("DC7", t, "changes a table this repo does not create and has no entry for; list it under "
                         "`foreign_changes:` with its owner", *where)
-            elif mode == "block":
+                continue
+            if mode == "block":
                 if owners is None:
                     rep.add("DC7", t, "owner not checked: declarations/owners.yaml does not exist yet", *where, level="warning")
-                elif owners.get(t) != f.get("owner"):
+                elif t not in owners:
+                    rep.add("DC7", t, "owner not checked: the table is not in owners.yaml yet (it is regenerated as owners "
+                            "are settled)", *where, level="warning")
+                elif canon_repo(owners[t]) != canon_repo(f.get("owner")):
                     rep.add("DC7", t, f"`{clean(f.get('owner'))}` is not the owner listed for this table in owners.yaml "
-                            f"(`{clean(owners.get(t))}`)", *where)
+                            f"(`{clean(owners[t])}`)", *where)
+            # DC5 also covers the secret-like columns a foreign change adds; the item answers it in its own secret_like
+            for c, ln in sorted(added_cols.items()):
+                if is_secret_like(c):
+                    d = decision(f.get("secret_like"), c)
+                    rep.secret_new.append({"table": t, "col": c, "decision": d})
+                    if d is None:
+                        rep.add("DC5", t, f"new column `{clean(c)}` looks like a secret; list it under the foreign_changes "
+                                "item's secret_like as `exclude`, or `keep` with a reason", info["file"], ln)
             continue
         if entry is None:
             rep.add("DC1", t, "is added or changed and has no entry in " + DATA + ". Add scope_class, placement, "
@@ -1176,13 +1207,14 @@ def main(argv=None):
     ap.add_argument("--base-ref", required=True)
     ap.add_argument("--mode", default="report")
     ap.add_argument("--owners", default=None)
+    ap.add_argument("--calling-repo", default=os.environ.get("GITHUB_REPOSITORY"))
     ap.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY"))
     a = ap.parse_args(argv)
     if a.mode not in ("report", "block"):
         print(f"::error title=declaration gate::mode must be `report` or `block`, got `{clean(a.mode)}`")
         return 2
     try:
-        rep = judge(a.repo, a.base_ref, a.mode, a.owners)
+        rep = judge(a.repo, a.base_ref, a.mode, a.owners, a.calling_repo)
     except GateError as e:
         print(f"::{'error' if a.mode == 'block' else 'warning'} title=declaration gate::{clean(e, 300)}")
         return 1 if a.mode == "block" else 0
