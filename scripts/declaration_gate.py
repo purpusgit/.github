@@ -974,6 +974,13 @@ def canon_repo(name):
     return n[len("service_"):] if n.startswith("service_") else n
 
 
+def owner_of(owners, table):
+    """The owner repo of a table in owners.yaml: its own row, else its schema's `schema.*` row, else None."""
+    if not owners:
+        return None
+    return owners.get(table) or owners.get(table.split(".")[0] + ".*") or None
+
+
 def load_owners(path):
     if not path or not os.path.isfile(path):
         return None
@@ -990,7 +997,8 @@ class Report:
     def __init__(self, mode):
         self.mode, self.findings = mode, []
         self.touched, self.added, self.secret_new, self.excluded, self.foreign, self.inventory, self.notes = {}, {}, [], [], [], [], []
-        self.removable, self.mongo, self.unmasked = [], False, []  # dropped tables whose entry can go; a Mongo inventory caveat; tables only the unmasked scan found
+        self.removable, self.mongo, self.unmasked = [], False, []
+        self.inventory_other, self.inventory_unknown = {}, []  # defined here but owned by another repo (owner -> tables); no owner in owners.yaml  # dropped tables whose entry can go; a Mongo inventory caveat; tables only the unmasked scan found
 
     def add(self, rule, table, msg, file=None, line=None, level=None):
         if rule in DISABLED:
@@ -1228,7 +1236,7 @@ def judge_trees(repo, mode, owners_path, mb, head_text, base_text, calling_repo=
         entry, where = entries.get(t), (info["file"], info["line"])
         if entry is None and t not in new.created:
             f = foreign_decl.get(t)
-            if me and me in (canon_repo((owners or {}).get(t)), canon_repo((f or {}).get("owner"))):
+            if me and me in (canon_repo(owner_of(owners, t)), canon_repo((f or {}).get("owner"))):
                 # the calling repo owns this table (owners.yaml) or the item says it does: not a foreign change, so no
                 # shortcut past DC2 to DC6. It needs an entry like any table of its own.
                 if f is not None:
@@ -1244,12 +1252,12 @@ def judge_trees(repo, mode, owners_path, mb, head_text, base_text, calling_repo=
             if mode == "block":
                 if owners is None:
                     rep.add("DC7", t, "owner not checked: declarations/owners.yaml does not exist yet", *where, level="warning")
-                elif t not in owners:
+                elif owner_of(owners, t) is None:
                     rep.add("DC7", t, "is not listed in declarations/owners.yaml, so its owner cannot be checked; ask GIT-01 to "
                             "regenerate the file with this table and its owner", *where)
-                elif canon_repo(owners[t]) != canon_repo(f.get("owner")):
+                elif canon_repo(owner_of(owners, t)) != canon_repo(f.get("owner")):
                     rep.add("DC7", t, f"`{clean(f.get('owner'))}` is not the owner listed for this table in owners.yaml "
-                            f"(`{clean(owners[t])}`)", *where)
+                            f"(`{clean(owner_of(owners, t))}`)", *where)
             # DC5 also covers the secret-like columns a foreign change adds; the item answers it in its own secret_like
             for c, ln in sorted(added_cols.items()):
                 if is_secret_like(c):
@@ -1343,7 +1351,20 @@ def judge_trees(repo, mode, owners_path, mb, head_text, base_text, calling_repo=
             rep.add("DC10", "-", f"{what} outside schema_paths. Add the path to schema_paths in {DATA} (judged under DC8), or "
                     "to exclude_paths with a reason.", p, ln)
 
-    rep.inventory = sorted(t for t in new.created if t not in entries and not excluded_table(t))
+    no_entry = sorted(t for t in new.created if t not in entries and not excluded_table(t))
+    if owners is None or not me:
+        rep.inventory = no_entry  # nothing to attribute with: the count stays the whole list
+    else:
+        # attribution (OFFLINE-01, specs#411 6845655596): this repo's own count holds only the tables owners.yaml does not
+        # give to another repo; the rest are counted by owner, and a table with no owner is a third bucket of its own.
+        for t in no_entry:
+            o = owner_of(owners, t)
+            if o is None:
+                rep.inventory_unknown.append(t)
+            elif canon_repo(o) == me:
+                rep.inventory.append(t)
+            else:
+                rep.inventory_other.setdefault(canon_repo(o), []).append(t)
     rep.mongo = bool(new.model_names) or any(k in ("mongoose", "mongodriver") for k in new.schema_files.values())
     return rep
 
@@ -1394,6 +1415,14 @@ def render(rep, base_ref):
     out += [f"- `{esc(t)}`" for t in rep.inventory[:50]]
     if len(rep.inventory) > 50:
         out.append(f"- ... and {len(rep.inventory) - 50} more")
+
+    def names(ts):
+        return ", ".join(f"`{esc(t)}`" for t in ts[:10]) + (f", ... and {len(ts) - 10} more" if len(ts) > 10 else "")
+    for o in sorted(rep.inventory_other):
+        ts = rep.inventory_other[o]
+        out.append(f"- defined here, owned by `{esc(o)}`: {len(ts)} table{'s' if len(ts) != 1 else ''} ({names(ts)})")
+    if rep.inventory_unknown:
+        out.append(f"- owner unknown: {len(rep.inventory_unknown)} ({names(rep.inventory_unknown)})")
     out += ["", *[f"_{esc(n)}_" for n in rep.notes]]
     return "\n".join(out) + "\n"
 
