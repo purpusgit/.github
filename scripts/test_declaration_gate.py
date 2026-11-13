@@ -545,6 +545,35 @@ class OtherStacks(unittest.TestCase):
         _, t = touches(BASE_T, {"migrations/002.sql": "CREATE TABLE __drizzle_migrations__ (id INT);\n"})
         self.assertEqual(sorted(t), ["svc.__drizzle_migrations__"])
 
+    def test_sql_built_by_string_concatenation_is_not_a_table(self):
+        # Real lines from service_orbit_orgs (sandbox 0095fb33): a backtick-quoted "name" that swallows quotes, commas and spaces.
+        for sql in ("SELECT CONCAT('ALTER TABLE `', TABLE_SCHEMA, '`.org_super_admin DROP COLUMN admin_password;') AS stmt;\n"
+                    "ALTER TABLE `', TABLE_SCHEMA, '`.org_super_admin DROP COLUMN admin_password;\n",   # src/migrations/drop_org_super_admin_admin_password.sql:89
+                    "SELECT CONCAT(\n'ALTER TABLE `', TABLE_SCHEMA, '`.`', TABLE_NAME, '` MODIFY COLUMN `gender` varchar(255) ',\nCOLUMN_TYPE, ';') AS stmt;\n"
+                    "ALTER TABLE `', TABLE_SCHEMA, '`.`', TABLE_NAME, '` MODIFY COLUMN `gender` varchar(255);\n"):  # gender_nullable.sql:52
+            with self.subTest(sql=sql[:50]):
+                rep, t = touches(BASE_T, sql_head(sql))
+                self.assertEqual(t, {})  # no table with quotes, commas or spaces in its name
+                self.assertEqual(set(codes(rep)), {"DC9"})  # reported as unresolved names instead, one per statement
+                for f in rep.findings:
+                    self.assertIn("could not resolve the table name", f["msg"])
+
+    def test_a_documentation_placeholder_table_is_not_a_table(self):
+        # service_orbit_orgs gender_nullable.sql:64 documents the per-tenant form with a `<table>` placeholder
+        sql = "ALTER TABLE `<tenant_schema>`.`<table>` MODIFY COLUMN `gender` varchar(255) NULL DEFAULT NULL;\n"
+        rep, t = touches(BASE_T, sql_head(sql))
+        self.assertEqual(t, {})
+        self.assertNotIn("org_n.<table>", [f["table"] for f in rep.findings])
+
+    def test_a_name_with_a_space_comma_quote_or_angle_bracket_never_resolves(self):
+        res = G.Resolver("svc")
+        for raw in ("`', a, '`.t", "`a b`", "`a,b`.t", "`<table>`", "`<s>`.`<t>`", '"x\'y"'):
+            with self.subTest(raw=raw):
+                self.assertIsNone(res.qualify(raw))
+        self.assertEqual(res.qualify("`t`"), "svc.t")  # a real identifier is unchanged
+        self.assertEqual(res.qualify("a.b"), "a.b")
+        self.assertEqual(res.qualify("`<schema>`.org_leads"), "org_n.org_leads")
+
     def test_a_bare_schema_name_is_not_a_table(self):
         # The orgs lines that made a row `org_n` (service_orbit_orgs sandbox 7d4bc70, src/migrations/org_leads_hardening.ts 127/139):
         # `${table(schema)}` is a helper call that builds the table's full name, so its name has no table part the gate can read.
