@@ -661,25 +661,69 @@ class ReviewFixes(unittest.TestCase):
 SEED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "declarations", "owners.yaml")
 
 
+D6_ROWS = {
+    "meta.disciple": "orbit_orgs",
+    "meta.event": "orbit_orgs",
+    "meta.event_attendee": "orbit_orgs",
+    "meta.event_ticket_booking": "orbit_orgs",
+    "meta.influencers": "orbit_orgs",
+    "meta.item_orders": "iap_web_commerce",
+    "meta.item_payment_refunds": "iap_web_commerce",
+    "meta.item_payments": "iap_web_commerce",
+    "meta.org_creation_request": "orbit_orgs",
+    "meta.org_member_join_request": "orbit_orgs",
+    "meta.organization": "orbit_orgs",
+    "meta.organization_multi_tenants_config": "orbit_orgs",
+    "meta.organization_relationships": "orbit_orgs",
+    "meta.organization_subscription_plan": "iap_web_commerce",
+    "meta.user_subscription": "iap_web_commerce",
+    "meta.user_subscription_plan": "iap_web_commerce",
+    "meta.user_subscription_plan_widget": "iap_web_commerce",
+    "meta.wallet": "iap_web_commerce",
+    "org_n.local_user": "orbit_orgs",
+    "org_n.org_broadcast": "broadcast_audience",
+    "org_n.org_leads": "orbit_orgs",
+    "org_n.org_question": "orbit_orgs",
+    "org_n.org_question_override": "orbit_orgs",
+    "org_n.org_user_type": "orbit_orgs",
+    "org_n.organization": "orbit_orgs",
+    "taxo.field_registry": "orbit_orgs",
+}
+
+
 class OffLineRuling(unittest.TestCase):
-    def test_the_seeded_owners_file_parses_in_the_one_shape_and_holds_d6s_26_owners(self):
+    def test_the_seeded_owners_file_parses_in_the_one_shape_and_keeps_d6s_26_owners_and_the_schema_rows(self):
         with open(SEED, encoding="utf-8") as fh:
             doc = G.load_yaml(fh.read())
         self.assertEqual(list(doc), ["owners"])  # one shape for anything that writes it: `owners:` a map of schema.table: owner
         owners = doc["owners"]
-        # the schema-wide rows (`schema.*`) come after D6's table rows (specs#411 6845655596)
-        schemas = {k: v for k, v in owners.items() if k.endswith(".*")}
-        self.assertEqual(schemas, {"purpus_user.*": "service_auth", "taxo.*": "service_orbit_orgs"})
-        owners = {k: v for k, v in owners.items() if k not in schemas}
-        self.assertEqual(len(owners), 26)
-        self.assertEqual(dict(collections.Counter(owners.values())), {"orbit_orgs": 17, "iap_web_commerce": 8, "broadcast_audience": 1})
-        for table, owner in owners.items():
-            self.assertRegex(table, r"^[a-z0-9_]+\.[a-z0-9_]+$")
-            self.assertRegex(owner, r"^[a-z0-9_]+$")
-        self.assertEqual(G.load_owners(SEED), {**owners, **schemas})
+        # the rows that existed before the wired repos' own tables were seeded win over any generated row, and are unchanged
+        self.assertEqual({k: owners[k] for k in D6_ROWS}, D6_ROWS)
+        self.assertEqual(dict(collections.Counter(D6_ROWS.values())), {"orbit_orgs": 17, "iap_web_commerce": 8, "broadcast_audience": 1})
+        self.assertEqual({k: v for k, v in owners.items() if k.endswith(".*")}, {"purpus_user.*": "service_auth", "taxo.*": "service_orbit_orgs"})
+        self.assertEqual(G.load_owners(SEED), owners)
         # the three contested rows, as D6 rules them
         self.assertEqual((owners["meta.event_ticket_booking"], owners["org_n.org_broadcast"], owners["meta.wallet"]),
                          ("orbit_orgs", "broadcast_audience", "iap_web_commerce"))
+
+    def test_the_seeded_owners_file_has_no_duplicate_keys_and_only_sane_rows(self):
+        # a YAML map silently keeps the last of two equal keys, so read the keys from the text
+        with open(SEED, encoding="utf-8") as fh:
+            text = fh.read()
+        keys = re.findall(r"^  ([^\s#][^:]*):", text, re.M)
+        self.assertEqual([k for k, n in collections.Counter(keys).items() if n > 1], [])
+        owners = G.load_owners(SEED)
+        self.assertEqual(len(keys), len(owners))
+        for table, owner in owners.items():
+            self.assertRegex(table, r"^[a-z0-9_]+\.(?:[a-z0-9_]+|\*)$")
+            self.assertRegex(owner, r"^[a-z0-9_]+$")
+        # master.* and orbit_japa.* stay unowned unless a ruling says otherwise
+        self.assertEqual([t for t in owners if t.startswith(("master.", "orbit_japa."))], [])
+        # an exact row never contradicts its schema's row
+        for table, owner in owners.items():
+            wild = owners.get(table.split(".")[0] + ".*")
+            if wild and not table.endswith(".*"):
+                self.assertEqual(G.canon_repo(owner), G.canon_repo(wild), table)
 
     def test_the_reader_stays_tolerant_of_the_other_shapes(self):
         with tempfile.TemporaryDirectory() as d:
