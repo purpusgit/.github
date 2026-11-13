@@ -42,6 +42,7 @@ owners:
 # ── Each wired repo's own tables (OFFLINE-01 Option A, specs#411 6845998757) ─────────────────────────────────────────────
 # One exact row per table, for the repo that both CREATES and MIGRATES it (D6), read by the gate's own extractor from the
 # `sandbox` heads: service_orbit_orgs 0095fb33, service_mongo_social 7c4f4c1a, service_inapp_chat 4956cc0c, service_orbit_analytics 244249ea.
+# A table whose only create sits in a CI stub (ci/*-sql-exec/) is not an owned table and has no row.
 # A table a schema row above already gives to the same repo (taxo.*) gets no row of its own.
 # A table created in two repos, or created in one and altered in another, is NOT here (it is listed in the PR for OFFLINE-01).
 # master.* and orbit_japa.* have no rows. Every row above this block wins over a generated one. Repo names are the real names;
@@ -117,22 +118,10 @@ owners:
   service_mongo_social.user_interactions: service_mongo_social
   service_mongo_social.user_sessions: service_mongo_social
   service_mongo_social.view_posts: service_mongo_social
-# service_orbit_analytics: 15
-  meta.event_tickets: service_orbit_analytics
-  meta.geo_area: service_orbit_analytics
-  meta.key_value: service_orbit_analytics
-  meta.super_admin_organizations: service_orbit_analytics
-  meta.user_created_org: service_orbit_analytics
-  meta.wallet_topup_option: service_orbit_analytics
+# service_orbit_analytics: 3
   orbit_ai.model_gate: service_orbit_analytics
   orbit_ai.org_ai_engine: service_orbit_analytics
   orbit_ai.org_ai_usage_month: service_orbit_analytics
-  org_n.org_broadcast_recipient: service_orbit_analytics
-  org_n.org_member: service_orbit_analytics
-  org_n.org_member_position: service_orbit_analytics
-  org_n.org_member_tree: service_orbit_analytics
-  org_n.org_non_living_member: service_orbit_analytics
-  org_n.org_tree_level_config: service_orbit_analytics
 # service_orbit_orgs: 50
   bkg_n.booking_availability_exception: service_orbit_orgs
   bkg_n.booking_availability_rule: service_orbit_orgs
