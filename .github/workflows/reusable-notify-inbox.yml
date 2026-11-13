@@ -41,6 +41,7 @@ jobs:
           owner: purpusgit
           repositories: specs
           permission-issues: write
+          permission-pull-requests: write   # inboxes are PRs; commenting on a PR needs this, issues: write alone gets 403
 
       - name: Post one line
         env:
