@@ -174,3 +174,10 @@ owners:
   org_n.org_whatsapp_notification_setting: service_orbit_orgs
   org_n.whatsapp_followups_state: service_orbit_orgs
   org_n.whatsapp_notification_log: service_orbit_orgs
+
+# D6 contested (OFFLINE-01, 13 Nov)
+  bkg_n.booking: service_orbit_orgs
+  bkg_n.booking_listing: service_orbit_orgs
+  meta.flavor_org_binding: service_orbit_orgs
+  meta.organization_privacy_setting: service_orbit_orgs
+  meta.course: service_orbit_orgs
