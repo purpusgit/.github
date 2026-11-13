@@ -12,6 +12,7 @@ owners:
   # stay unowned on purpose: the inventory counts them as "owner unknown" until someone settles them (OFFLINE-01, specs#411 6845655596).
   purpus_user.*: service_auth
   taxo.*: service_orbit_orgs
+  nlq.*: service_orbit_analytics   # db/nlq-db.sandbox.sql: applied to a database by db/nlq-apply.sh (specs#411 6846859258)
   meta.disciple: orbit_orgs
   meta.event: orbit_orgs
   meta.event_attendee: orbit_orgs
