@@ -634,6 +634,26 @@ class OtherStacks(unittest.TestCase):
         self.assertEqual(t["mongo_svc.custom_name"], (["alter"], ["flavour"]))  # the schema's collection option wins
         self.assertEqual(t["mongo_svc.audit"], (["create"], []))  # a new MongoCollections constant
 
+    def test_an_object_literal_in_a_file_with_no_model_is_not_a_collections_fields(self):
+        # DC9 "could not resolve the table name `<file>.ts`" on every TS file with an indented `key: {`; the names are the real ones
+        # the report-only runs showed (service_orbit_orgs, service_inapp_chat, service_orbit_analytics, 13 Nov).
+        cfg = data(schema_paths=(("src/**/*.ts", "auto"),), default_schema="svc")
+        body = "export const x = {\n  headers: {\n    a: 1,\n  },\n  args: [1, 2],\n  data: {\n    b: 2,\n  },\n};\n"
+        for name in ("index.ts", "organization.sql.ts", "influencers.ts", "upload.controller.ts", "japa-golden.ts", "nlq-eval.ts",
+                     "group-export.ts", "whatsapp-sender.controller.ts", "relations.ts", "module-knowledge.ts"):
+            with self.subTest(file=name):
+                rep, t = touches({"declarations/data.yaml": cfg}, {f"src/utils/{name}": body})
+                self.assertEqual(t, {})
+                self.assertEqual(codes(rep), [])  # no DC9 about the file's own name
+
+    def test_a_real_schema_file_whose_model_is_not_found_is_still_reported(self):
+        cfg = data(schema_paths=(("src/**/*.ts", "auto"),), default_schema="svc")
+        head = {"src/models/orphan.ts": "const OrphanSchema = new Schema({\n  name: {\n    type: String,\n  },\n});\n"}
+        rep, t = touches({"declarations/data.yaml": cfg}, head)
+        self.assertEqual(t, {})
+        self.assertEqual(codes(rep), ["DC9"])  # a Schema that no model registers is worth a warning
+        self.assertIn("orphan.ts", rep.findings[0]["msg"])
+
     def test_mongodb_driver_new_collection_but_not_a_read(self):
         cfg = data([entry("mongo_svc.known", ["a"])], schema_paths=(("src/**/*.ts", "mongodriver"),), default_schema="mongo_svc")
         head = {"src/db/mongo.ts": "await db.collection('audit_log').createIndex({ at: 1 });\nawait db.collection('known').find({});\n"}

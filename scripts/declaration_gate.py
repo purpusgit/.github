@@ -695,6 +695,7 @@ FIELD_NOT = {"type", "ref", "required", "default", "enum", "index", "unique", "v
              "toobject", "tojson", "minimize", "writeconcern", "message", "validator", "sort", "populate"}
 RE_FIELD = re.compile(r"^\s{2,}([A-Za-z_]\w*)\s*:\s*(?:\{|\[|String\b|Number\b|Boolean\b|Date\b|Buffer\b|Mixed\b|Map\b|"
                       r"Types\.|Schema\.Types|mongoose\.)")
+RE_SCHEMA_DEF = re.compile(r"\bSchema\s*(?:<[^>]*>)?\s*\(")  # new Schema({...}) / mongoose.Schema(...)
 RE_MODEL = re.compile(r"mongoose\s*\.\s*model\(\s*(?P<a>[^,]+?)\s*,\s*(?P<b>[A-Za-z_][\w.]*)\s*(?:,\s*['\"](?P<c>[^'\"]+)['\"])?\s*\)")
 RE_COLL = re.compile(r"\.\s*(?:collection|createCollection)\(\s*['\"]([\w.$-]+)['\"]\s*\)")
 
@@ -759,8 +760,11 @@ def mongoose_events(src, res, ctx):
         fm = RE_FIELD.match(m.group(0))
         if fm and fm.group(1).lower() not in FIELD_NOT:
             fields.setdefault(fm.group(1), src.line(m.start()))
+    colls = sorted(ctx.get("model_map", {}).get(src.path, set()))
+    if fields and not colls and not RE_SCHEMA_DEF.search(src.text):
+        fields = {}  # an object literal in code that registers no model and defines no Schema: not a collection's fields
     if fields:
-        for coll in sorted(ctx.get("model_map", {}).get(src.path, set())) or [None]:
+        for coll in colls or [None]:
             evs.append(Ev(coll, "alter", src.path, min(fields.values()), max(fields.values()), dict(fields),
                           raw=os.path.basename(src.path)))
     # a new MongoCollections constant is a new collection name
