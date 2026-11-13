@@ -25,7 +25,8 @@ on:
   # filter here caps the cost of the Flutter+Node install below. A push trigger
   # carries no obligation to report a status on anything.
   #
-  # `.github/actions/auth-coverage/**` is here because that predicate and its
+  # `.github/actions/flutter-test/**` is here because its hang-timeout wrapper has a plain bash self-test (fake `flutter`,
+  # no SDK), so a push touching only that action now runs something real. `.github/actions/auth-coverage/**` is here because that predicate and its
   # DEFECT battery are now exercised by this job; without it a push changing only
   # the predicate runs nothing on `main`. Scoped to that ONE action rather than
   # `.github/actions/**`: the sibling `flutter-test` action is not exercised here,
@@ -37,6 +38,7 @@ on:
       - '.github/workflows/**'
       - '.github/actions/auth-coverage/**'
       - '.github/actions/anthropic-key/**'
+      - '.github/actions/flutter-test/**'
       - 'scripts/**'
       - 'taxo-contract/**'
 
@@ -173,6 +175,8 @@ jobs:
           fi
       - name: Run anthropic-key pool failover self-test (fake curl, no network)
         run: bash .github/actions/anthropic-key/probe.test.sh
+      - name: Run flutter-test hang-timeout self-test (fake flutter, no SDK)
+        run: bash .github/actions/flutter-test/timeout.test.sh
       - name: Run shared Claude critic gate self-test (fake GitHub and API, no network)
         run: python3 scripts/test_claude_critic.py
       - name: Run taxo-contract checker self-test (block-scoped 2.2)
