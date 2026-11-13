@@ -23,7 +23,8 @@ name: Reusable — Declaration gate (a new or changed table needs its entry)
 #     key_iv:          { decision: keep, reason: "needed to decrypt on device" }  # `keep` needs a reason; it is decided in review
 #
 # (`exclude` as a bare string and `{ keep: "<reason>" }` are read too, but write the `{decision, reason}` form.)
-# Who owns a table that another repo changes: declarations/owners.yaml in this repo (DC7 b), `owners:` as `schema.table: owner repo`.
+# Who owns a table that another repo changes: declarations/owners.yaml in this repo (DC7 b), `owners:` as `schema.table: owner repo`, or `schema.*: owner repo` for a whole schema (an exact row wins).
+# The report's inventory splits by it: this repo's own count, one "defined here, owned by <repo>" line per other owner, and "owner unknown".
 #
 # A repo cannot declare its own table as a foreign change: if owners.yaml names the calling repo as the table's owner (or the
 # foreign_changes item does), the table needs an entry like any other. Repo names are compared with `service_` removed:

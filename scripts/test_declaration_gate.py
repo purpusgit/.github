@@ -450,6 +450,70 @@ class SqlExtractor(unittest.TestCase):
         self.assertEqual(rep.excluded, ["svc.knex_migrations_lock", "svc.schema_migrations", "svc.t_bak_1101"])
 
 
+class InventoryAttribution(unittest.TestCase):
+    """OFFLINE-01 ruling on attribution (specs#411 6845655596): the inventory splits by who owns each table."""
+    BASE = {"declarations/data.yaml": data()}
+    TREE = {"migrations/001.sql": "CREATE TABLE svc.mine (id INT);\nCREATE TABLE svc.theirs (id INT);\nCREATE TABLE svc.theirs2 (id INT);\n"
+                                  "CREATE TABLE svc.nobody (id INT);\nCREATE TABLE other.wild (id INT);\n"}
+    OWNERS = {"owners": {"svc.mine": "service_me", "svc.theirs": "orbit_orgs", "svc.theirs2": "service_orbit_orgs", "other.*": "service_auth"}}
+
+    def inv(self, owners=OWNERS, repo="purpusgit/service_me"):
+        return run(self.BASE, self.TREE, owners=owners, repo=repo)
+
+    def test_this_repos_own_count_holds_only_tables_no_other_repo_owns(self):
+        rep = self.inv()
+        self.assertEqual(rep.inventory, ["svc.mine"])  # its own table with no entry stays in its count
+
+    def test_a_line_per_owner_repo_for_tables_defined_here_but_owned_elsewhere(self):
+        rep = self.inv()
+        self.assertEqual(rep.inventory_other, {"orbit_orgs": ["svc.theirs", "svc.theirs2"], "auth": ["other.wild"]})  # service_ spellings agree (DC7's canon_repo)
+        text = G.render(rep, "main")
+        self.assertIn("- defined here, owned by `orbit_orgs`: 2 tables (`svc.theirs`, `svc.theirs2`)", text)
+        self.assertIn("- defined here, owned by `auth`: 1 table (`other.wild`)", text)
+
+    def test_owner_unknown_is_a_third_bucket_not_part_of_this_repos_count(self):
+        rep = self.inv()
+        self.assertEqual(rep.inventory_unknown, ["svc.nobody"])
+        self.assertNotIn("svc.nobody", rep.inventory)
+        self.assertIn("- owner unknown: 1 (`svc.nobody`)", G.render(rep, "main"))
+
+    def test_without_an_owners_file_or_a_calling_repo_the_count_is_the_whole_list(self):
+        for owners, repo in ((None, "service_me"), (self.OWNERS, None)):
+            rep = self.inv(owners, repo)
+            self.assertEqual(rep.inventory, ["other.wild", "svc.mine", "svc.nobody", "svc.theirs", "svc.theirs2"])
+            self.assertEqual((rep.inventory_other, rep.inventory_unknown), ({}, []))
+
+    def test_a_schema_wildcard_owns_its_tables_and_an_exact_row_wins(self):
+        o = {"purpus_user.*": "service_auth", "purpus_user.audit": "service_me", "taxo.*": "service_orbit_orgs"}
+        self.assertEqual(G.owner_of(o, "purpus_user.users"), "service_auth")
+        self.assertEqual(G.owner_of(o, "purpus_user.audit"), "service_me")
+        self.assertEqual(G.owner_of(o, "taxo.field"), "service_orbit_orgs")
+        self.assertIsNone(G.owner_of(o, "master.x"))  # a schema with no row stays unowned
+        self.assertIsNone(G.owner_of(None, "taxo.field"))
+
+    def test_the_wildcard_is_read_from_owners_yaml(self):
+        d = tempfile.mkdtemp(prefix="declgate-")
+        path = os.path.join(d, "owners.yaml")
+        with open(path, "w") as fh:
+            fh.write("owners:\n  taxo.*: service_orbit_orgs\n  Purpus_User.*: service_auth\n")
+        self.assertEqual(G.load_owners(path), {"taxo.*": "service_orbit_orgs", "purpus_user.*": "service_auth"})
+        shipped = G.load_owners(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "declarations", "owners.yaml"))
+        self.assertEqual(shipped["purpus_user.*"], "service_auth")
+        self.assertEqual(shipped["taxo.*"], "service_orbit_orgs")
+        self.assertNotIn("master.*", shipped)  # master.* and orbit_japa.* stay unowned
+        self.assertNotIn("orbit_japa.*", shipped)
+
+    def test_altering_an_attributed_table_still_needs_foreign_changes(self):
+        # DC7 is unchanged: attribution only moves the inventory line, it does not let a PR change another repo's table silently
+        head = {"migrations/002.sql": "ALTER TABLE other.wild ADD COLUMN c INT;\n"}
+        rep = run(self.BASE, head, owners=self.OWNERS, repo="service_me")  # this repo never creates other.wild
+        self.assertIn(("DC7", "other.wild"), rules(rep))
+        # and a wildcard owner is checked in block mode like an exact one
+        listed = dict(head, **{"declarations/data.yaml": data([], foreign_changes=[{"table": "other.wild", "owner": "someone_else", "reason": "x"}])})
+        rep = run(self.BASE, listed, "block", owners=self.OWNERS, repo="service_me")
+        self.assertEqual([(f["rule"], f["level"]) for f in rep.findings if f["rule"] == "DC7"], [("DC7", "error")])
+
+
 class OtherStacks(unittest.TestCase):
     def test_typescript_runner_tenant_schema_and_constants_resolve_to_one_name(self):
         cfg = data(schema_paths=(("src/migrations/*.sql", "sql"), ("src/migrations/*.ts", "tsdl")), default_schema="meta")
@@ -603,12 +667,16 @@ class OffLineRuling(unittest.TestCase):
             doc = G.load_yaml(fh.read())
         self.assertEqual(list(doc), ["owners"])  # one shape for anything that writes it: `owners:` a map of schema.table: owner
         owners = doc["owners"]
+        # the schema-wide rows (`schema.*`) come after D6's table rows (specs#411 6845655596)
+        schemas = {k: v for k, v in owners.items() if k.endswith(".*")}
+        self.assertEqual(schemas, {"purpus_user.*": "service_auth", "taxo.*": "service_orbit_orgs"})
+        owners = {k: v for k, v in owners.items() if k not in schemas}
         self.assertEqual(len(owners), 26)
         self.assertEqual(dict(collections.Counter(owners.values())), {"orbit_orgs": 17, "iap_web_commerce": 8, "broadcast_audience": 1})
         for table, owner in owners.items():
             self.assertRegex(table, r"^[a-z0-9_]+\.[a-z0-9_]+$")
             self.assertRegex(owner, r"^[a-z0-9_]+$")
-        self.assertEqual(G.load_owners(SEED), owners)
+        self.assertEqual(G.load_owners(SEED), {**owners, **schemas})
         # the three contested rows, as D6 rules them
         self.assertEqual((owners["meta.event_ticket_booking"], owners["org_n.org_broadcast"], owners["meta.wallet"]),
                          ("orbit_orgs", "broadcast_audience", "iap_web_commerce"))
