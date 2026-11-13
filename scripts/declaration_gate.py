@@ -224,6 +224,9 @@ SCHEMA_PLACEHOLDERS = {"<schema>", "<tenant_schema>", "__schema__"}
 RE_PLACEHOLDER = re.compile(r"^(?:<[^<>\s]+>|\?[A-Za-z_]\w*\?|__[A-Za-z0-9_]+__)$")  # the shape of one, listed or not
 
 
+NOT_AN_IDENTIFIER = re.compile(r"""['",<>\s]""")
+
+
 def unlisted_placeholder(qualifier):
     q = unquote(qualifier).lower()
     return q not in SCHEMA_PLACEHOLDERS and bool(RE_PLACEHOLDER.match(q))
@@ -252,6 +255,12 @@ class Resolver:
         return None if (not ident or "\0" in ident or ident == "??") else ident.lower()
 
     def qualify(self, raw, use_schema=""):
+        q = self._qualify(raw, use_schema)
+        # Only a real identifier is a table. A quote, comma, angle bracket or space means the "name" is SQL being built by
+        # string concatenation (`'ALTER TABLE `', TABLE_SCHEMA, '`.t`) or a documentation placeholder (`<table>`).
+        return None if q is not None and NOT_AN_IDENTIFIER.search(q) else q
+
+    def _qualify(self, raw, use_schema=""):
         raw = raw.strip()
         m = re.match(rf"^({_ID})[ \t]*\.[ \t]*({_ID})$", raw)
         if m:
