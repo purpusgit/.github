@@ -1,0 +1,135 @@
+name: Runner disk alarm
+
+# Report only. Every hour one light job per self-hosted label group reads `df -Pk "$GITHUB_WORKSPACE"` (the runner's own
+# mount, nothing hard-coded). Under the threshold (10 GB by default) it posts ONE comment on the specs inbox through
+# reusable-notify-inbox.yml, naming the runner, the mount and the free GB. Nothing deletes and nothing prunes: freeing a
+# full disk, docker prune included, needs the founder (SCREENS-01, specs#411 6849709091).
+#
+# One alert per runner per 6 hours (dedupe_key `runner-disk:<runner>`). A check job that cannot run at all (a disk so full the
+# job fails to start its steps) is alarmed too, once per group per 6 hours.
+#
+# Limits, so nobody trusts it more than it earns:
+#   - A label picks ONE runner of the group each run, so it samples a disk; it does not read all of them. qa-ci-1 to qa-ci-6
+#     carry the orbit-ci, orbit-ci-light and orbit-ci-heavy labels and have no label of their own, so they are sampled only
+#     when a group job lands on them.
+#   - The check never fails the run for a low disk; the comment is the alarm.
+#   - Hourly, not more often: the queue held 81 jobs on 13 Nov, and three extra jobs on orbit-ci and orbit-ci-heavy every 30 minutes
+#     compete with real work. A disk fills over hours.
+#   - `cancel-in-progress: false`: with true, a heavy check still queued after an hour would be cancelled by the next run, and a
+#     cancelled check notifies nobody (the notify `if` covers low and failure only), so a backed-up group would go silent exactly
+#     when it matters. With false, GitHub keeps the running check and replaces only the pending one.
+# The three check jobs run byte-identical steps; scripts/test_runner_disk_alarm.sh asserts that and tests the step with a fake df.
+
+on:
+  schedule:
+    - cron: '7 * * * *'
+  workflow_dispatch:
+    inputs:
+      min_free_gb: { description: 'Alarm under this many GB free', required: false, type: string, default: '10' }
+      inbox:       { description: 'specs PR number to post on',    required: false, type: string, default: '411' }
+
+permissions: {}
+
+concurrency:
+  group: runner-disk-alarm
+  cancel-in-progress: false
+
+jobs:
+  check-orbit-ci:
+    runs-on: orbit-ci
+    timeout-minutes: 5
+    outputs:
+      low:    ${{ steps.df.outputs.low }}
+      runner: ${{ steps.df.outputs.runner }}
+      note:   ${{ steps.df.outputs.note }}
+    steps:
+      - id: df
+        env:
+          MIN_GB: ${{ inputs.min_free_gb || '10' }}
+          GROUP: orbit-ci
+        run: |
+          set -euo pipefail
+          case "$MIN_GB" in ''|*[!0-9]*) echo "::error::min_free_gb must be a whole number of GB"; exit 1;; esac
+          read -r avail_k mount < <(df -Pk "$GITHUB_WORKSPACE" | awk 'NR==2 {k=$4; $1=$2=$3=$4=$5=""; sub(/^ +/, ""); print k, $0}')
+          free_gb=$(awk -v k="$avail_k" 'BEGIN { printf "%.1f", k / 1048576 }')
+          low=false; [ "$avail_k" -lt $(( MIN_GB * 1048576 )) ] && low=true
+          echo "${free_gb} GB free on ${mount} (runner ${RUNNER_NAME}, group ${GROUP})"
+          { echo "low=$low"; echo "runner=$RUNNER_NAME"; echo "note=runner ${RUNNER_NAME} (${GROUP}): ${free_gb} GB free on ${mount}, alarm under ${MIN_GB} GB"; } >> "$GITHUB_OUTPUT"
+
+  notify-orbit-ci:
+    needs: check-orbit-ci
+    if: ${{ always() && (needs.check-orbit-ci.outputs.low == 'true' || needs.check-orbit-ci.result == 'failure') }}
+    uses: ./.github/workflows/reusable-notify-inbox.yml
+    with:
+      inbox: ${{ inputs.inbox || '411' }}
+      results: failure
+      note: ${{ needs.check-orbit-ci.outputs.note || 'the disk check could not run on the orbit-ci group (the job failed before reading df)' }}
+      dedupe_key: ${{ needs.check-orbit-ci.outputs.runner && format('runner-disk:{0}', needs.check-orbit-ci.outputs.runner) || 'runner-disk-check-failed:orbit-ci' }}
+      dedupe_hours: 6
+    secrets: inherit
+
+  check-orbit-ci-light:
+    runs-on: orbit-ci-light
+    timeout-minutes: 5
+    outputs:
+      low:    ${{ steps.df.outputs.low }}
+      runner: ${{ steps.df.outputs.runner }}
+      note:   ${{ steps.df.outputs.note }}
+    steps:
+      - id: df
+        env:
+          MIN_GB: ${{ inputs.min_free_gb || '10' }}
+          GROUP: orbit-ci-light
+        run: |
+          set -euo pipefail
+          case "$MIN_GB" in ''|*[!0-9]*) echo "::error::min_free_gb must be a whole number of GB"; exit 1;; esac
+          read -r avail_k mount < <(df -Pk "$GITHUB_WORKSPACE" | awk 'NR==2 {k=$4; $1=$2=$3=$4=$5=""; sub(/^ +/, ""); print k, $0}')
+          free_gb=$(awk -v k="$avail_k" 'BEGIN { printf "%.1f", k / 1048576 }')
+          low=false; [ "$avail_k" -lt $(( MIN_GB * 1048576 )) ] && low=true
+          echo "${free_gb} GB free on ${mount} (runner ${RUNNER_NAME}, group ${GROUP})"
+          { echo "low=$low"; echo "runner=$RUNNER_NAME"; echo "note=runner ${RUNNER_NAME} (${GROUP}): ${free_gb} GB free on ${mount}, alarm under ${MIN_GB} GB"; } >> "$GITHUB_OUTPUT"
+
+  notify-orbit-ci-light:
+    needs: check-orbit-ci-light
+    if: ${{ always() && (needs.check-orbit-ci-light.outputs.low == 'true' || needs.check-orbit-ci-light.result == 'failure') }}
+    uses: ./.github/workflows/reusable-notify-inbox.yml
+    with:
+      inbox: ${{ inputs.inbox || '411' }}
+      results: failure
+      note: ${{ needs.check-orbit-ci-light.outputs.note || 'the disk check could not run on the orbit-ci-light group (the job failed before reading df)' }}
+      dedupe_key: ${{ needs.check-orbit-ci-light.outputs.runner && format('runner-disk:{0}', needs.check-orbit-ci-light.outputs.runner) || 'runner-disk-check-failed:orbit-ci-light' }}
+      dedupe_hours: 6
+    secrets: inherit
+
+  check-orbit-ci-heavy:
+    runs-on: orbit-ci-heavy
+    timeout-minutes: 5
+    outputs:
+      low:    ${{ steps.df.outputs.low }}
+      runner: ${{ steps.df.outputs.runner }}
+      note:   ${{ steps.df.outputs.note }}
+    steps:
+      - id: df
+        env:
+          MIN_GB: ${{ inputs.min_free_gb || '10' }}
+          GROUP: orbit-ci-heavy
+        run: |
+          set -euo pipefail
+          case "$MIN_GB" in ''|*[!0-9]*) echo "::error::min_free_gb must be a whole number of GB"; exit 1;; esac
+          read -r avail_k mount < <(df -Pk "$GITHUB_WORKSPACE" | awk 'NR==2 {k=$4; $1=$2=$3=$4=$5=""; sub(/^ +/, ""); print k, $0}')
+          free_gb=$(awk -v k="$avail_k" 'BEGIN { printf "%.1f", k / 1048576 }')
+          low=false; [ "$avail_k" -lt $(( MIN_GB * 1048576 )) ] && low=true
+          echo "${free_gb} GB free on ${mount} (runner ${RUNNER_NAME}, group ${GROUP})"
+          { echo "low=$low"; echo "runner=$RUNNER_NAME"; echo "note=runner ${RUNNER_NAME} (${GROUP}): ${free_gb} GB free on ${mount}, alarm under ${MIN_GB} GB"; } >> "$GITHUB_OUTPUT"
+
+  notify-orbit-ci-heavy:
+    needs: check-orbit-ci-heavy
+    if: ${{ always() && (needs.check-orbit-ci-heavy.outputs.low == 'true' || needs.check-orbit-ci-heavy.result == 'failure') }}
+    uses: ./.github/workflows/reusable-notify-inbox.yml
+    with:
+      inbox: ${{ inputs.inbox || '411' }}
+      results: failure
+      note: ${{ needs.check-orbit-ci-heavy.outputs.note || 'the disk check could not run on the orbit-ci-heavy group (the job failed before reading df)' }}
+      dedupe_key: ${{ needs.check-orbit-ci-heavy.outputs.runner && format('runner-disk:{0}', needs.check-orbit-ci-heavy.outputs.runner) || 'runner-disk-check-failed:orbit-ci-heavy' }}
+      dedupe_hours: 6
+    secrets: inherit

@@ -177,6 +177,8 @@ jobs:
         run: bash .github/actions/anthropic-key/probe.test.sh
       - name: Run flutter-test hang-timeout self-test (fake flutter, no SDK)
         run: bash .github/actions/flutter-test/timeout.test.sh
+      - name: Run runner-disk alarm self-test (fake df and curl, no network)
+        run: bash scripts/test_runner_disk_alarm.sh
       - name: Run shared Claude critic gate self-test (fake GitHub and API, no network)
         run: python3 scripts/test_claude_critic.py
       - name: Run taxo-contract checker self-test (block-scoped 2.2)

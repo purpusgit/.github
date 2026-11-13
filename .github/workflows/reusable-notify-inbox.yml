@@ -14,6 +14,10 @@ name: Reusable — notify a specs inbox when a run ends
 #
 # It posts one line on that specs PR as the bot (the comment wakes its subscriber, WAKE-POST-1):
 # workflow, run link, conclusion, head sha, and an optional note (e.g. the roll PR's link).
+#
+# `dedupe_key` (optional, [A-Za-z0-9._:-]): a repeating alarm sets it so one condition posts once, not every run. The comment
+# then ends with a hidden `<!-- notify:KEY -->` marker, and a run first reads the inbox's comments of the last `dedupe_hours`
+# (default 6) and posts nothing if one carries the same marker. Empty (the default): every run posts, as before.
 
 on:
   workflow_call:
@@ -21,6 +25,8 @@ on:
       inbox:   { required: true, type: string }                  # specs PR number of the seat's inbox
       results: { required: true, type: string }                  # space-separated needs.*.result
       note:    { required: false, type: string, default: '' }
+      dedupe_key:   { required: false, type: string,  default: '' }
+      dedupe_hours: { required: false, type: number,  default: 6 }
     secrets:
       ORBIT_BOT_APP_ID:      { required: false }
       ORBIT_BOT_PRIVATE_KEY: { required: false }
@@ -49,6 +55,8 @@ jobs:
           INBOX: ${{ inputs.inbox }}
           RESULTS: ${{ inputs.results }}
           NOTE: ${{ inputs.note }}
+          DEDUPE_KEY: ${{ inputs.dedupe_key }}
+          DEDUPE_HOURS: ${{ inputs.dedupe_hours }}
           WORKFLOW: ${{ github.workflow }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SHA: ${{ github.sha }}
@@ -60,6 +68,23 @@ jobs:
           case " $RESULTS " in *" failure "*) c=failure;; *" cancelled "*) c=cancelled;; *) c=success;; esac
           body="**${WORKFLOW}** (${REPO}): **${c}**, head \`${SHA:0:7}\`, run ${RUN_URL}"
           [ -n "$NOTE" ] && body="$body · $NOTE"
+          if [ -n "$DEDUPE_KEY" ]; then
+            case "$DEDUPE_KEY" in *[!A-Za-z0-9._:-]*) echo "::error::dedupe_key may only hold letters, digits and . _ : -"; exit 1;; esac
+            case "$DEDUPE_HOURS" in ''|*[!0-9]*) echo "::error::dedupe_hours must be a whole number"; exit 1;; esac
+            marker="<!-- notify:${DEDUPE_KEY} -->"
+            since=$(date -u -d "-${DEDUPE_HOURS} hours" +%Y-%m-%dT%H:%M:%SZ)
+            page=1
+            while [ "$page" -le 10 ]; do
+              curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/purpusgit/specs/issues/$INBOX/comments?since=${since}&per_page=100&page=${page}" > "$RUNNER_TEMP/comments.json"
+              r=$(python3 -I -c 'import json,sys;d=json.load(open(sys.argv[1]));print(len(d), int(any(sys.argv[2] in (c.get("body") or "") and c["created_at"] >= sys.argv[3] for c in d)))' "$RUNNER_TEMP/comments.json" "$marker" "$since")
+              n=${r% *}; found=${r#* }
+              if [ "$found" = 1 ]; then echo "skip: '${DEDUPE_KEY}' was already posted on specs#$INBOX in the last ${DEDUPE_HOURS} h"; exit 0; fi
+              [ "$n" -lt 100 ] && break
+              page=$((page + 1))
+            done
+            body="$body"$'\n\n'"$marker"
+          fi
           B="$body" python3 -I -c 'import json,os;print(json.dumps({"body":os.environ["B"]}))' > "$RUNNER_TEMP/body.json"
           curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/purpusgit/specs/issues/$INBOX/comments" --data @"$RUNNER_TEMP/body.json" > /dev/null
