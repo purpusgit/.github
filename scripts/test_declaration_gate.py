@@ -729,7 +729,7 @@ class OffLineRuling(unittest.TestCase):
         # the rows that existed before the wired repos' own tables were seeded win over any generated row, and are unchanged
         self.assertEqual({k: owners[k] for k in D6_ROWS}, D6_ROWS)
         self.assertEqual(dict(collections.Counter(D6_ROWS.values())), {"orbit_orgs": 17, "iap_web_commerce": 8, "broadcast_audience": 1})
-        self.assertEqual({k: v for k, v in owners.items() if k.endswith(".*")}, {"purpus_user.*": "service_auth", "taxo.*": "service_orbit_orgs"})
+        self.assertEqual({k: v for k, v in owners.items() if k.endswith(".*")}, {"purpus_user.*": "service_auth", "taxo.*": "service_orbit_orgs", "nlq.*": "service_orbit_analytics"})
         self.assertEqual(G.load_owners(SEED), owners)
         # the three contested rows, as D6 rules them
         self.assertEqual((owners["meta.event_ticket_booking"], owners["org_n.org_broadcast"], owners["meta.wallet"]),
