@@ -42,6 +42,7 @@ owners:
 # ── Each wired repo's own tables (OFFLINE-01 Option A, specs#411 6845998757) ─────────────────────────────────────────────
 # One exact row per table, for the repo that both CREATES and MIGRATES it (D6), read by the gate's own extractor from the
 # `sandbox` heads: service_orbit_orgs 0095fb33, service_mongo_social 7c4f4c1a, service_inapp_chat 4956cc0c, service_orbit_analytics 244249ea.
+# A table a schema row above already gives to the same repo (taxo.*) gets no row of its own.
 # A table created in two repos, or created in one and altered in another, is NOT here (it is listed in the PR for OFFLINE-01).
 # master.* and orbit_japa.* have no rows. Every row above this block wins over a generated one. Repo names are the real names;
 # the gate compares them with `service_` removed, so `orbit_orgs` and `service_orbit_orgs` are the same owner.
@@ -132,7 +133,7 @@ owners:
   org_n.org_member_tree: service_orbit_analytics
   org_n.org_non_living_member: service_orbit_analytics
   org_n.org_tree_level_config: service_orbit_analytics
-# service_orbit_orgs: 52
+# service_orbit_orgs: 50
   bkg_n.booking_availability_exception: service_orbit_orgs
   bkg_n.booking_availability_rule: service_orbit_orgs
   bkg_n.booking_outbox: service_orbit_orgs
@@ -183,5 +184,3 @@ owners:
   org_n.org_whatsapp_notification_setting: service_orbit_orgs
   org_n.whatsapp_followups_state: service_orbit_orgs
   org_n.whatsapp_notification_log: service_orbit_orgs
-  taxo.config_booking_definition: service_orbit_orgs
-  taxo.value_suggestion: service_orbit_orgs
