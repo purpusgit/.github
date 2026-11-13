@@ -19,7 +19,13 @@ case "$FAKE" in
   stubborn) trap '' TERM; sleep 300 & echo $! > "$PIDFILE"; while :; do sleep 1; done ;;
 esac
 F
-chmod +x "$tmp/flutter"; fail=0
+chmod +x "$tmp/flutter"
+# Fake df: `df -Pk <dir>` prints one POSIX line whose Available column is $FAKE_DF_KB (default 50 GB) on mount "/data".
+cat > "$tmp/df" <<'F'
+#!/usr/bin/env bash
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/vdb 191889408 0 %s 99%% /data\n' "${FAKE_DF_KB:-52428800}"
+F
+chmod +x "$tmp/df"; fail=0
 run() { # name, FAKE mode, expected exit, expected message fragment (or ""), extra check
   local name=$1 mode=$2 want=$3 frag=$4 d="$tmp/w.$1"; mkdir -p "$d/test"; : > "$d/test/a_test.dart"
   local t0=$SECONDS out rc
@@ -48,4 +54,16 @@ case "30m" in *m) shown="30 min" ;; esac; [ "$shown" = "30 min" ] && echo "ok   
 # the existing 'No suite' check is untouched
 mkdir -p "$tmp/w.nosuite"; out=$(cd "$tmp/w.nosuite" && env PATH="$tmp:$PATH" FAKE=pass bash "$tmp/step.sh" 2>&1); rc=$?
 [ "$rc" -eq 1 ] && grep -q "No suite" <<<"$out" && echo "ok   missing suite still red" || { echo "FAIL missing suite: rc=$rc"; fail=1; }
+# low disk: red in seconds, names the free space, the mount and the runner, and flutter is never started
+mkdir -p "$tmp/w.lowdisk/test"; : > "$tmp/w.lowdisk/test/a_test.dart"; rm -f "$tmp/called"
+out=$(cd "$tmp/w.lowdisk" && env PATH="$tmp:$PATH" FAKE=pass FAKE_DF_KB=1048576 RUNNER_NAME=orbit-ci-9 GITHUB_WORKSPACE="$tmp/w.lowdisk" bash "$tmp/step.sh" 2>&1); rc=$?
+[ "$rc" -eq 1 ] && grep -qF "::error title=Runner disk full::1.0 GB free on /data (runner orbit-ci-9)" <<<"$out" && ! grep -q "Test files found" <<<"$out" \
+  && echo "ok   low disk (1 GB free) is red before flutter starts" || { echo "FAIL low disk: rc=$rc out=$out"; fail=1; }
+# the threshold is an override, and exactly at the threshold passes
+out=$(cd "$tmp/w.lowdisk" && env PATH="$tmp:$PATH" FAKE=pass FAKE_DF_KB=52428800 FLUTTER_TEST_MIN_FREE_GB=100 RUNNER_NAME=r bash "$tmp/step.sh" 2>&1); rc=$?
+[ "$rc" -eq 1 ] && grep -q "need 100 GB" <<<"$out" && echo "ok   threshold override (100 GB wanted, 50 GB free) is red" || { echo "FAIL override: rc=$rc out=$out"; fail=1; }
+out=$(cd "$tmp/w.lowdisk" && env PATH="$tmp:$PATH" FAKE=pass FAKE_DF_KB=5242880 RUNNER_NAME=r bash "$tmp/step.sh" 2>&1); rc=$?
+[ "$rc" -eq 0 ] && echo "ok   exactly 5 GB free passes" || { echo "FAIL 5 GB boundary: rc=$rc out=$out"; fail=1; }
+# the default threshold is 5 GB
+grep -q 'FLUTTER_TEST_MIN_FREE_GB:-5' "$tmp/step.sh" && echo "ok   default threshold is 5 GB" || { echo "FAIL default threshold"; fail=1; }
 exit $fail

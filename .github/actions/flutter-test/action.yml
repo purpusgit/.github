@@ -29,6 +29,18 @@ runs:
       run: |
         set -euo pipefail
 
+        # A full runner disk breaks the Flutter test harness without failing it: a golden or a compiler cache that cannot
+        # be written (ENOSPC) leaves `flutter test` printing its last line until a timeout or a human cancel. Check the
+        # runner's own mount (not a hard-coded path) first and fail in seconds with a clear message. 5 GB by default;
+        # FLUTTER_TEST_MIN_FREE_GB exists for the self-test.
+        min_gb="${FLUTTER_TEST_MIN_FREE_GB:-5}"
+        read -r avail_k mount < <(df -Pk "${GITHUB_WORKSPACE:-.}" | awk 'NR==2 {k=$4; $1=$2=$3=$4=$5=""; sub(/^ +/, ""); print k, $0}')
+        if [ "${avail_k:-0}" -lt $(( min_gb * 1024 * 1024 )) ]; then
+          free_gb=$(awk -v k="${avail_k:-0}" 'BEGIN { printf "%.1f", k / 1048576 }')
+          echo "::error title=Runner disk full::${free_gb} GB free on ${mount:-unknown} (runner ${RUNNER_NAME:-unknown}); need ${min_gb} GB for a Flutter test run"
+          exit 1
+        fi
+
         # Fail here rather than letting `flutter test` fail later, only because
         # the message is clearer. The outcome is the same either way: red.
         if [ ! -d test ] || [ -z "$(find test -name '*_test.dart' -type f -print -quit 2>/dev/null)" ]; then
