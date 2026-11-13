@@ -1,6 +1,6 @@
 name: Runner disk alarm
 
-# Report only. Every 30 minutes one light job per self-hosted label group reads `df -Pk "$GITHUB_WORKSPACE"` (the runner's own
+# Report only. Every hour one light job per self-hosted label group reads `df -Pk "$GITHUB_WORKSPACE"` (the runner's own
 # mount, nothing hard-coded). Under the threshold (10 GB by default) it posts ONE comment on the specs inbox through
 # reusable-notify-inbox.yml, naming the runner, the mount and the free GB. Nothing deletes and nothing prunes: freeing a
 # full disk, docker prune included, needs the founder (SCREENS-01, specs#411 6849709091).
@@ -13,11 +13,16 @@ name: Runner disk alarm
 #     carry the orbit-ci, orbit-ci-light and orbit-ci-heavy labels and have no label of their own, so they are sampled only
 #     when a group job lands on them.
 #   - The check never fails the run for a low disk; the comment is the alarm.
+#   - Hourly, not more often: the queue held 81 jobs on 13 Nov, and three extra jobs on orbit-ci and orbit-ci-heavy every 30 minutes
+#     compete with real work. A disk fills over hours.
+#   - `cancel-in-progress: false`: with true, a heavy check still queued after an hour would be cancelled by the next run, and a
+#     cancelled check notifies nobody (the notify `if` covers low and failure only), so a backed-up group would go silent exactly
+#     when it matters. With false, GitHub keeps the running check and replaces only the pending one.
 # The three check jobs run byte-identical steps; scripts/test_runner_disk_alarm.sh asserts that and tests the step with a fake df.
 
 on:
   schedule:
-    - cron: '7,37 * * * *'
+    - cron: '7 * * * *'
   workflow_dispatch:
     inputs:
       min_free_gb: { description: 'Alarm under this many GB free', required: false, type: string, default: '10' }
@@ -27,7 +32,7 @@ permissions: {}
 
 concurrency:
   group: runner-disk-alarm
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   check-orbit-ci:
