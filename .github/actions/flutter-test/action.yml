@@ -29,6 +29,18 @@ runs:
       run: |
         set -euo pipefail
 
+        # A full runner disk breaks the Flutter test harness without failing it: a golden or a compiler cache that cannot
+        # be written (ENOSPC) leaves `flutter test` printing its last line until a timeout or a human cancel. Check the
+        # runner's own mount (not a hard-coded path) first and fail in seconds with a clear message. 5 GB by default;
+        # FLUTTER_TEST_MIN_FREE_GB exists for the self-test.
+        min_gb="${FLUTTER_TEST_MIN_FREE_GB:-5}"
+        read -r avail_k mount < <(df -Pk "${GITHUB_WORKSPACE:-.}" | awk 'NR==2 {k=$4; $1=$2=$3=$4=$5=""; sub(/^ +/, ""); print k, $0}')
+        if [ "${avail_k:-0}" -lt $(( min_gb * 1024 * 1024 )) ]; then
+          free_gb=$(awk -v k="${avail_k:-0}" 'BEGIN { printf "%.1f", k / 1048576 }')
+          echo "::error title=Runner disk full::${free_gb} GB free on ${mount:-unknown} (runner ${RUNNER_NAME:-unknown}); need ${min_gb} GB for a Flutter test run"
+          exit 1
+        fi
+
         # Fail here rather than letting `flutter test` fail later, only because
         # the message is clearer. The outcome is the same either way: red.
         if [ ! -d test ] || [ -z "$(find test -name '*_test.dart' -type f -print -quit 2>/dev/null)" ]; then
@@ -39,4 +51,18 @@ runs:
         echo "Test files found:"
         find test -name '*_test.dart' -type f | sort
 
-        flutter test --no-pub --reporter compact
+        # A hung `flutter test` (a flutter_tester that never reports) sat for over an hour on self-hosted runners and
+        # blocked merges. A composite step cannot take `timeout-minutes`, so the call is wrapped: 30 minutes, then
+        # TERM, then KILL after another 60 s. Exit 124 (timed out) and 137 (had to be killed) are a hang and are red
+        # with a message that names the runner; any other exit code is flutter's own and passes through unchanged,
+        # so a failing test is still a failing test. `timeout` signals the whole process group, which takes the
+        # flutter_tester children with it. FLUTTER_TEST_TIMEOUT / FLUTTER_TEST_KILL_AFTER exist for the self-test.
+        limit="${FLUTTER_TEST_TIMEOUT:-30m}"
+        rc=0
+        timeout --kill-after="${FLUTTER_TEST_KILL_AFTER:-60s}" "$limit" flutter test --no-pub --reporter compact || rc=$?
+        if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+          case "$limit" in *m) shown="${limit%m} min" ;; *) shown="$limit" ;; esac
+          echo "::error title=flutter test hung::no result after ${shown} (runner ${RUNNER_NAME:-unknown})"
+          exit 1
+        fi
+        exit "$rc"
