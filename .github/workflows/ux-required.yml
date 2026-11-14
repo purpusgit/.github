@@ -12,7 +12,7 @@ name: UX required checks (org ruleset, standalone)
 
 on:
   pull_request:
-    types: [opened, synchronize, edited]
+    types: [opened, synchronize, edited, reopened]
 
 permissions:
   contents: read
