@@ -1,0 +1,60 @@
+name: Reusable — ux-one-template (one app frame, client_core's shell)
+
+# UX-00 (specs#411 row 5): a module repo must not build a second app frame. This fails a pull request that ADDS, in
+# lib/**.dart of any repo except pkg_orbit_client_core, a NavigationRail( / NavigationBar( / BottomNavigationBar( call, or a
+# widget class whose name contains Shell or SideMenu. Plain classes such as FooShellContributions (how a module plugs INTO the
+# one shell) pass. Today's copies are in scripts/ux_one_template_allowlist.txt in THIS repo, fetched from main with the script,
+# so a PR cannot extend it; the list can only shrink (scripts/test_ux_one_template.py). There is no inline escape comment.
+# Logic and tests: scripts/ux_one_template.py, scripts/test_ux_one_template.py (a step of self-test-gates.yml).
+#
+#   ux-one-template:
+#     if: ${{ github.event_name == 'pull_request' }}
+#     uses: purpusgit/.github/.github/workflows/reusable-ux-one-template.yml@main
+#     # no inputs needed: it diffs against the PR's own base branch (cwb, master, sandbox ...).
+#     # base_ref overrides that, and falls back to cwb only when there is no PR base (workflow_dispatch).
+#
+# It FAILS the check on any finding, so a caller makes it required deliberately. It exits 2 (also a failure) when the diff or
+# the allowlist cannot be read: it never passes on an unreadable input. Safe for PRs: no step runs PR code. It needs no secret.
+
+on:
+  workflow_call:
+    inputs:
+      base_ref:
+        description: >-
+          Override the branch to diff against. Empty (the default) means the PR's own base branch, so a PR into
+          master or sandbox is judged against master or sandbox, not against cwb. Only a run with no PR base
+          (workflow_dispatch) falls back to cwb.
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  ux-one-template:
+    runs-on: orbit-ci-light   # python3 and git only
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the base...HEAD diff needs the merge base
+
+      - name: Fetch the script and its allowlist from purpusgit/.github main
+        uses: actions/checkout@v4
+        with:
+          repository: purpusgit/.github
+          ref: main
+          path: .ux-one-template-src
+          sparse-checkout: |
+            scripts/ux_one_template.py
+            scripts/ux_one_template_allowlist.txt
+          sparse-checkout-cone-mode: false
+
+      - name: ux-one-template — no second app frame added
+        env:
+          BASE: ${{ inputs.base_ref || github.base_ref || 'cwb' }}
+        run: |
+          set -euo pipefail
+          git fetch -q origin "$BASE"
+          BASE_REF="origin/$BASE" python3 -I .ux-one-template-src/scripts/ux_one_template.py

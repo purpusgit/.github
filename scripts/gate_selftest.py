@@ -430,6 +430,7 @@ BEHAVIOUR = {
     "reusable-declaration-gate.yml": {"kind": None, "reason": "declaration gate: logic in scripts/declaration_gate.py, tested by scripts/test_declaration_gate.py (separate step); the workflow only checks out and calls it"},
     "reusable-notify-inbox.yml": {"kind": None, "reason": "posts one comment on a specs inbox when a dispatched run ends; not a gate, no predicate"},
     "runner-disk-alarm.yml": {"kind": None, "reason": "scheduled report-only alarm, not a gate on any PR; its check step and the notify dedupe have their own self-test, scripts/test_runner_disk_alarm.sh, run by self-test-gates.yml"},
+    "reusable-ux-one-template.yml": {"kind": None, "reason": "one-app-frame gate: logic in scripts/ux_one_template.py, tested by scripts/test_ux_one_template.py (separate step, incl. the gate end to end on temp git repos and the allowlist that can only shrink); the workflow only checks out and calls it"},
 }
 FAILURES = []
 def fail(msg): FAILURES.append(msg); print(f"  ✗ {msg}")
