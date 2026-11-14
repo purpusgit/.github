@@ -195,3 +195,5 @@ jobs:
         run: python3 scripts/test_ux_layout.py
       - name: Run declaration gate self-test (temp git repos, no network)
         run: python3 scripts/test_declaration_gate.py
+      - name: Run ux-one-template self-test (one app frame; allowlist can only shrink; temp git repos, no network)
+        run: python3 scripts/test_ux_one_template.py
