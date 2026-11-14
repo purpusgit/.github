@@ -41,12 +41,18 @@ WEB_PATH = re.compile(r"[._]web\.dart$")
 FIELD_CALLEES = {"OutlineInputBorder", "UnderlineInputBorder", "InputBorder", "InputDecoration",
                  "InputDecorationTheme", "TextField", "TextFormField", "DropdownButtonFormField",
                  "DropdownMenu", "SearchBar", "SearchAnchor"}
-FIELD_LABELS = {"enabledBorder", "focusedBorder", "disabledBorder", "errorBorder", "focusedErrorBorder"}
+BORDER_LABELS = {"enabledBorder", "focusedBorder", "disabledBorder", "errorBorder", "focusedErrorBorder", "border"}
+QUIET_LABELS = {"disabledBorder", "errorBorder", "focusedErrorBorder"}
 SCALE = re.compile(r"(?<![\w.])\d+(?:\.\d+)?\.(?:w|h|sp|r|sw|sh)\b|\bScreenUtil\s*(?:\(|\.)")
 SU_INIT = re.compile(r"\bScreenUtil\.init\s*\(|\bScreenUtilInit\s*\(")
 DBG_ICON = re.compile(r"\b(?:Icons|CupertinoIcons)\.(?:bug_report\w*|bug\w*|ant\w*|developer_mode\w*)\b")
 DBG_ROUTE = re.compile(r"""['"]/(?:dev|debug|playground|devtools|dev-tools)(?:[/?'"]|$)""", re.I)
-DBG_NAME = re.compile(r"\b(?:Dev|Debug|Playground)\w*(?:Screen|Page)\b")
+DBG_NAME = re.compile(r"\b\w*(?:Dev|Debug|Playground)\w*(?:Screen|Page)\b")
+DBG_DECL = re.compile(r"^\s*(?:abstract\s+|final\s+)*class\s")
+DBG_FLAVOR = re.compile(r"\bAppFlavor\.\w*dev\w*|\bisDev(?:elopment)?\b", re.I)
+DBG_USER_FEATURE = re.compile(r"report|feedback", re.I)  # a user-facing "report a bug" row is not a debug control
+DEV_PATH = re.compile(r"(^|/)(?:dev|debug|playground)/")  # a dev tool's own files; its route registration is judged
+TEST_SUPPORT = re.compile(r"(^|/)test_support/")
 TYPE_DECL = re.compile(r"^\s*(?:abstract\s+|final\s+|base\s+|sealed\s+)*(?:class|mixin|extension|enum)\b")
 
 FIX = {
@@ -128,9 +134,9 @@ def args_of(m, open_idx, close_idx):
 
 
 def enclosing(m, idx):
-    """(callee names, arg labels) of every unclosed '(' around idx, innermost first. The label is the
-    `name:` written in front of the callee, e.g. enabledBorder: in `enabledBorder: Foo(...)`."""
-    callees, labels, depth = [], [], 0
+    """[(callee, label, open_idx)] for every unclosed '(' around idx, innermost first. label is the
+    `name:` written in front of the callee, e.g. enabledBorder in `enabledBorder: Foo(...)`, else None."""
+    out, depth = [], 0
     for k in range(idx, -1, -1):
         ch = m[k]
         if ch in ")]}":
@@ -141,10 +147,8 @@ def enclosing(m, idx):
             elif ch == "(":
                 head = re.search(r"(?:([A-Za-z_]\w*)\s*:\s*)?([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*$", m[max(0, k - 80):k])
                 if head:
-                    callees.append(head.group(2).split(".")[0])
-                    if head.group(1):
-                        labels.append(head.group(1))
-    return callees, labels
+                    out.append((head.group(2).split(".")[0], head.group(1), k))
+    return out
 
 
 def member_start(lines, idx):
@@ -189,44 +193,64 @@ def scan_text(path, text, added=None, module=""):
         if c < 0:
             continue
         args, first = args_of(m, o, c), line_of(mm.start())
+        if re.search(r"\b(?:this|super)\.\w+|\brequired\b", m[o:c]):  # the constructor declaration, not a use
+            continue
         if "kind" not in {a for a, _, _ in args}:
             add(first, "W2")
         for name, s, e in args:
             if name == "padding" and hard_gutter(text[s:e]):
                 add(line_of(s), "W3", first)
 
-    # W1: a raw width cap in a screen file
-    if SCREEN_PATH.search(path):
+    # W1: a raw page-width cap in a screen file: a literal of at least 320 (a column), or a constant such as
+    # _contentMaxWidth / kMaxWidth. Not a cap derived from the parent (box.maxWidth * 0.6), not a local
+    # variable (a chat bubble's maxWidth) and not a small literal (a 160 px label), which are local sizing.
+    if SCREEN_PATH.search(path) and not DEV_PATH.search(path):
         for mm in re.finditer(r"(?<![\w.])BoxConstraints\s*\(", m):
             o = mm.end() - 1
             c = match_close(m, o)
             if c < 0:
                 continue
-            for name, s, e in args_of(m, o, c):
-                if name == "maxWidth" and "infinity" not in text[s:e]:
-                    add(line_of(s), "W1", line_of(mm.start()))
+            for name, s_, e in args_of(m, o, c):
+                if name == "maxWidth" and page_cap(text[s_:e]):
+                    add(line_of(s_), "W1", line_of(mm.start()))
 
-    # W10: outlineVariant on a text field's border
+    # W10: outlineVariant on a text field's RESTING or FOCUSED border. disabledBorder / errorBorder may be faint or
+    # coloured. A bare `border:` only counts when the decoration has no enabledBorder (else it is never shown).
     for mm in re.finditer(r"\boutlineVariant\b", m):
-        callees, labels = enclosing(m, mm.start())
-        if FIELD_CALLEES & set(callees) or FIELD_LABELS & set(labels):
-            add(line_of(mm.start()), "W10")
+        chain = enclosing(m, mm.start())
+        if not any(c in FIELD_CALLEES for c, _, _ in chain):
+            continue
+        label = next((lb for _, lb in [(c, lb) for c, lb, _ in chain] if lb in BORDER_LABELS), None)
+        if label in QUIET_LABELS:
+            continue
+        if label == "border":
+            deco = next(((o) for c, _, o in chain if c in ("InputDecoration", "InputDecorationTheme")), None)
+            c2 = match_close(m, deco) if deco is not None else -1
+            if c2 > 0 and "enabledBorder" in {n for n, _, _ in args_of(m, deco, c2)}:
+                continue
+        add(line_of(mm.start()), "W10")
 
     # W11, W12: ScreenUtil
     mlines = m.splitlines()
     for i, ln in enumerate(mlines, 1):
         if WEB_PATH.search(path) and SCALE.search(ln):
             add(i, "W11")
-        if SU_INIT.search(ln) and module not in BINDER and not any(b in module for b in BINDER):
+        if SU_INIT.search(ln) and not TEST_SUPPORT.search(path) and not any(b in module for b in BINDER):
             add(i, "W12")
 
-    # DBG: a debug-only control with no kDebugMode in the same declaration
+    # DBG: a debug-only control with no kDebugMode (or dev-flavor check) in the same declaration
     for i, raw in enumerate(lines):
+        if DEV_PATH.search(path):
+            break
         code = mlines[i] if i < len(mlines) else ""
+        if DBG_DECL.search(code):
+            continue
         if DBG_ICON.search(code) or DBG_NAME.search(code) or DBG_ROUTE.search(raw.split("//")[0]):
+            if DBG_USER_FEATURE.search(DBG_ICON.sub("", "\n".join(lines[max(0, i - 6): i + 7]))):
+                continue
             start = member_start(lines, i)
             if not any(re.search(r"\bk(?:Debug|Release)Mode\b|\bassert\s*\(", lines[j].split("//")[0])
-                       for j in range(start, i + 1)):
+                       or DBG_FLAVOR.search(lines[j].split("//")[0]) for j in range(start, i + 1)):
                 add(i + 1, "DBG")
     return sorted(set(found))
 
@@ -238,6 +262,17 @@ def ok_note(lines, idx):
     if LAYOUT_OK.search(lines[idx]):
         return True
     return idx > 0 and lines[idx - 1].lstrip().startswith("//") and bool(LAYOUT_OK.search(lines[idx - 1]))
+
+
+def page_cap(value):
+    """True if a maxWidth: value is a page-column cap: a literal >= 320 (optionally .w) or a constant name
+    (leading _ or k, or capitalised) that mentions Width. shortcut: 320 is a guess at 'wider than a label'; tune it
+    from the replay table in the PR if a real cap sits below it."""
+    v = re.sub(r"//.*", "", value).strip().rstrip(",")
+    lit = re.fullmatch(r"(?:const\s+)?(\d+(?:\.\d+)?)(?:\.w)?", v)
+    if lit:
+        return float(lit.group(1)) >= 320
+    return bool(re.fullmatch(r"(?:_|k[A-Z]|[A-Z])\w*", v) and re.search(r"[Ww]idth", v))
 
 
 def hard_gutter(value):

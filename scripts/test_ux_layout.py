@@ -32,6 +32,10 @@ class Rules(unittest.TestCase):
         t = "w() => PageContentWidth(\n  child: Text('x'),\n);\n"
         self.assertEqual(U.scan_text("lib/a.dart", t)[0][:2], (1, "W2"))
 
+    def test_w2_ignores_the_constructor_declaration(self):
+        t = "  const PageContentWidth({\n    super.key,\n    required this.kind,\n    required this.child,\n  });\n"
+        self.assertEqual(rules("lib/page_content_width.dart", t), [])
+
     # ── W3 ──
     def test_w3_fails_on_a_hard_coded_gutter(self):
         t = "w() => PageContentWidth(kind: ContentWidth.content,\n  padding: EdgeInsets.symmetric(horizontal: 24),\n  child: x);\n"
@@ -54,15 +58,31 @@ class Rules(unittest.TestCase):
         self.assertEqual(rules("lib/screens/home.dart", self.SCREEN), ["W1"])
         self.assertEqual(rules("lib/ui/home_screen.dart", self.SCREEN), ["W1"])
 
-    def test_w1_passes_outside_screens_and_for_infinity_and_min_only(self):
+    def test_w1_fails_on_a_constant_cap(self):
+        self.assertEqual(rules("lib/screens/a.dart", "w() => BoxConstraints(maxWidth: _contentMaxWidth);\n"), ["W1"])
+        self.assertEqual(rules("lib/screens/a.dart", "w() => BoxConstraints(maxWidth: kMaxWidth);\n"), ["W1"])
+
+    def test_w1_passes_outside_screens_and_for_local_sizing(self):
         self.assertEqual(rules("lib/widgets/card.dart", self.SCREEN), [])
-        self.assertEqual(rules("lib/screens/a.dart", "w() => BoxConstraints(maxWidth: double.infinity);\n"), [])
+        for v in ("double.infinity", "box.maxWidth * 0.6", "maxWidth", "160.w", "240"):  # parent-relative, local var, small label caps
+            self.assertEqual(rules("lib/screens/a.dart", f"w() => BoxConstraints(maxWidth: {v});\n"), [], v)
         self.assertEqual(rules("lib/screens/a.dart", "w() => BoxConstraints(minHeight: 40);\n"), [])
 
     # ── W10 ──
-    def test_w10_fails_on_a_field_border(self):
-        t = "final d = InputDecoration(enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: s.outlineVariant)));\n"
-        self.assertEqual(rules("lib/a.dart", t), ["W10"])
+    FIELD = "final d = InputDecoration({}: OutlineInputBorder(borderSide: BorderSide(color: s.outlineVariant)));\n"
+
+    def test_w10_fails_on_a_resting_or_focused_field_border(self):
+        for label in ("enabledBorder", "focusedBorder", "border"):
+            self.assertEqual(rules("lib/a.dart", self.FIELD.format(label)), ["W10"], label)
+
+    def test_w10_passes_on_disabled_and_error_borders(self):
+        for label in ("disabledBorder", "errorBorder", "focusedErrorBorder"):
+            self.assertEqual(rules("lib/a.dart", self.FIELD.format(label)), [], label)
+
+    def test_w10_ignores_border_when_enabledBorder_sets_the_resting_one(self):
+        t = ("final d = InputDecoration(border: OutlineInputBorder(borderSide: BorderSide(color: s.outlineVariant)),\n"
+             "  enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: s.outline)));\n")
+        self.assertEqual(rules("lib/a.dart", t), [])
 
     def test_w10_passes_on_a_card_border_and_a_divider(self):
         t = "final d = BoxDecoration(border: Border.all(color: s.outlineVariant));\nfinal e = Divider(color: s.outlineVariant);\n"
@@ -84,6 +104,9 @@ class Rules(unittest.TestCase):
         self.assertEqual(rules("lib/main.dart", t, module="pkg_orbit_binder"), [])
         self.assertEqual(rules("lib/main.dart", t, module="orbit_binder purpusgit/pkg_orbit_binder"), [])
 
+    def test_w12_passes_in_test_support(self):
+        self.assertEqual(rules("lib/test_support/harness.dart", "w() => ScreenUtilInit(child: x);\n", module="orbit_client_core"), [])
+
     # ── DBG ──
     def test_dbg_fails_on_an_unguarded_bug_icon_and_dev_route(self):
         t = "Widget build(c) {\n  return IconButton(icon: Icon(Icons.bug_report), onPressed: go);\n}\n"
@@ -96,6 +119,17 @@ class Rules(unittest.TestCase):
         self.assertEqual(rules("lib/a.dart", t), [])
         t = "Widget build(c) {\n  if (!kDebugMode) return const SizedBox();\n  return Icon(Icons.bug_report);\n}\n"
         self.assertEqual(rules("lib/a.dart", t), [])
+
+    def test_dbg_passes_a_dev_flavor_guard_a_report_bug_row_and_a_dev_tool_own_files(self):
+        guard = "Widget b(c) {\n  if (FlavorConfig().flavor == AppFlavor.japa_development) return Icon(Icons.bug_report);\n  return x;\n}\n"
+        self.assertEqual(rules("lib/a.dart", guard), [])
+        row = "w() => Row(children: [Icon(Icons.bug_report_outlined), Text('Report a problem')]);\n"
+        self.assertEqual(rules("lib/a.dart", row), [])
+        self.assertEqual(rules("lib/screens/dev/picker_dev.screen.dart", "w() => Icon(Icons.bug_report);\nclass PickerDevScreen {}\n"), [])
+
+    def test_dbg_fails_on_a_dev_screen_route_registration_but_not_its_class_declaration(self):
+        self.assertEqual(rules("lib/routes.dart", "final p = GetPage(name: '/x', page: () => TaxonomyPickerDevTestScreen());\n"), ["DBG"])
+        self.assertEqual(rules("lib/s.dart", "class TaxonomyPickerDevTestScreen extends StatefulWidget {}\n"), [])
 
     # ── the escape ──
     def test_layout_ok_on_the_line_or_the_line_above(self):
