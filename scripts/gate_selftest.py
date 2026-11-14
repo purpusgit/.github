@@ -424,6 +424,7 @@ BEHAVIOUR = {
     "reusable-claude-critic.yml":    {"kind": None, "reason": "on-request Claude critic, never required; its logic is tested by scripts/test_claude_critic.py (separate step)"},
     "reusable-ux-critic.yml": {"kind": None, "reason": "advisory UX critic, never required; its logic is tested by scripts/test_ux_critic.py (separate step)"},
     "reusable-ux-layout.yml": {"kind": None, "reason": "layout gate: logic in scripts/ux_layout.py, tested by scripts/test_ux_layout.py (separate step, incl. the gate end to end on temp git repos); the workflow only checks out and calls it"},
+    "ux-required.yml": {"kind": None, "reason": "org-ruleset target for the UX gates: it runs the same scripts as the reusable gates (scripts/test_ux_layout.py pins the standalone to the reusable: same fetch, same run step, no inputs, no-op without pubspec.yaml)"},
     # OFFLINE-01's declaration gate. Its logic is scripts/declaration_gate.py, tested end to end (four replayed PRs, one check per
     # rule, one extractor per stack, and each rule's test proven red with the rule broken) by scripts/test_declaration_gate.py,
     # a separate step of this job. The workflow itself only checks out two trees and calls the script, so there is no `run:`
