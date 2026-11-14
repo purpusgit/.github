@@ -187,7 +187,8 @@ class Standalone(unittest.TestCase):
     def test_it_is_a_standalone_pull_request_workflow_with_no_inputs(self):
         wf = self.wf("ux-required.yml")
         self.assertEqual(set(wf[True]), {"pull_request"})
-        self.assertEqual(wf[True]["pull_request"]["types"], ["opened", "synchronize", "edited"])
+        # `reopened` matters: without it a closed-and-reopened PR never reports the required check and waits forever
+        self.assertEqual(wf[True]["pull_request"]["types"], ["opened", "synchronize", "edited", "reopened"])
         self.assertIn("ux-layout", wf["jobs"])  # the job name is the required context
 
     def test_it_runs_the_same_script_fetched_the_same_way_as_the_reusable(self):
