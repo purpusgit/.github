@@ -170,6 +170,49 @@ class Workflow(unittest.TestCase):
         self.assertEqual(env, "${{ inputs.base_ref || github.base_ref || 'cwb' }}")
 
 
+class Standalone(unittest.TestCase):
+    """An org ruleset can only require a standalone `on: pull_request` workflow with no inputs. ux-required.yml is that file;
+    it must run the SAME script as the reusable, fetched the same way, so the two cannot drift."""
+
+    @staticmethod
+    def wf(name):
+        import yaml
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".github", "workflows", name)) as fh:
+            return yaml.safe_load(fh)
+
+    @staticmethod
+    def steps(wf, job):
+        return wf["jobs"][job]["steps"]
+
+    def test_it_is_a_standalone_pull_request_workflow_with_no_inputs(self):
+        wf = self.wf("ux-required.yml")
+        self.assertEqual(set(wf[True]), {"pull_request"})
+        self.assertEqual(wf[True]["pull_request"]["types"], ["opened", "synchronize", "edited"])
+        self.assertIn("ux-layout", wf["jobs"])  # the job name is the required context
+
+    def test_it_runs_the_same_script_fetched_the_same_way_as_the_reusable(self):
+        a, b = self.steps(self.wf("reusable-ux-layout.yml"), "ux-layout"), self.steps(self.wf("ux-required.yml"), "ux-layout")
+        fetch = lambda ss: next(s["with"] for s in ss if s.get("with", {}).get("repository") == "purpusgit/.github")
+        run = lambda ss: next(s["run"] for s in ss if "ux_layout.py" in s.get("run", ""))
+        self.assertEqual(fetch(a), fetch(b))
+        self.assertEqual(run(a), run(b))
+        self.assertEqual(fetch(b)["ref"], "main")  # a PR cannot change the rules that judge it
+
+    def test_it_takes_its_base_from_the_prs_base_branch_and_reads_no_input(self):
+        b = self.steps(self.wf("ux-required.yml"), "ux-layout")
+        base = next(s["env"]["BASE"] for s in b if s.get("env", {}).get("BASE"))
+        self.assertEqual(base, "${{ github.base_ref || 'cwb' }}")
+        self.assertNotIn("inputs.", open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".github", "workflows", "ux-required.yml")).read().split("jobs:")[1])
+
+    def test_it_no_ops_in_a_repo_without_pubspec_yaml(self):
+        b = self.steps(self.wf("ux-required.yml"), "ux-layout")
+        probe = next(s for s in b if s.get("id") == "flutter")
+        self.assertIn("pubspec.yaml", probe["run"])
+        for s in b:
+            if "ux_layout.py" in s.get("run", "") or s.get("with", {}).get("repository") == "purpusgit/.github":
+                self.assertIn("steps.flutter.outputs.yes == 'true'", s.get("if", ""), s.get("name"))
+
+
 def run(*cmd, cwd):
     return subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, text=True).stdout
 

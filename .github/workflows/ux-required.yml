@@ -1,0 +1,51 @@
+name: UX required checks (org ruleset, standalone)
+
+# GIT-01: an org ruleset "required workflow" must be a standalone workflow in this repo with `on: pull_request` and no inputs;
+# a `workflow_call` reusable cannot be the ruleset target. This file is that target for the UX gates. The reusable workflows
+# (reusable-ux-layout.yml and friends) stay for per-repo branch-protection callers; scripts/test_ux_layout.py asserts that
+# this file and the reusable run the SAME script, fetched the same way, with the same base.
+#
+# The JOB NAMES are the required contexts, so keep them stable: `ux-layout` (and `ux-one-template`, added by its own PR).
+# Each job no-ops (passes in seconds) in a repo with no pubspec.yaml, so a ruleset can cover every repo without a Flutter list.
+# The base is the PR's own base branch (github.base_ref). No step runs PR code, the script comes from this repo's main, and
+# no secret is needed.
+
+on:
+  pull_request:
+    types: [opened, synchronize, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  ux-layout:
+    runs-on: orbit-ci-light   # python3 and git only
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the base...HEAD diff needs the merge base
+
+      - name: Is this a Flutter repo?
+        id: flutter
+        run: |
+          if [ -f pubspec.yaml ]; then echo "yes=true" >> "$GITHUB_OUTPUT"; else echo "yes=false" >> "$GITHUB_OUTPUT"; echo "No pubspec.yaml: ux-layout does not apply."; fi
+
+      - name: Fetch the ux-layout script from purpusgit/.github main
+        if: ${{ steps.flutter.outputs.yes == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          repository: purpusgit/.github
+          ref: main
+          path: .ux-layout-src
+          sparse-checkout: scripts/ux_layout.py
+          sparse-checkout-cone-mode: false
+
+      - name: ux-layout — no layout blunder added
+        if: ${{ steps.flutter.outputs.yes == 'true' }}
+        env:
+          BASE: ${{ github.base_ref || 'cwb' }}
+        run: |
+          set -euo pipefail
+          git fetch -q origin "$BASE"
+          BASE_REF="origin/$BASE" python3 -I .ux-layout-src/scripts/ux_layout.py
