@@ -159,6 +159,17 @@ class Rules(unittest.TestCase):
         self.assertEqual(rules("lib/a_web.dart", t), [])
 
 
+class Workflow(unittest.TestCase):
+    """The workflow diffs against the PR's own base: a PR into master or sandbox must not be judged against cwb."""
+
+    def test_base_defaults_to_the_prs_base_branch(self):
+        import yaml
+        wf = yaml.safe_load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".github", "workflows", "reusable-ux-layout.yml")))
+        self.assertEqual(wf[True]["workflow_call"]["inputs"]["base_ref"]["default"], "")
+        env = next(st for st in wf["jobs"]["ux-layout"]["steps"] if st.get("env"))["env"]["BASE"]
+        self.assertEqual(env, "${{ inputs.base_ref || github.base_ref || 'cwb' }}")
+
+
 def run(*cmd, cwd):
     return subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, text=True).stdout
 

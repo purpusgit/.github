@@ -10,7 +10,8 @@ name: Reusable — ux-layout (a layout blunder we already fixed blocks the PR)
 #   ux-layout:
 #     if: ${{ github.event_name == 'pull_request' }}
 #     uses: purpusgit/.github/.github/workflows/reusable-ux-layout.yml@main
-#     with: { base_ref: cwb }          # the branch the PR targets; default cwb
+#     # no inputs needed: it diffs against the PR's own base branch (cwb, master, sandbox ...).
+#     # base_ref overrides that, and falls back to cwb only when there is no PR base (workflow_dispatch).
 #
 # It FAILS the check on any finding, so a caller makes it required deliberately. It exits 2 (also a failure) when the diff
 # cannot be computed: it never passes on an unreadable input. Safe for PRs: no step runs PR code, and the script comes from
@@ -20,10 +21,13 @@ on:
   workflow_call:
     inputs:
       base_ref:
-        description: The branch the PR targets. The gate judges only the lines added since it.
+        description: >-
+          Override the branch to diff against. Empty (the default) means the PR's own base branch, so a PR into
+          master or sandbox is judged against master or sandbox, not against cwb. Only a run with no PR base
+          (workflow_dispatch) falls back to cwb.
         required: false
         type: string
-        default: cwb
+        default: ''
 
 permissions:
   contents: read
@@ -48,7 +52,7 @@ jobs:
 
       - name: ux-layout — no layout blunder added
         env:
-          BASE: ${{ inputs.base_ref || 'cwb' }}
+          BASE: ${{ inputs.base_ref || github.base_ref || 'cwb' }}
         run: |
           set -euo pipefail
           git fetch -q origin "$BASE"
