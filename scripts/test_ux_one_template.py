@@ -126,6 +126,39 @@ class Allowlist(unittest.TestCase):
         self.assertEqual(os.path.dirname(U.ALLOWLIST), HERE)
 
 
+class Standalone(unittest.TestCase):
+    """The org-ruleset target (ux-required.yml, job `ux-one-template`) runs the SAME script and allowlist as the reusable."""
+
+    @staticmethod
+    def wf(name):
+        import yaml
+        with open(os.path.join(HERE, "..", ".github", "workflows", name)) as fh:
+            return yaml.safe_load(fh)
+
+    def test_the_job_exists_under_its_required_context_name(self):
+        wf = self.wf("ux-required.yml")
+        self.assertEqual(set(wf[True]), {"pull_request"})
+        self.assertIn("ux-one-template", wf["jobs"])
+
+    def test_it_runs_the_same_script_and_fetches_the_same_files_as_the_reusable(self):
+        a = self.wf("reusable-ux-one-template.yml")["jobs"]["ux-one-template"]["steps"]
+        b = self.wf("ux-required.yml")["jobs"]["ux-one-template"]["steps"]
+        fetch = lambda ss: next(s["with"] for s in ss if s.get("with", {}).get("repository") == "purpusgit/.github")
+        run = lambda ss: next(s["run"] for s in ss if "ux_one_template.py" in s.get("run", ""))
+        self.assertEqual(fetch(a), fetch(b))
+        self.assertEqual(run(a), run(b))
+        self.assertIn("scripts/ux_one_template_allowlist.txt", fetch(b)["sparse-checkout"])  # the allowlist comes from main too
+        self.assertEqual(fetch(b)["ref"], "main")
+
+    def test_base_comes_from_the_pr_and_a_repo_without_pubspec_is_a_no_op(self):
+        b = self.wf("ux-required.yml")["jobs"]["ux-one-template"]["steps"]
+        self.assertEqual(next(s["env"]["BASE"] for s in b if s.get("env", {}).get("BASE")), "${{ github.base_ref || 'cwb' }}")
+        self.assertIn("pubspec.yaml", next(s for s in b if s.get("id") == "flutter")["run"])
+        for s in b:
+            if "ux_one_template.py" in s.get("run", "") or s.get("with", {}).get("repository") == "purpusgit/.github":
+                self.assertIn("steps.flutter.outputs.yes == 'true'", s.get("if", ""), s.get("name"))
+
+
 def run(*cmd, cwd):
     return subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, text=True).stdout
 
