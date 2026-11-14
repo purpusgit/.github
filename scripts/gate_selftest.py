@@ -423,6 +423,7 @@ BEHAVIOUR = {
     # scripts/test_claude_critic.py, a separate step of this job; the workflow itself needs the API and a PR.
     "reusable-claude-critic.yml":    {"kind": None, "reason": "on-request Claude critic, never required; its logic is tested by scripts/test_claude_critic.py (separate step)"},
     "reusable-ux-critic.yml": {"kind": None, "reason": "advisory UX critic, never required; its logic is tested by scripts/test_ux_critic.py (separate step)"},
+    "reusable-ux-layout.yml": {"kind": None, "reason": "layout gate: logic in scripts/ux_layout.py, tested by scripts/test_ux_layout.py (separate step, incl. the gate end to end on temp git repos); the workflow only checks out and calls it"},
     # OFFLINE-01's declaration gate. Its logic is scripts/declaration_gate.py, tested end to end (four replayed PRs, one check per
     # rule, one extractor per stack, and each rule's test proven red with the rule broken) by scripts/test_declaration_gate.py,
     # a separate step of this job. The workflow itself only checks out two trees and calls the script, so there is no `run:`
