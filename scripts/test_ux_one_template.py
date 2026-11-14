@@ -30,6 +30,10 @@ CEILING = frozenset({
     ("main_org_orbit", "lib/demo/shell_demo.dart", "ShellDemoComingSoonCard"),
     ("main_org_orbit", "lib/demo/shell_demo.dart", "ShellDemoComingSoonTab"),
     ("main_org_orbit", "lib/demo/shell_demo.dart", "ShellDemoComingSoonScreen"),
+    ("pkg_goalcaller_voicereach", "lib/screens/shell/voicereach-shell.screen.dart", "NavigationRail"),
+    ("pkg_goalcaller_voicereach", "lib/screens/shell/voicereach-shell.screen.dart", "NavigationBar"),
+    ("main_org_orbit", "lib/modules/main_orbit_module/dashboard.screen.dart", "BottomNavigationBar"),
+    ("main_org_orbit", "lib/modules/main_orbit_module/main_orbit_module.dart", "BottomNavigationBar"),
 })
 
 
