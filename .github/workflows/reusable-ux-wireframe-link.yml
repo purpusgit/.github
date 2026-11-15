@@ -1,0 +1,62 @@
+name: Reusable — ux-wireframe-link (new looks need approved frames, warn by default)
+
+# CALM-1 spec 3.3: a PR that changes a manifest screen needs `Wireframe: <specs main link>` (listed in the approvals ledger,
+# whose row names every changed screen) or `No visual change: <why>` in its description. Logic and tests:
+# scripts/wireframe_link.py, scripts/test_wireframe_link.py (a step of self-test-gates.yml). Same script and steps as
+# ux-wireframe-link.yml (the ruleset target); the test pins that. Warn-only: findings go to the job summary and the job passes. A caller
+# opts into enforce with calm_mode (the standalone file hard-codes warn). The JOB NAME is the required context: keep it.
+#
+# No checkout of the PR's repo: the PR's files, the BASE manifest and the ledger come from the API; only the script comes from
+# this repo's main (a PR cannot change the rules that judge it). Editing the description re-runs only this job.
+# A caller passes `secrets: inherit` or `SPECS_READ_TOKEN`. The ledger is read with the SPECS_READ_TOKEN secret. If it is absent the job posts "ledger unreadable ... (specs#449)" and passes.
+
+on:
+  workflow_call:
+    inputs:
+      calm_mode:
+        description: warn (findings in the summary, job passes) or enforce (fails on a finding or an unreadable ledger)
+        type: string
+        default: warn
+      runner:
+        type: string
+        default: orbit-ci-light
+    secrets:
+      SPECS_READ_TOKEN:
+        required: false
+
+concurrency:
+  group: ux-wireframe-link-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  ux-wireframe-link:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 5
+    steps:
+      - name: Fetch the script from purpusgit/.github main
+        uses: actions/checkout@v4
+        with:
+          repository: purpusgit/.github
+          ref: main
+          path: .wireframe-src
+          sparse-checkout: |
+            scripts/wireframe_link.py
+            scripts/calm_static.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: ux-wireframe-link — new looks need approved frames
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SPECS_READ_TOKEN: ${{ secrets.SPECS_READ_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.base_ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          CALM_MODE: ${{ inputs.calm_mode }}
+        run: python3 -I .wireframe-src/scripts/wireframe_link.py
