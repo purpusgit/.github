@@ -54,8 +54,8 @@ def analyze(root, body=""):
     cwd = os.getcwd()
     os.chdir(root)
     try:
-        bm, hm, changed, read, libs, pkg = C.gather("base", root)
-        return C.analyze(bm, hm, changed, read, libs, body, pkg)
+        bm, hm, changed, read, libs, pkg, rb = C.gather("base", root)
+        return C.analyze(bm, hm, changed, read, libs, body, pkg, rb)
     finally:
         os.chdir(cwd)
 
@@ -184,6 +184,15 @@ class ManifestChange(unittest.TestCase):
     def test_a_flavour_flag_change_needs_the_line(self):
         m = manifest(ROW_FOO).replace("    build:", "    flavour_home: true\n    build:")
         self.assertEqual([what for _, _, what in analyze(repo(BASE, {MANIFEST: m}))["manifest"]], ["changed (flavour_home)"])
+
+
+class BaseClass(unittest.TestCase):
+    def test_renaming_the_class_in_a_rows_file_does_not_hide_the_change(self):
+        m = manifest(("DlgRow", "lib/ui/dlg.dart", "Host(child: OldDialog())"))
+        old = "class OldDialog extends StatelessWidget { Widget build(c) => AlertDialog(title: x); }\n"
+        new = old.replace("OldDialog", "NewDialog")
+        r = analyze(repo({MANIFEST: m, "lib/ui/dlg.dart": old}, {"lib/ui/dlg.dart": new}))
+        self.assertEqual(sorted(w for _, _, w in r["manifest"]), ["added", "removed"])
 
 
 class ImportClosure(unittest.TestCase):

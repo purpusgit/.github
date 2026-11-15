@@ -198,7 +198,7 @@ def row_class(name, build, file_text):
 
 
 # ── the pure core ────────────────────────────────────────────────────────────────────────────────────────────────────
-def analyze(base_manifest, head_manifest, changed, read_head, lib_files, pr_body="", self_pkg=""):
+def analyze(base_manifest, head_manifest, changed, read_head, lib_files, pr_body="", self_pkg="", read_base=None):
     """-> dict(notice, no_row, manifest, enforce). changed: {path: 'A'|'M'|'D'}; read_head(path) -> text or None;
     lib_files: every lib/**.dart path at the head; base_manifest/head_manifest: the YAML text or None."""
     if base_manifest is None and head_manifest is None:
@@ -227,7 +227,7 @@ def analyze(base_manifest, head_manifest, changed, read_head, lib_files, pr_body
             f = r.get("file", "")
             out[(f, row_class(n, r.get("build", ""), read(f)))] = (n, r)
         return out
-    hk, bk = key(head_rows, read_head), key(base_rows, lambda f: read_head(f))
+    hk, bk = key(head_rows, read_head), key(base_rows, read_base or read_head)
     wanted = {m.group(1): m.group(2).strip() for m in CHANGE_LINE.finditer(pr_body or "")
               if len(m.group(2).strip()) >= 3 and not re.fullmatch(r"<[^>]*>", m.group(2).strip())}
     manifest = []
@@ -309,9 +309,12 @@ def gather(base, root="."):
             except OSError:
                 cache[p] = None
         return cache[p]
+    def read_base(p):  # the base rows' class comes from the BASE file, so a rename in the PR cannot move the key
+        r = git("show", "%s:%s" % (base, p), check=False)
+        return r.stdout if r.returncode == 0 else None
     pubspec = read_head("pubspec.yaml") or ""
     mm = re.search(r"^name:\s*(\S+)", pubspec, re.M)
-    return base_manifest, head_manifest, changed, read_head, lib_files, (mm.group(1) if mm else "")
+    return base_manifest, head_manifest, changed, read_head, lib_files, (mm.group(1) if mm else ""), read_base
 
 
 def render(res, enforce_mode):
@@ -330,8 +333,8 @@ def main(argv):
     enforce_mode = os.environ.get("CALM_MODE", "warn").strip().lower() == "enforce"
     base = os.environ.get("BASE_REF") or "origin/cwb"
     try:
-        bm, hm, changed, read_head, lib_files, pkg = gather(base)
-        res = analyze(bm, hm, changed, read_head, lib_files, os.environ.get("PR_BODY", ""), pkg)
+        bm, hm, changed, read_head, lib_files, pkg, read_base = gather(base)
+        res = analyze(bm, hm, changed, read_head, lib_files, os.environ.get("PR_BODY", ""), pkg, read_base)
     except Unreadable as e:
         print("::error::CALM-STATIC could not read its inputs (%s). This is a gate failure, not a pass." % e, file=sys.stderr if emit else sys.stdout)
         return 2
