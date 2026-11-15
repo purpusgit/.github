@@ -201,13 +201,17 @@ class Workflows(unittest.TestCase):
         return wf, wf["jobs"]["ux-wireframe-link"]
 
     def test_both_run_the_same_script_isolated_from_main_with_the_body_in_the_environment(self):
-        seen = []
+        seen, seen_run = [], []
         for name in ("ux-wireframe-link.yml", "reusable-ux-wireframe-link.yml"):
             wf, job = self.job(name)
             fetch, run_step = job["steps"][0]["with"], job["steps"][1]
             self.assertEqual((fetch["repository"], fetch["ref"]), ("purpusgit/.github", "main"))
             self.assertEqual(set(fetch["sparse-checkout"].split()), {"scripts/wireframe_link.py", "scripts/calm_static.py"})
-            self.assertEqual(run_step["run"], "python3 -I .wireframe-src/scripts/wireframe_link.py")
+            self.assertTrue(run_step["run"].rstrip().endswith("\npython3 -I .wireframe-src/scripts/wireframe_link.py"))
+            # the only skip is the bootstrap one: this repo, and only while main lacks the script (exit 0 appears once)
+            self.assertEqual(run_step["run"].count("exit 0"), 1)
+            self.assertIn('[ "$REPO" = "purpusgit/.github" ]', run_step["run"])
+            seen_run.append(run_step["run"])
             self.assertEqual(run_step["env"]["PR_BODY"], "${{ github.event.pull_request.body }}")
             self.assertNotIn("pull_request.body", run_step["run"])
             self.assertEqual(run_step["env"]["SPECS_READ_TOKEN"], "${{ secrets.SPECS_READ_TOKEN }}")
@@ -216,6 +220,7 @@ class Workflows(unittest.TestCase):
             seen.append({k: v for k, v in run_step["env"].items() if k != "CALM_MODE"})
             self.assertFalse([s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/checkout") and "repository" not in s.get("with", {})])
         self.assertEqual(seen[0], seen[1])
+        self.assertEqual(seen_run[0], seen_run[1])
 
     def test_the_standalone_is_warn_by_literal_on_the_light_runner_and_the_right_events(self):
         wf, job = self.job("ux-wireframe-link.yml")

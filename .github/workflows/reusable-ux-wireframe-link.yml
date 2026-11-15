@@ -59,4 +59,9 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
           PR_BODY: ${{ github.event.pull_request.body }}
           CALM_MODE: ${{ inputs.calm_mode }}
-        run: python3 -I .wireframe-src/scripts/wireframe_link.py
+        run: |
+          # Bootstrap: on the PR that ADDS the script (this repo only) main does not have it yet. Any other repo stays fail-closed.
+          if [ ! -f .wireframe-src/scripts/wireframe_link.py ] && [ "$REPO" = "purpusgit/.github" ]; then
+            echo "::notice title=ux-wireframe-link::wireframe_link.py is not on main yet: nothing to run."; exit 0
+          fi
+          python3 -I .wireframe-src/scripts/wireframe_link.py
