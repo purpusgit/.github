@@ -428,6 +428,10 @@ BEHAVIOUR = {
     # a separate step of this job. The workflow itself only checks out two trees and calls the script, so there is no `run:`
     # predicate worth extracting; the report/block switch is exercised in the script's own tests.
     "reusable-declaration-gate.yml": {"kind": None, "reason": "declaration gate: logic in scripts/declaration_gate.py, tested by scripts/test_declaration_gate.py (separate step); the workflow only checks out and calls it"},
+    # ux-wireframe-link (CALM-1 spec 3.3): reads the PR's files, the base manifest and the specs ledger from the API, so there is no `run:`
+    # predicate to extract. Logic and fixtures: scripts/wireframe_link.py, tested by scripts/test_wireframe_link.py (separate step).
+    "reusable-ux-wireframe-link.yml": {"kind": None, "reason": "ux-wireframe-link: logic in scripts/wireframe_link.py, tested by scripts/test_wireframe_link.py (separate step); the workflow only fetches the script and calls it"},
+    "ux-wireframe-link.yml": {"kind": None, "reason": "org-ruleset target of ux-wireframe-link; same script and steps as the reusable, pinned by scripts/test_wireframe_link.py"},
     "reusable-notify-inbox.yml": {"kind": None, "reason": "posts one comment on a specs inbox when a dispatched run ends; not a gate, no predicate"},
     "runner-disk-alarm.yml": {"kind": None, "reason": "scheduled report-only alarm, not a gate on any PR; its check step and the notify dedupe have their own self-test, scripts/test_runner_disk_alarm.sh, run by self-test-gates.yml"},
 }

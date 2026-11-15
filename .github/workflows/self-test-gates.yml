@@ -193,5 +193,7 @@ jobs:
         run: python3 scripts/test_ux_critic.py
       - name: Run CALM-1 static step self-test (temp git repos, no network)
         run: python3 scripts/test_calm_static.py
+      - name: Run ux-wireframe-link self-test (fixture API, no network)
+        run: python3 scripts/test_wireframe_link.py
       - name: Run declaration gate self-test (temp git repos, no network)
         run: python3 scripts/test_declaration_gate.py

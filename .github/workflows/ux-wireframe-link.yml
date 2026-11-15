@@ -1,0 +1,56 @@
+name: ux-wireframe-link (org ruleset target, standalone, warn-only)
+
+# CALM-1 spec 3.3: a PR that changes a manifest screen needs `Wireframe: <specs main link>` (listed in the approvals ledger,
+# whose row names every changed screen) or `No visual change: <why>` in its description. Logic and tests:
+# scripts/wireframe_link.py, scripts/test_wireframe_link.py (a step of self-test-gates.yml). Same script and steps as
+# reusable-ux-wireframe-link.yml; the test pins that. Warn-only: findings go to the job summary and the job passes. Switching to
+# enforce is a PR to this file (the mode is a literal, never a repo setting). The JOB NAME is the required context: keep it.
+#
+# No checkout of the PR's repo: the PR's files, the BASE manifest and the ledger come from the API; only the script comes from
+# this repo's main (a PR cannot change the rules that judge it). Editing the description re-runs only this job.
+# The ledger is read with the SPECS_READ_TOKEN secret. If it is absent the job posts "ledger unreadable ... (specs#449)" and passes.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+concurrency:
+  group: ux-wireframe-link-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  ux-wireframe-link:
+    runs-on: orbit-ci-light   # python3 only
+    timeout-minutes: 5
+    steps:
+      - name: Fetch the script from purpusgit/.github main
+        uses: actions/checkout@v4
+        with:
+          repository: purpusgit/.github
+          ref: main
+          path: .wireframe-src
+          sparse-checkout: |
+            scripts/wireframe_link.py
+            scripts/calm_static.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: ux-wireframe-link — new looks need approved frames
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SPECS_READ_TOKEN: ${{ secrets.SPECS_READ_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.base_ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          CALM_MODE: warn
+        run: |
+          # Bootstrap: on the PR that ADDS the script (this repo only) main does not have it yet. Any other repo stays fail-closed.
+          if [ ! -f .wireframe-src/scripts/wireframe_link.py ] && [ "$REPO" = "purpusgit/.github" ]; then
+            echo "::notice title=ux-wireframe-link::wireframe_link.py is not on main yet: nothing to run."; exit 0
+          fi
+          python3 -I .wireframe-src/scripts/wireframe_link.py
