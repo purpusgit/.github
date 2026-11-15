@@ -21,7 +21,7 @@ RULE B (pkg_orbit_client_core only; whole files at the PR head, not just added l
 
 shortcut: this is a lexical scan, not a Dart parser; a header set through a helper in another file is not seen, a conditional's
           test is judged like a value, and `headers.addAll(x)` of an already-built map is flagged (use header-ok if x is checked).
-Env: BASE_REF (default origin/cwb), GITHUB_REPOSITORY, HTTP_HEADERS_EXEMPT.
+Env: BASE_REF (default origin/cwb), GITHUB_REPOSITORY, HTTP_HEADERS_EXEMPT, HTTP_HEADERS_ASCII_NAMES.
 Exit 0 clean, 1 on findings, 2 when the diff cannot be computed or a pinned file is missing. Test: python3 scripts/test_http_headers.py
 """
 import bisect
@@ -32,6 +32,12 @@ import sys
 
 CORE = {"pkg_orbit_client_core", "orbit_client_core"}
 DEFAULT_EXEMPT = "pkg_orbit_client_core:lib/http/"
+# Identifiers the repo vouches are ASCII by construction (a client-made UUID, a MIME type): HTTP_HEADERS_ASCII_NAMES=name,name.
+# Empty by default: whether `idempotencyKey` or `contentType` may pass is a policy call, not the scanner's.
+def ascii_names():
+    return {x.strip() for x in os.environ.get("HTTP_HEADERS_ASCII_NAMES", "").split(",") if x.strip()}
+
+
 HEADER_OK = re.compile(r"//\s*header-ok:\s*\S")
 CONST_CLASSES = r"(?:Headers|HttpHeaders|HeaderValues|HeaderConstants|ContentType)"
 CONST_NAME = re.compile(r"^(?:[A-Za-z_]\w*\.)*(?:_?k[A-Z]\w*|[A-Z][A-Z0-9_]{2,})$|^" + CONST_CLASSES + r"\.\w+(?:\.\w+)*$")
@@ -180,6 +186,8 @@ def value_ok(e):
     if string_literal_safe(e):
         return True
     if CONST_NAME.match(e):
+        return True
+    if e.split(".")[-1] in ascii_names() and re.fullmatch(r"(?:\w+\.)*\w+", e):
         return True
     return any(re.fullmatch(c, e) for c in SAFE_CALLS)
 
@@ -355,10 +363,29 @@ def header_writes(code, skel):
         elif rest.lstrip().startswith("{"):
             ob = cp + 1 + lead
             body_end = match_close(skel, ob)
+            locals_ = set()
             for rm in re.finditer(r"\breturn\b", skel[ob:body_end]):
                 a = ob + rm.end()
+                rv = skel[a:stmt_end(skel, a)].strip()
+                if re.fullmatch(r"[A-Za-z_]\w*", rv) and "eaders" not in rv:
+                    locals_.add(rv)  # `return h;`: judged by what is written into h, below
+                    continue
                 for off, v in judge_map_expr(code, skel, a, stmt_end(skel, a), maps):
                     found.append((off, "headers-fn", v))
+            for name in locals_:
+                for wm in re.finditer(r"(?<![\w.])%s\s*\[" % re.escape(name), skel[ob:body_end]):
+                    o2 = ob + wm.end() - 1
+                    c2 = match_close(skel, o2)
+                    am = re.match(r"\s*(\?\?=|=)(?!=)", skel[c2 + 1:]) if c2 > 0 else None
+                    if am:
+                        a2 = c2 + 1 + am.end()
+                        v = code[a2:stmt_end(skel, a2)]
+                        if not value_ok(v):
+                            found.append((ob + wm.start(), "headers-fn", v))
+                for wm in re.finditer(r"\b(?:final|var)\s+(?:[\w<>, ?]+?\s+)?%s\s*=\s*(?:const\s+)?(?:<[^{}()]*>\s*)?\{" % re.escape(name), skel[ob:body_end]):
+                    o2 = ob + wm.end() - 1
+                    for off, v in judge_entries(code, skel, o2 + 1, match_close(skel, o2), maps):
+                        found.append((off, "headers-fn", v))
     return found
 
 

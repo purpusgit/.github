@@ -105,6 +105,26 @@ class RuleA(unittest.TestCase):
         self.assertEqual(hits("Map<String, String> authHeaders() => {'Accept': 'application/json'};\n"), [])
         self.assertEqual(hits("Map<String, String> orgHeaders(o) {\n  return o == null ? const {} : {'x-o': o.name};\n}\n"), ["headers-fn"])
 
+    def test_a_returned_local_map_is_judged_by_what_is_written_into_it(self):
+        ok = "Map<String, String> consentHeaders(bool json) {\n  final h = {'Accept': 'application/json'};\n  if (json) h['Content-Type'] = 'application/json';\n  return h;\n}\n"
+        self.assertEqual(hits(ok), [])
+        bad = ok.replace("h['Content-Type'] = 'application/json'", "h['x-name'] = org.name")
+        self.assertEqual(hits(bad), ["headers-fn"])
+        bad2 = ok.replace("{'Accept': 'application/json'}", "{'x-name': org.name}")
+        self.assertEqual(hits(bad2), ["headers-fn"])
+
+    def test_the_repo_can_vouch_for_named_identifiers_and_nothing_else(self):
+        src = "http.post(u, headers: {'Idempotency-Key': idempotencyKey, 'x-name': org.name});"
+        self.assertEqual(hits(src), ["headers:", "headers:"])
+        os.environ["HTTP_HEADERS_ASCII_NAMES"] = "idempotencyKey, contentType"
+        try:
+            self.assertEqual(hits(src), ["headers:"])  # only org.name is left
+            self.assertEqual(hits("h.headers['Content-Type'] = contentType;"), [])
+            self.assertEqual(hits("h.headers['Content-Type'] = contentTypeOfUser;"), ["headers[]="])
+            self.assertEqual(hits("h.headers['x'] = widget.idempotencyKey;"), [])
+        finally:
+            del os.environ["HTTP_HEADERS_ASCII_NAMES"]
+
     def test_reads_comparisons_comments_and_strings_are_not_writes(self):
         for src in ("if (r.headers['x'] == null) {}", "if (r.headers['y'] != y) {}", "final v = r.headers['z'];",
                     "print('r.headers[\"x\"] = name;');", "// r.headers['x'] = name;"):

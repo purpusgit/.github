@@ -27,6 +27,11 @@ on:
         required: false
         type: string
         default: ''
+      ascii_names:
+        description: "Comma-separated identifiers the repo vouches are ASCII by construction (a client-made UUID, a MIME type), for example idempotencyKey,contentType. Empty: none."
+        required: false
+        type: string
+        default: ''
       exempt:
         description: "Directories where a header write is the interceptor's job, as 'repo:prefix,repo:prefix'. Empty uses pkg_orbit_client_core:lib/http/."
         required: false
@@ -58,6 +63,7 @@ jobs:
         env:
           BASE: ${{ inputs.base_ref || github.base_ref || 'cwb' }}
           HTTP_HEADERS_EXEMPT: ${{ inputs.exempt }}
+          HTTP_HEADERS_ASCII_NAMES: ${{ inputs.ascii_names || vars.HTTP_HEADERS_ASCII_NAMES }}
         run: |
           set -euo pipefail
           git fetch -q origin "$BASE"

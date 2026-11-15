@@ -140,6 +140,7 @@ jobs:
         env:
           BASE: ${{ github.base_ref || 'cwb' }}
           HTTP_HEADERS_EXEMPT: ${{ vars.HTTP_HEADERS_EXEMPT }}
+          HTTP_HEADERS_ASCII_NAMES: ${{ vars.HTTP_HEADERS_ASCII_NAMES }}
         run: |
           set -euo pipefail
           git fetch -q origin "$BASE"
