@@ -1,0 +1,387 @@
+#!/usr/bin/env python3
+"""Self-test for scripts/http_headers.py: every header-writing pattern failing and passing, the escape, the exempt directory,
+added-lines scoping, the client_core guard pins, the gate end to end on throwaway git repos, and the workflow pins. No network.
+Run: python3 scripts/test_http_headers.py"""
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import http_headers as H  # noqa: E402
+
+
+class ascii_file:
+    """Point the script at a temp ASCII-names file for one test (the cache is keyed by path)."""
+
+    def __init__(self, text):
+        self.text = text
+
+    def __enter__(self):
+        self.old = H.ASCII_FILE
+        fh = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
+        fh.write(self.text); fh.close()
+        self.path = fh.name
+        H.ASCII_FILE = self.path
+        return self.path
+
+    def __exit__(self, *a):
+        H.ASCII_FILE = self.old
+        os.unlink(self.path)
+
+
+def hits(src, path="lib/a.dart", repos=("pkg_orbit_japa",), added=None, exempt=H.DEFAULT_EXEMPT):
+    return [k for _, k, _ in H.scan_text(path, "void f(){ %s }\n" % src if "\n" not in src else src, added, repos, exempt)]
+
+
+class RuleA(unittest.TestCase):
+    def test_index_assignment(self):
+        self.assertEqual(hits("req.headers['x-org'] = org.name;"), ["headers[]="])
+        self.assertEqual(hits("req.headers['x-device'] = 'ios';"), [])
+        self.assertEqual(hits("options.headers['Authorization'] = authHeader;"), ["headers[]="])
+        self.assertEqual(hits("reqHeaders['x'] ??= name;"), ["headers[]="])
+
+    def test_interpolation_is_a_non_literal_but_raw_and_plain_strings_are_fine(self):
+        self.assertEqual(hits("h.headers['A'] = 'Bearer $token';"), ["headers[]="])
+        self.assertEqual(hits("h.headers['A'] = 'Bearer ${t.value}';"), ["headers[]="])
+        self.assertEqual(hits("h.headers['A'] = 'Bearer ' + token;"), ["headers[]="])
+        self.assertEqual(hits("h.headers['A'] = 'price \\$5';"), [])
+        self.assertEqual(hits("h.headers['A'] = r'raw $x';"), [])
+        self.assertEqual(hits("h.headers['A'] = 'a' 'b';"), [])
+
+    def test_constants_and_literals_are_fine(self):
+        for v in ("kOrbitFlavorCodeHeader", "HEADER_VALUE", "Headers.jsonContentType", "HttpHeaders.contentTypeHeader",
+                  "ContentType.json.mimeType", "const 'x'", "null", "true", "42"):
+            self.assertEqual(hits("h.headers['k'] = %s;" % v), [], v)
+
+    def test_ternary_and_null_coalescing_judge_the_branches_not_the_test(self):
+        self.assertEqual(hits("h.headers['k'] = isWeb ? 'a' : 'b';"), [])
+        self.assertEqual(hits("h.headers['k'] = isWeb ? 'a' : name;"), ["headers[]="])
+        self.assertEqual(hits("h.headers['k'] = x ?? 'd';"), ["headers[]="])
+        self.assertEqual(hits("h.headers['k'] = kA ?? 'd';"), [])
+
+    def test_set_add_put_if_absent(self):
+        self.assertEqual(hits("r.headers.set('x', value);"), ["headers.set"])
+        self.assertEqual(hits("r.headers.add('x', value);"), ["headers.add"])
+        self.assertEqual(hits("r.headers.add('x', 'lit');"), [])
+        self.assertEqual(hits("r.headers.putIfAbsent('A', () => 'Bearer $t');"), ["headers.putIfAbsent"])
+        self.assertEqual(hits("r.headers.putIfAbsent('A', () => 'lit');"), [])
+
+    def test_add_all(self):
+        self.assertEqual(hits("h.headers.addAll({'a': 'x', 'b': name, 'c': 'lit'});"), ["headers.addAll"])
+        self.assertEqual(hits("h.headers.addAll({'a': 'x'});"), [])
+        self.assertEqual(hits("h.headers.addAll(other);"), ["headers.addAll"])
+        self.assertEqual(hits("h.headers.addAll(const {'a': 'x'});"), [])
+
+    def test_headers_named_argument(self):
+        self.assertEqual(hits("dio.get(u, options: Options(headers: {'a': 'x', 'b': user.email}));"), ["headers:"])
+        self.assertEqual(hits("http.get(u, headers: {'Accept': 'application/json'});"), [])
+        self.assertEqual(hits("http.get(u, headers: const {'a': 'b'});"), [])
+        self.assertEqual(hits("http.get(u, headers: <String, String>{'a': 'b'});"), [])
+        self.assertEqual(hits("http.get(u, headers: h);"), ["headers:"])  # a name with no `headers` in it could be anything
+        self.assertEqual(hits("http.get(u, headers: {...base, 'a': 'b'});"), ["headers:"])
+        self.assertEqual(hits("fetch(u, FetchOptions(headers: {'x-name': org.shortName}));"), ["headers:"])
+
+    def test_a_map_handed_on_is_not_a_map_built_here(self):
+        for src in ("http.get(u, headers: headers);", "http.get(u, headers: request.headers);", "http.get(u, headers: jsonHeaders);",
+                    "http.get(u, headers: _headers(json: true));", "http.get(u, headers: flavorCodeHeaders());",
+                    "http.get(u, headers: (args['headers'] as Map<String, String>?) ?? {});", "http.get(u, headers: null);",
+                    "http.get(u, headers: {...jsonHeaders, 'a': 'b'});", "h.headers.addAll(...?headers);"):
+            self.assertEqual(hits(src), [], src)
+
+    def test_a_file_level_literal_map_may_be_passed_or_spread(self):
+        t = "const _noStore = {'Cache-Control': 'no-store'};\nfinal Map<String, String> _json = const {'Content-Type': 'application/json'};\n" \
+            "void f(){ http.get(u, headers: _noStore); http.get(u, headers: {..._json, ..._noStore}); }\n"
+        self.assertEqual(hits(t), [])
+        t2 = "final _bad = {'x': name};\nvoid f(){ http.get(u, headers: _bad); }\n"
+        self.assertEqual(hits(t2), ["headers:"])
+
+    def test_collection_if_judges_the_value_not_the_condition(self):
+        self.assertEqual(hits("http.get(u, headers: {if (fresh) 'no-cache': 'yes', 'a': 'b'});"), [])
+        self.assertEqual(hits("http.get(u, headers: {if (fresh) 'no-cache': name});"), ["headers:"])
+
+    def test_a_conditional_map_judges_its_branches(self):
+        self.assertEqual(hits("http.get(u, headers: fresh ? const {'no-cache': 'yes'} : null);"), [])
+        self.assertEqual(hits("http.get(u, headers: id.isEmpty ? null : {kOrgHeader: id});"), ["headers:"])
+
+    def test_a_cascade_ends_the_value(self):
+        t = "void f(r){ r..headers['Content-Type'] = 'application/json'..contentLength = n; }"
+        self.assertEqual(hits(t), [])
+        t = "void f(r){ r..headers['Content-Type'] = ct..contentLength = n; }"
+        self.assertEqual(hits(t), ["headers[]="])
+
+    def test_known_ascii_calls_are_fine(self):
+        for v in ("const Uuid().v4()", "Uuid().v4()", "lookupMimeType(file.path) ?? 'application/octet-stream'", "bytes.length.toString()", "FlavorConfig().flavor.name"):
+            self.assertEqual(hits("h.headers['k'] = %s;" % v), [], v)
+        self.assertEqual(hits("h.headers['k'] = key ?? _newKey();"), ["headers[]="])
+
+    def test_a_header_map_built_here_is_judged_where_it_is_built(self):
+        self.assertEqual(hits("final headers = {'x-name': org.name};\n"), ["headers-map="])
+        self.assertEqual(hits("final headers = {'x-name': 'lit'};\n"), [])
+        self.assertEqual(hits("Map<String, String> actAsHeaders(String a) => {'x-act-as': a};\n"), ["headers-fn"])
+        self.assertEqual(hits("Map<String, String> authHeaders() => {'Accept': 'application/json'};\n"), [])
+        self.assertEqual(hits("Map<String, String> orgHeaders(o) {\n  return o == null ? const {} : {'x-o': o.name};\n}\n"), ["headers-fn"])
+
+    def test_a_returned_local_map_is_judged_by_what_is_written_into_it(self):
+        ok = "Map<String, String> consentHeaders(bool json) {\n  final h = {'Accept': 'application/json'};\n  if (json) h['Content-Type'] = 'application/json';\n  return h;\n}\n"
+        self.assertEqual(hits(ok), [])
+        bad = ok.replace("h['Content-Type'] = 'application/json'", "h['x-name'] = org.name")
+        self.assertEqual(hits(bad), ["headers-fn"])
+        bad2 = ok.replace("{'Accept': 'application/json'}", "{'x-name': org.name}")
+        self.assertEqual(hits(bad2), ["headers-fn"])
+
+    def test_vouched_names_come_from_the_file_and_only_whole_identifiers_pass(self):
+        src = "http.post(u, headers: {'Idempotency-Key': idempotencyKey, 'x-name': org.name});"
+        with ascii_file("") as _:
+            self.assertEqual(hits(src), ["headers:", "headers:"])
+        with ascii_file("idempotencyKey\ncontentType  # a MIME type\n") as _:
+            self.assertEqual(hits(src), ["headers:"])  # only org.name is left
+            self.assertEqual(hits("h.headers['Content-Type'] = contentType;"), [])
+            self.assertEqual(hits("h.headers['Content-Type'] = contentTypeOfUser;"), ["headers[]="])
+            self.assertEqual(hits("h.headers['x'] = widget.idempotencyKey;"), [])
+            self.assertEqual(hits("h.headers['x'] = idempotencyKey + name;"), ["headers[]="])
+
+    def test_no_setting_a_repo_admin_controls_can_widen_the_gate(self):
+        old = dict(os.environ)
+        os.environ.update(HTTP_HEADERS_ASCII_NAMES="name,org", HTTP_HEADERS_EXEMPT="pkg_orbit_japa:lib/")
+        try:
+            with ascii_file("") as _:
+                self.assertEqual(hits("h.headers['x'] = name;"), ["headers[]="])
+                self.assertEqual(hits("h.headers['x'] = n;", "lib/a.dart", ("pkg_orbit_japa",)), ["headers[]="])
+        finally:
+            os.environ.clear(); os.environ.update(old)
+
+    def test_the_shipped_ascii_names_are_pinned(self):
+        """Adding or removing a vouched name needs a reviewed change to this test as well as to the file."""
+        self.assertEqual(H.load_ascii_names(), {"idempotencyKey", "contentType"})
+
+    def test_the_ascii_file_has_no_entry_beyond_origin_main(self):
+        root = os.path.dirname(HERE)
+        try:
+            base = subprocess.run(["git", "show", "origin/main:scripts/http_headers_ascii_names.txt"], cwd=root, check=True,
+                                  capture_output=True, text=True).stdout
+        except (subprocess.CalledProcessError, OSError):
+            self.skipTest("origin/main has no ASCII-names file yet (first PR) or is not fetched")
+        with ascii_file(base) as path:
+            self.assertEqual(H.load_ascii_names() - H.load_ascii_names(path), set())
+
+    def test_a_malformed_ascii_name_is_an_error(self):
+        with ascii_file("not an identifier\n") as path:
+            with self.assertRaises(ValueError):
+                H.load_ascii_names(path)
+
+    def test_reads_comparisons_comments_and_strings_are_not_writes(self):
+        for src in ("if (r.headers['x'] == null) {}", "if (r.headers['y'] != y) {}", "final v = r.headers['z'];",
+                    "print('r.headers[\"x\"] = name;');", "// r.headers['x'] = name;"):
+            self.assertEqual(hits(src), [], src)
+
+    def test_the_escape_needs_a_reason(self):
+        self.assertEqual(hits("void f(){ h.headers['x-id'] = org.id; // header-ok: numeric id\n}"), [])
+        self.assertEqual(hits("// header-ok: ascii id\nvoid f(){ h.headers['x-id'] = org.id; }"), [])
+        self.assertEqual(hits("void f(){ h.headers['x-id'] = org.id; // header-ok:\n}"), ["headers[]="])
+        self.assertEqual(hits("final z = 1; // header-ok: x\nvoid f(){ h.headers['x-id'] = org.id; }"), ["headers[]="])
+
+    def test_a_multiline_value_reports_the_line_it_starts_on(self):
+        t = "void f() {\n  h.headers['x'] =\n      org.name;\n}\n"
+        self.assertEqual([n for n, _, _ in H.scan_text("lib/a.dart", t, None, ("r",))], [2])
+
+    def test_only_added_lines_count(self):
+        t = "void f() {\n  a.headers['x'] = n1;\n  b.headers['y'] = n2;\n}\n"
+        self.assertEqual([n for n, _, _ in H.scan_text("lib/a.dart", t, {3}, ("r",))], [3])
+        self.assertEqual(H.scan_text("lib/a.dart", t, set(), ("r",)), [])
+
+
+class Exempt(unittest.TestCase):
+    SRC = "void f(){ h.headers['x'] = n; }"
+
+    def test_client_core_lib_http_is_exempt_and_nothing_else(self):
+        self.assertEqual(hits(self.SRC, "lib/http/x.dart", ("pkg_orbit_client_core",)), [])
+        self.assertEqual(hits(self.SRC, "lib/ui/x.dart", ("pkg_orbit_client_core",)), ["headers[]="])
+        self.assertEqual(hits(self.SRC, "lib/http/x.dart", ("pkg_orbit_japa",)), ["headers[]="])  # another repo's lib/http is not exempt
+
+    def test_the_exempt_list_is_configurable(self):
+        self.assertEqual(hits(self.SRC, "lib/net/x.dart", ("pkg_orbit_japa",), exempt="pkg_orbit_japa:lib/net/"), [])
+        self.assertEqual(hits(self.SRC, "lib/http/x.dart", ("pkg_orbit_client_core",), exempt="pkg_orbit_client_core:lib/other/"), ["headers[]="])
+
+
+GOOD_ORG = """
+import 'x.dart';
+Map<String, String> flavorCodeHeaders() => const {};
+void applyOrgHeaders(Map<String, String> headers, OrgState? org) {
+  if (org?.orgId != null) headers['x-org-id'] = '${org!.orgId}';
+  final shortName = org?.orgShortName;
+  if (shortName != null && isHeaderSafe(shortName)) headers['x-org-short-name'] = shortName;
+}
+/// True when every character fits ISO-8859-1.
+bool isHeaderSafe(String value) => value.codeUnits.every((c) => c <= 0xFF);
+"""
+INTERCEPTOR = "class CachedHttpInterceptor { void go(r) { applyOrgHeaders(r.headers, org); } }\n"
+
+
+def files(**over):
+    f = {"lib/http/org_headers.dart": GOOD_ORG, "lib/http/_http_utils_web.dart": INTERCEPTOR, "lib/http/_http_utils_mobile.dart": INTERCEPTOR}
+    f.update({k.replace("__", "/"): v for k, v in over.items()})
+    return f
+
+
+def probs(fs):
+    return H.pins_problems(lambda p: fs.get(p))
+
+
+class RuleB(unittest.TestCase):
+    def test_the_good_files_pass(self):
+        self.assertEqual(probs(files()), [])
+
+    def test_guard_removed(self):
+        bad = GOOD_ORG.replace("bool isHeaderSafe(String value) => value.codeUnits.every((c) => c <= 0xFF);", "")
+        self.assertTrue(any("guard `bool isHeaderSafe(` is gone" in p for p in probs({**files(), "lib/http/org_headers.dart": bad})))
+
+    def test_guard_weakened_so_it_no_longer_tests_0xff(self):
+        bad = GOOD_ORG.replace("value.codeUnits.every((c) => c <= 0xFF)", "true")
+        self.assertTrue(any("no longer tests for 0xFF" in p for p in probs({**files(), "lib/http/org_headers.dart": bad})))
+
+    def test_a_block_bodied_guard_is_read_whole(self):
+        ok = GOOD_ORG.replace("bool isHeaderSafe(String value) => value.codeUnits.every((c) => c <= 0xFF);",
+                              "bool isHeaderSafe(String value) {\n  for (final c in value.codeUnits) {\n    if (c > 0xFF) return false;\n  }\n  return true;\n}")
+        self.assertEqual(probs({**files(), "lib/http/org_headers.dart": ok}), [])
+
+    def test_short_name_written_without_the_guard(self):
+        bad = GOOD_ORG.replace("if (shortName != null && isHeaderSafe(shortName)) headers['x-org-short-name'] = shortName;",
+                               "if (shortName != null) headers['x-org-short-name'] = shortName;")
+        self.assertTrue(any("written without isHeaderSafe" in p for p in probs({**files(), "lib/http/org_headers.dart": bad})))
+
+    def test_the_guard_on_the_line_above_counts(self):
+        ok = GOOD_ORG.replace("if (shortName != null && isHeaderSafe(shortName)) headers['x-org-short-name'] = shortName;",
+                              "if (shortName != null && isHeaderSafe(shortName))\n    headers['x-org-short-name'] = shortName;")
+        self.assertEqual(probs({**files(), "lib/http/org_headers.dart": ok}), [])
+
+    def test_the_write_vanishing_is_a_problem_not_a_pass(self):
+        bad = GOOD_ORG.replace("headers['x-org-short-name'] = shortName;", "")
+        self.assertTrue(any("no write of `x-org-short-name`" in p for p in probs({**files(), "lib/http/org_headers.dart": bad})))
+
+    def test_an_interceptor_that_stops_calling_apply_org_headers(self):
+        self.assertTrue(any("_http_utils_web.dart no longer calls applyOrgHeaders(" in p
+                            for p in probs({**files(), "lib/http/_http_utils_web.dart": "class X {}\n"})))
+
+    def test_a_missing_pinned_file_is_reported(self):
+        fs = files(); del fs["lib/http/org_headers.dart"]
+        self.assertTrue(any("is missing" in p for p in probs(fs)))
+
+
+def run(*cmd, cwd):
+    return subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, text=True).stdout
+
+
+def repo(base_files, head_files, pubspec="name: pkg_orbit_japa\n"):
+    root = tempfile.mkdtemp(prefix="httph-")
+    run("git", "init", "-q", "-b", "base", cwd=root)
+    for step, fs in (("base", base_files), ("head", head_files)):
+        if step == "head":
+            run("git", "checkout", "-qb", "head", cwd=root)
+        for rel, body in {**{"pubspec.yaml": pubspec}, **fs}.items():
+            os.makedirs(os.path.dirname(os.path.join(root, rel)) or root, exist_ok=True)
+            with open(os.path.join(root, rel), "w") as fh:
+                fh.write(body)
+        run("git", "add", "-A", cwd=root)
+        run("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", step, cwd=root)
+    return root
+
+
+class Gate(unittest.TestCase):
+    def gate(self, root, base="base", repo_env="pkg_orbit_japa"):
+        old = os.environ.get("GITHUB_REPOSITORY")
+        os.environ["GITHUB_REPOSITORY"] = "purpusgit/" + repo_env
+        cwd = os.getcwd()
+        os.chdir(root)
+        try:
+            return H.gate(base, root)
+        finally:
+            os.chdir(cwd)
+            os.environ.pop("GITHUB_REPOSITORY", None) if old is None else os.environ.update(GITHUB_REPOSITORY=old)
+
+    BAD = "void f(r, o) { r.headers['x-org'] = o.name; }\n"
+
+    def test_an_old_blunder_passes_and_a_new_one_fails(self):
+        self.assertEqual(self.gate(repo({"lib/old.dart": self.BAD}, {"lib/old.dart": self.BAD, "lib/n.dart": "void g(){}\n"})), 0)
+        self.assertEqual(self.gate(repo({}, {"lib/n.dart": self.BAD})), 1)
+
+    def test_a_line_added_to_an_old_function_only_counts_if_it_is_the_blunder(self):
+        base = "void f(r, o) {\n  r.headers['a'] = 'x';\n}\n"
+        self.assertEqual(self.gate(repo({"lib/a.dart": base}, {"lib/a.dart": base.replace("'x';", "'x';\n  r.headers['b'] = 'y';")})), 0)
+        self.assertEqual(self.gate(repo({"lib/a.dart": base}, {"lib/a.dart": base.replace("'x';", "'x';\n  r.headers['b'] = o.name;")})), 1)
+
+    def test_generated_and_non_lib_files_are_ignored(self):
+        self.assertEqual(self.gate(repo({}, {"lib/a.g.dart": self.BAD, "test/a_test.dart": self.BAD})), 0)
+
+    def test_an_unresolvable_base_fails_closed(self):
+        self.assertEqual(self.gate(repo({}, {"lib/a.dart": "x;\n"}), "no-such-ref"), 2)
+
+    def test_an_exempt_or_ascii_setting_in_the_environment_changes_nothing_at_the_gate(self):
+        old = dict(os.environ)
+        os.environ.update(HTTP_HEADERS_EXEMPT="pkg_orbit_japa:lib/", HTTP_HEADERS_ASCII_NAMES="org")
+        try:
+            self.assertEqual(self.gate(repo({}, {"lib/n.dart": "void f(r, o) { r.headers['x'] = org; }\n"})), 1)
+        finally:
+            os.environ.clear(); os.environ.update(old)
+
+    def test_a_missing_ascii_file_fails_closed(self):
+        old = H.ASCII_FILE
+        H.ASCII_FILE = os.path.join(tempfile.mkdtemp(), "nope.txt")
+        try:
+            self.assertEqual(self.gate(repo({}, {"lib/a.dart": "x;\n"})), 2)
+        finally:
+            H.ASCII_FILE = old
+
+    def test_client_core_runs_the_pins_and_other_repos_do_not(self):
+        self.assertEqual(self.gate(repo({}, files(), "name: orbit_client_core\n"), repo_env="pkg_orbit_client_core"), 0)
+        broken = files(lib__http__org_headers_dart=GOOD_ORG.replace("isHeaderSafe(shortName)", "true"))
+        broken["lib/http/org_headers.dart"] = GOOD_ORG.replace("isHeaderSafe(shortName)", "true")
+        self.assertEqual(self.gate(repo({}, broken, "name: orbit_client_core\n"), repo_env="pkg_orbit_client_core"), 1)
+        self.assertEqual(self.gate(repo({}, {"lib/a.dart": "void g(){}\n"}), repo_env="pkg_orbit_japa"), 0)
+
+    def test_client_core_pins_also_run_when_a_pr_touches_nothing_in_http(self):
+        fs = files(); fs["lib/ui/a.dart"] = "void g(){}\n"; del fs["lib/http/org_headers.dart"]
+        self.assertEqual(self.gate(repo({}, fs, "name: orbit_client_core\n"), repo_env="pkg_orbit_client_core"), 2)  # missing pinned file: fail closed
+
+
+class Workflows(unittest.TestCase):
+    @staticmethod
+    def wf(name):
+        import yaml
+        with open(os.path.join(HERE, "..", ".github", "workflows", name)) as fh:
+            return yaml.safe_load(fh)
+
+    def test_the_standalone_job_runs_the_same_script_as_the_reusable(self):
+        a = self.wf("reusable-http-headers.yml")["jobs"]["http-headers"]["steps"]
+        b = self.wf("ux-required.yml")["jobs"]["http-headers"]["steps"]
+        fetch = lambda ss: next(s["with"] for s in ss if s.get("with", {}).get("repository") == "purpusgit/.github")
+        run = lambda ss: next(s["run"] for s in ss if "http_headers.py" in s.get("run", ""))
+        self.assertEqual(fetch(a), fetch(b))
+        self.assertEqual(run(a), run(b))
+        self.assertEqual(fetch(b)["ref"], "main")
+        self.assertEqual(fetch(b)["sparse-checkout"].split(), ["scripts/http_headers.py", "scripts/http_headers_ascii_names.txt"])
+        self.assertIn("python3 -I", run(b))
+
+    def test_no_workflow_setting_can_change_what_the_gate_allows(self):
+        for name in ("reusable-http-headers.yml", "ux-required.yml"):
+            steps = self.wf(name)["jobs"]["http-headers"]["steps"]
+            env = next(s["env"] for s in steps if s.get("env", {}).get("BASE"))
+            self.assertEqual(set(env), {"BASE"}, name)  # no vars.* or inputs.* that an admin could set
+        self.assertEqual(set(self.wf("reusable-http-headers.yml")[True]["workflow_call"]["inputs"]), {"base_ref"})
+
+    def test_base_branch_and_no_op_without_pubspec(self):
+        for name in ("reusable-http-headers.yml", "ux-required.yml"):
+            steps = self.wf(name)["jobs"]["http-headers"]["steps"]
+            base = next(s["env"]["BASE"] for s in steps if s.get("env", {}).get("BASE"))
+            self.assertIn("github.base_ref", base)
+        steps = self.wf("ux-required.yml")["jobs"]["http-headers"]["steps"]
+        self.assertIn("pubspec.yaml", next(s for s in steps if s.get("id") == "flutter")["run"])
+        for s in steps:
+            if "http_headers.py" in s.get("run", "") or s.get("with", {}).get("repository") == "purpusgit/.github":
+                self.assertIn("steps.flutter.outputs.yes == 'true'", s.get("if", ""), s.get("name"))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=1)

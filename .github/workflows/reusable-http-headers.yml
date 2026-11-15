@@ -1,0 +1,60 @@
+name: Reusable — http-headers (no request header may carry a value we cannot prove is Latin-1)
+
+# PRABHUPAD-01 (specs#411): a non-Latin-1 org name went into the x-org-short-name header and a browser's fetch refused every call
+# ("Failed to load feed", fixed in client_core#1060 by the guard isHeaderSafe). This fails a pull request that ADDS, in lib/**.dart of
+# any Dart repo, a request header set to a NON-LITERAL value (headers[k] = x, headers.set/add/addAll/putIfAbsent, a `headers:` map or
+# argument), outside client_core's lib/http/ (where the OrbitHttp interceptor and applyOrgHeaders live). A literal, a header constant
+# or a `// header-ok: <why>` note is fine. In pkg_orbit_client_core it also pins the guard: isHeaderSafe must stay, the
+# x-org-short-name write must go through it, and both interceptors must still call applyOrgHeaders.
+# Logic and tests: scripts/http_headers.py, scripts/test_http_headers.py (a step of self-test-gates.yml).
+#
+#   http-headers:
+#     if: ${{ github.event_name == 'pull_request' }}
+#     uses: purpusgit/.github/.github/workflows/reusable-http-headers.yml@main
+#     # no inputs needed: it diffs against the PR's own base branch. The exempt directory and the ASCII names are in .github, not settings.
+#
+# It FAILS the check on any finding and on anything it cannot read (the diff, a pinned file): it never passes on an unreadable input.
+# Safe for PRs: no step runs PR code, and the script comes from this repo's main, so a PR cannot change the rules that judge it.
+# It needs no secret.
+
+on:
+  workflow_call:
+    inputs:
+      base_ref:
+        description: >-
+          Override the branch to diff against. Empty (the default) means the PR's own base branch. Only a run with no PR base
+          (workflow_dispatch) falls back to cwb.
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  http-headers:
+    runs-on: orbit-ci-light   # python3 and git only
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the base...HEAD diff needs the merge base
+
+      - name: Fetch the http-headers script from purpusgit/.github main
+        uses: actions/checkout@v4
+        with:
+          repository: purpusgit/.github
+          ref: main
+          path: .http-headers-src
+          sparse-checkout: |
+            scripts/http_headers.py
+            scripts/http_headers_ascii_names.txt
+          sparse-checkout-cone-mode: false
+
+      - name: http-headers — no header set to a value that is not provably ISO-8859-1
+        env:
+          BASE: ${{ inputs.base_ref || github.base_ref || 'cwb' }}
+        run: |
+          set -euo pipefail
+          git fetch -q origin "$BASE"
+          BASE_REF="origin/$BASE" python3 -I .http-headers-src/scripts/http_headers.py
