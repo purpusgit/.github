@@ -174,6 +174,24 @@ on:
         required: false
         type: boolean
         default: false
+      run_calm_static:
+        description: >-
+          CALM-1 static step (specs flutter-ui/calm-screen-gate-spec.md rev 5.1, section 3), WARN-ONLY by default: a changed
+          lib/ file with a widget class that builds a Scaffold, Dialog, AlertDialog or DraggableScrollableSheet (or is the body of a
+          showModalBottomSheet in the same file) needs a row in test/UI/web_visual/manifest.yaml; a manifest row added, removed or
+          changed needs a `calm-manifest-change: <row>: <why>` line in the PR body. A repo with no manifest gets a notice and a
+          pass. Logic and tests: scripts/calm_static.py, scripts/test_calm_static.py (`--emit-enforce` prints CALM_ENFORCE=<rows>
+          for the web-width test job). DEFAULTS FALSE; nothing here is a required check.
+        required: false
+        type: boolean
+        default: false
+      calm_mode:
+        description: >-
+          `warn` (the default) prints the CALM-1 findings and passes; `enforce` fails on a finding. Switch to enforce only after the
+          founder's go (spec section 5, week 2).
+        required: false
+        type: string
+        default: warn
       run_translation_keys_self:
         description: >
           Translation-key check, SELF mode — for pkg_orbit_client_core only, the repo
@@ -1139,6 +1157,35 @@ jobs:
           git fetch -q origin "${{ inputs.base_ref || 'cwb' }}"
           python3 .web-safe-src/scripts/web_safe_gate.py
 
+      # ── CALM-1 static step (specs flutter-ui/calm-screen-gate-spec.md rev 5.1, WARN-ONLY unless calm_mode: enforce) ───────
+      # Same shape as WEB-SAFE: the script comes from this repo's main, never from the PR. The PR body arrives in an env var,
+      # never inlined into the script text. The test job gets CALM_ENFORCE with `python3 calm_static.py --emit-enforce` as its
+      # own first step (no Flutter needed), so this step adds no `needs:` between the jobs.
+      - name: Fetch the CALM-1 static script
+        id: calm_src
+        if: ${{ inputs.run_calm_static }}
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: purpusgit/.github
+          ref: main
+          path: .calm-src
+          sparse-checkout: scripts/calm_static.py
+          sparse-checkout-cone-mode: false
+
+      - name: CALM-1 static — a changed screen has a manifest row; manifest changes are declared
+        id: calm
+        if: ${{ inputs.run_calm_static }}
+        continue-on-error: true
+        env:
+          BASE_REF: origin/${{ inputs.base_ref || 'cwb' }}
+          CALM_MODE: ${{ inputs.calm_mode }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          git fetch -q origin "${{ inputs.base_ref || 'cwb' }}"
+          python3 -I .calm-src/scripts/calm_static.py
+
       # ── Diff-scoped secret scan ───────────────────────────────────────
       # Stands in for the org-level push-protection / secret-scanning product, which
       # was switched off org-wide for cost. It is NOT equivalent to it and must not be
@@ -1382,6 +1429,8 @@ jobs:
             Translation checker self-test~${{ steps.tk_self_demo.outcome }}~this repo's own scripts/check_translations.py failed its --demo assertions, so the checker is broken and not the locale files under review
             WEB-SAFE script fetch~${{ steps.web_safe_src.outcome }}~the WEB-SAFE script could not be checked out from purpusgit/.github main, so mobile-only code was never checked
             WEB-SAFE mobile-only code~${{ steps.web_safe.outcome }}~a lib/ change adds a MethodChannel/EventChannel/BasicMessageChannel, a dart:io Platform/File/Directory use, or an import of a plugin with no web implementation, with no kIsWeb guard, no _mobile/_web conditional-import pair and no `// web:` note - OR the base could not be diffed and the gate refused to pass
+            CALM-1 static script fetch~${{ steps.calm_src.outcome }}~the CALM-1 static script could not be checked out from purpusgit/.github main, so changed screens were never checked against the web-width manifest
+            CALM-1 static (warn-only unless calm_mode is enforce)~${{ steps.calm.outcome }}~the base manifest or the diff could not be read (the step fails closed), OR calm_mode is enforce and a changed screen has no row in test/UI/web_visual/manifest.yaml or a manifest row change has no calm-manifest-change line in the PR body
             Secret scan (diff-scoped)~${{ steps.secret_scan.outcome }}~a line added by this PR matches a credential shape (private-key header, AKIA, sk_live/sk_test, ghp_/github_pat_, xox*, JWT, or a quoted api_key/secret/token/password assignment) - OR the scanner could not compute the PR diff and refused to pass on an uncomputable diff
             G-CENTRAL script fetch~${{ steps.central_src.outcome }}~the G-CENTRAL script could not be checked out from purpusgit/.github main, so the central-UI rules were never checked
             G-CENTRAL central UI~${{ steps.central.outcome }}~a new web_visual manifest row does not name its client_core CENTRAL_UI.md row (or lacks its central_exceptions.yaml entry), or the PR adds a copy of a central widget, route or wrapped package - OR an input could not be read and the gate refused to pass
