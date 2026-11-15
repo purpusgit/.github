@@ -11,7 +11,7 @@ RULE A (every Dart repo; lib/**.dart; ADDED lines only): setting a request heade
   OK: a string literal with no `$` interpolation, a `const`, a header-constant (kFooHeader, SCREAMING_CASE, Headers.x, HttpHeaders.x),
   null/true/false/a number, and an a ? b : c / a ?? b whose branches are OK. NOT OK: an identifier, a call, or a string that
   interpolates `$x`: we cannot prove it is ASCII. Exempt directory (default client_core's lib/http/, where the OrbitHttp
-  interceptor and applyOrgHeaders live): HTTP_HEADERS_EXEMPT, `repo:prefix,repo:prefix`.
+  interceptor and applyOrgHeaders live): DEFAULT_EXEMPT in this file, `repo:prefix,repo:prefix`, changed by a PR to .github.
   Escape: `// header-ok: <why>` (non-empty) on the line or the line above, for a value proven ASCII (an id field).
 
 RULE B (pkg_orbit_client_core only; whole files at the PR head, not just added lines): the Latin-1 guard must stay.
@@ -21,7 +21,7 @@ RULE B (pkg_orbit_client_core only; whole files at the PR head, not just added l
 
 shortcut: this is a lexical scan, not a Dart parser; a header set through a helper in another file is not seen, a conditional's
           test is judged like a value, and `headers.addAll(x)` of an already-built map is flagged (use header-ok if x is checked).
-Env: BASE_REF (default origin/cwb), GITHUB_REPOSITORY, HTTP_HEADERS_EXEMPT, HTTP_HEADERS_ASCII_NAMES.
+Env: BASE_REF (default origin/cwb), GITHUB_REPOSITORY. No setting a repo admin can change: the exempt directory and the ASCII names are in .github.
 Exit 0 clean, 1 on findings, 2 when the diff cannot be computed or a pinned file is missing. Test: python3 scripts/test_http_headers.py
 """
 import bisect
@@ -32,10 +32,33 @@ import sys
 
 CORE = {"pkg_orbit_client_core", "orbit_client_core"}
 DEFAULT_EXEMPT = "pkg_orbit_client_core:lib/http/"
-# Identifiers the repo vouches are ASCII by construction (a client-made UUID, a MIME type): HTTP_HEADERS_ASCII_NAMES=name,name.
-# Empty by default: whether `idempotencyKey` or `contentType` may pass is a policy call, not the scanner's.
+# Identifiers vouched ASCII by construction (a client-made UUID, a MIME type). The list is a FILE in purpusgit/.github, fetched from main
+# with this script, so a repo admin cannot widen it (no repo variable): scripts/http_headers_ascii_names.txt, pinned by the self-test.
+HERE = os.path.dirname(os.path.abspath(__file__))
+ASCII_FILE = os.path.join(HERE, "http_headers_ascii_names.txt")
+
+
+def load_ascii_names(path=None):
+    """The vouched names. A missing or unreadable file is an error, never an empty list (the gate fails closed)."""
+    names = set()
+    with open(path or ASCII_FILE, encoding="utf-8") as fh:
+        for ln in fh:
+            ln = ln.split("#", 1)[0].strip()
+            if ln:
+                if not re.fullmatch(r"[A-Za-z_]\w*", ln):
+                    raise ValueError("not an identifier in the ascii-names file: " + ln)
+                names.add(ln)
+    return names
+
+
+_ASCII = {}
+
+
 def ascii_names():
-    return {x.strip() for x in os.environ.get("HTTP_HEADERS_ASCII_NAMES", "").split(",") if x.strip()}
+    key = ASCII_FILE
+    if key not in _ASCII:
+        _ASCII[key] = load_ascii_names(key)
+    return _ASCII[key]
 
 
 HEADER_OK = re.compile(r"//\s*header-ok:\s*\S")
@@ -485,12 +508,16 @@ def repo_names(root="."):
 def gate(base, root="."):
     repos = repo_names(root)
     try:
+        ascii_names()
         git("rev-parse", "--verify", "-q", base + "^{commit}")
         files = added_lines(base)
+    except (OSError, ValueError) as e:
+        print("::error::http-headers could not read its ASCII-names file (%s). This is a gate failure, not a pass." % e)
+        return 2
     except subprocess.CalledProcessError as e:
         print("::error::http-headers could not diff against " + base + ": " + (e.stderr or "").strip() + ". This is a gate failure, not a clean tree.")
         return 2
-    exempt = os.environ.get("HTTP_HEADERS_EXEMPT") or DEFAULT_EXEMPT
+    exempt = DEFAULT_EXEMPT  # in code, not a repo variable: a repo admin cannot widen it
     findings = []
     for path, lines in sorted(files.items()):
         try:

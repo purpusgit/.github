@@ -11,7 +11,7 @@ name: Reusable — http-headers (no request header may carry a value we cannot p
 #   http-headers:
 #     if: ${{ github.event_name == 'pull_request' }}
 #     uses: purpusgit/.github/.github/workflows/reusable-http-headers.yml@main
-#     # no inputs needed: it diffs against the PR's own base branch. exempt: 'repo:prefix,repo:prefix' (default client_core's lib/http/).
+#     # no inputs needed: it diffs against the PR's own base branch. The exempt directory and the ASCII names are in .github, not settings.
 #
 # It FAILS the check on any finding and on anything it cannot read (the diff, a pinned file): it never passes on an unreadable input.
 # Safe for PRs: no step runs PR code, and the script comes from this repo's main, so a PR cannot change the rules that judge it.
@@ -24,16 +24,6 @@ on:
         description: >-
           Override the branch to diff against. Empty (the default) means the PR's own base branch. Only a run with no PR base
           (workflow_dispatch) falls back to cwb.
-        required: false
-        type: string
-        default: ''
-      ascii_names:
-        description: "Comma-separated identifiers the repo vouches are ASCII by construction (a client-made UUID, a MIME type), for example idempotencyKey,contentType. Empty: none."
-        required: false
-        type: string
-        default: ''
-      exempt:
-        description: "Directories where a header write is the interceptor's job, as 'repo:prefix,repo:prefix'. Empty uses pkg_orbit_client_core:lib/http/."
         required: false
         type: string
         default: ''
@@ -56,14 +46,14 @@ jobs:
           repository: purpusgit/.github
           ref: main
           path: .http-headers-src
-          sparse-checkout: scripts/http_headers.py
+          sparse-checkout: |
+            scripts/http_headers.py
+            scripts/http_headers_ascii_names.txt
           sparse-checkout-cone-mode: false
 
       - name: http-headers — no header set to a value that is not provably ISO-8859-1
         env:
           BASE: ${{ inputs.base_ref || github.base_ref || 'cwb' }}
-          HTTP_HEADERS_EXEMPT: ${{ inputs.exempt }}
-          HTTP_HEADERS_ASCII_NAMES: ${{ inputs.ascii_names || vars.HTTP_HEADERS_ASCII_NAMES }}
         run: |
           set -euo pipefail
           git fetch -q origin "$BASE"

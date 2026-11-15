@@ -132,15 +132,15 @@ jobs:
           repository: purpusgit/.github
           ref: main
           path: .http-headers-src
-          sparse-checkout: scripts/http_headers.py
+          sparse-checkout: |
+            scripts/http_headers.py
+            scripts/http_headers_ascii_names.txt
           sparse-checkout-cone-mode: false
 
       - name: http-headers — no header set to a value that is not provably ISO-8859-1
         if: ${{ steps.flutter.outputs.yes == 'true' }}
         env:
           BASE: ${{ github.base_ref || 'cwb' }}
-          HTTP_HEADERS_EXEMPT: ${{ vars.HTTP_HEADERS_EXEMPT }}
-          HTTP_HEADERS_ASCII_NAMES: ${{ vars.HTTP_HEADERS_ASCII_NAMES }}
         run: |
           set -euo pipefail
           git fetch -q origin "$BASE"

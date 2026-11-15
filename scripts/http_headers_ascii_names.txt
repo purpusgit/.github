@@ -1,0 +1,5 @@
+# Identifiers vouched ASCII by construction, so a header may carry them without a `// header-ok` (http_headers.py).
+# This file lives in purpusgit/.github and is fetched from main with the script, so a repo admin cannot widen it;
+# scripts/test_http_headers.py pins its contents. To add a name, change this file AND that test in a reviewed PR.
+idempotencyKey   # a client-made UUID (Uuid().v4())
+contentType      # a MIME type (lookupMimeType, application/json ...)

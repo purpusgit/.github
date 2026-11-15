@@ -13,6 +13,25 @@ sys.path.insert(0, HERE)
 import http_headers as H  # noqa: E402
 
 
+class ascii_file:
+    """Point the script at a temp ASCII-names file for one test (the cache is keyed by path)."""
+
+    def __init__(self, text):
+        self.text = text
+
+    def __enter__(self):
+        self.old = H.ASCII_FILE
+        fh = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
+        fh.write(self.text); fh.close()
+        self.path = fh.name
+        H.ASCII_FILE = self.path
+        return self.path
+
+    def __exit__(self, *a):
+        H.ASCII_FILE = self.old
+        os.unlink(self.path)
+
+
 def hits(src, path="lib/a.dart", repos=("pkg_orbit_japa",), added=None, exempt=H.DEFAULT_EXEMPT):
     return [k for _, k, _ in H.scan_text(path, "void f(){ %s }\n" % src if "\n" not in src else src, added, repos, exempt)]
 
@@ -113,17 +132,45 @@ class RuleA(unittest.TestCase):
         bad2 = ok.replace("{'Accept': 'application/json'}", "{'x-name': org.name}")
         self.assertEqual(hits(bad2), ["headers-fn"])
 
-    def test_the_repo_can_vouch_for_named_identifiers_and_nothing_else(self):
+    def test_vouched_names_come_from_the_file_and_only_whole_identifiers_pass(self):
         src = "http.post(u, headers: {'Idempotency-Key': idempotencyKey, 'x-name': org.name});"
-        self.assertEqual(hits(src), ["headers:", "headers:"])
-        os.environ["HTTP_HEADERS_ASCII_NAMES"] = "idempotencyKey, contentType"
-        try:
+        with ascii_file("") as _:
+            self.assertEqual(hits(src), ["headers:", "headers:"])
+        with ascii_file("idempotencyKey\ncontentType  # a MIME type\n") as _:
             self.assertEqual(hits(src), ["headers:"])  # only org.name is left
             self.assertEqual(hits("h.headers['Content-Type'] = contentType;"), [])
             self.assertEqual(hits("h.headers['Content-Type'] = contentTypeOfUser;"), ["headers[]="])
             self.assertEqual(hits("h.headers['x'] = widget.idempotencyKey;"), [])
+            self.assertEqual(hits("h.headers['x'] = idempotencyKey + name;"), ["headers[]="])
+
+    def test_no_setting_a_repo_admin_controls_can_widen_the_gate(self):
+        old = dict(os.environ)
+        os.environ.update(HTTP_HEADERS_ASCII_NAMES="name,org", HTTP_HEADERS_EXEMPT="pkg_orbit_japa:lib/")
+        try:
+            with ascii_file("") as _:
+                self.assertEqual(hits("h.headers['x'] = name;"), ["headers[]="])
+                self.assertEqual(hits("h.headers['x'] = n;", "lib/a.dart", ("pkg_orbit_japa",)), ["headers[]="])
         finally:
-            del os.environ["HTTP_HEADERS_ASCII_NAMES"]
+            os.environ.clear(); os.environ.update(old)
+
+    def test_the_shipped_ascii_names_are_pinned(self):
+        """Adding or removing a vouched name needs a reviewed change to this test as well as to the file."""
+        self.assertEqual(H.load_ascii_names(), {"idempotencyKey", "contentType"})
+
+    def test_the_ascii_file_has_no_entry_beyond_origin_main(self):
+        root = os.path.dirname(HERE)
+        try:
+            base = subprocess.run(["git", "show", "origin/main:scripts/http_headers_ascii_names.txt"], cwd=root, check=True,
+                                  capture_output=True, text=True).stdout
+        except (subprocess.CalledProcessError, OSError):
+            self.skipTest("origin/main has no ASCII-names file yet (first PR) or is not fetched")
+        with ascii_file(base) as path:
+            self.assertEqual(H.load_ascii_names() - H.load_ascii_names(path), set())
+
+    def test_a_malformed_ascii_name_is_an_error(self):
+        with ascii_file("not an identifier\n") as path:
+            with self.assertRaises(ValueError):
+                H.load_ascii_names(path)
 
     def test_reads_comparisons_comments_and_strings_are_not_writes(self):
         for src in ("if (r.headers['x'] == null) {}", "if (r.headers['y'] != y) {}", "final v = r.headers['z'];",
@@ -271,6 +318,22 @@ class Gate(unittest.TestCase):
     def test_an_unresolvable_base_fails_closed(self):
         self.assertEqual(self.gate(repo({}, {"lib/a.dart": "x;\n"}), "no-such-ref"), 2)
 
+    def test_an_exempt_or_ascii_setting_in_the_environment_changes_nothing_at_the_gate(self):
+        old = dict(os.environ)
+        os.environ.update(HTTP_HEADERS_EXEMPT="pkg_orbit_japa:lib/", HTTP_HEADERS_ASCII_NAMES="org")
+        try:
+            self.assertEqual(self.gate(repo({}, {"lib/n.dart": "void f(r, o) { r.headers['x'] = org; }\n"})), 1)
+        finally:
+            os.environ.clear(); os.environ.update(old)
+
+    def test_a_missing_ascii_file_fails_closed(self):
+        old = H.ASCII_FILE
+        H.ASCII_FILE = os.path.join(tempfile.mkdtemp(), "nope.txt")
+        try:
+            self.assertEqual(self.gate(repo({}, {"lib/a.dart": "x;\n"})), 2)
+        finally:
+            H.ASCII_FILE = old
+
     def test_client_core_runs_the_pins_and_other_repos_do_not(self):
         self.assertEqual(self.gate(repo({}, files(), "name: orbit_client_core\n"), repo_env="pkg_orbit_client_core"), 0)
         broken = files(lib__http__org_headers_dart=GOOD_ORG.replace("isHeaderSafe(shortName)", "true"))
@@ -298,8 +361,15 @@ class Workflows(unittest.TestCase):
         self.assertEqual(fetch(a), fetch(b))
         self.assertEqual(run(a), run(b))
         self.assertEqual(fetch(b)["ref"], "main")
-        self.assertEqual(fetch(b)["sparse-checkout"].strip(), "scripts/http_headers.py")
+        self.assertEqual(fetch(b)["sparse-checkout"].split(), ["scripts/http_headers.py", "scripts/http_headers_ascii_names.txt"])
         self.assertIn("python3 -I", run(b))
+
+    def test_no_workflow_setting_can_change_what_the_gate_allows(self):
+        for name in ("reusable-http-headers.yml", "ux-required.yml"):
+            steps = self.wf(name)["jobs"]["http-headers"]["steps"]
+            env = next(s["env"] for s in steps if s.get("env", {}).get("BASE"))
+            self.assertEqual(set(env), {"BASE"}, name)  # no vars.* or inputs.* that an admin could set
+        self.assertEqual(set(self.wf("reusable-http-headers.yml")[True]["workflow_call"]["inputs"]), {"base_ref"})
 
     def test_base_branch_and_no_op_without_pubspec(self):
         for name in ("reusable-http-headers.yml", "ux-required.yml"):
