@@ -5,14 +5,17 @@ name: UX required checks (org ruleset, standalone)
 # (reusable-ux-layout.yml and friends) stay for per-repo branch-protection callers; scripts/test_ux_layout.py asserts that
 # this file and the reusable run the SAME script, fetched the same way, with the same base.
 #
-# The JOB NAMES are the required contexts, so keep them stable: `ux-layout` and `ux-one-template`.
+# The JOB NAMES are the required contexts, so keep them stable: `ux-layout`, `ux-one-template` and `seeded-and-seen`.
 # Each job no-ops (passes in seconds) in a repo with no pubspec.yaml, so a ruleset can cover every repo without a Flutter list.
 # The base is the PR's own base branch (github.base_ref). No step runs PR code, the script comes from this repo's main, and
 # no secret is needed.
 
 on:
   pull_request:
-    types: [opened, synchronize, edited, reopened]
+    # `reopened`: without it a closed-and-reopened PR never reports a required check. `labeled`, `unlabeled`, `ready_for_review`
+    # and `converted_to_draft` are for seeded-and-seen (a label, a body edit or leaving draft re-runs it); the other jobs
+    # recompute the same answer on those events, they never skip, so a stale red cannot be masked by a skipped re-run.
+    types: [opened, synchronize, edited, reopened, labeled, unlabeled, ready_for_review, converted_to_draft]
 
 permissions:
   contents: read
@@ -83,3 +86,28 @@ jobs:
           set -euo pipefail
           git fetch -q origin "$BASE"
           BASE_REF="origin/$BASE" python3 -I .ux-one-template-src/scripts/ux_one_template.py
+
+  seeded-and-seen:
+    # No checkout of PR code: the body, labels and draft flag come from the event payload, the changed files from the API.
+    # A repo with no screen or widget file in the PR is a one-line "not applicable" pass. The account pattern is per repo:
+    # set the repo (or org) variable SEEDED_TEST_ACCOUNT_PATTERN; the default is JAPA_TEST_[A-Z0-9_]+.
+    runs-on: orbit-ci-light   # python3 and the API only
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Fetch the seeded-and-seen script from purpusgit/.github main
+        uses: actions/checkout@v4
+        with:
+          repository: purpusgit/.github
+          ref: main
+          path: .seeded-and-seen-src
+          sparse-checkout: scripts/seeded_and_seen.py
+          sparse-checkout-cone-mode: false
+
+      - name: seeded-and-seen — a UI PR names its test accounts, build, seeded ids and a picture per state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TEST_ACCOUNT_PATTERN: ${{ vars.SEEDED_TEST_ACCOUNT_PATTERN || 'JAPA_TEST_[A-Z0-9_]+' }}
+        run: python3 -I .seeded-and-seen-src/scripts/seeded_and_seen.py
