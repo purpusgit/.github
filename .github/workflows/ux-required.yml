@@ -5,7 +5,7 @@ name: UX required checks (org ruleset, standalone)
 # (reusable-ux-layout.yml and friends) stay for per-repo branch-protection callers; scripts/test_ux_layout.py asserts that
 # this file and the reusable run the SAME script, fetched the same way, with the same base.
 #
-# The JOB NAMES are the required contexts, so keep them stable: `ux-layout`, `ux-one-template` and `seeded-and-seen`.
+# The JOB NAMES are the required contexts, so keep them stable: `ux-layout`, `ux-one-template`, `seeded-and-seen` and `http-headers`.
 # Each job no-ops (passes in seconds) in a repo with no pubspec.yaml, so a ruleset can cover every repo without a Flutter list.
 # The base is the PR's own base branch (github.base_ref). No step runs PR code, the script comes from this repo's main, and
 # no secret is needed.
@@ -111,3 +111,36 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TEST_ACCOUNT_PATTERN: ${{ vars.SEEDED_TEST_ACCOUNT_PATTERN || 'JAPA_TEST_[A-Z0-9_]+' }}
         run: python3 -I .seeded-and-seen-src/scripts/seeded_and_seen.py
+
+  http-headers:
+    runs-on: orbit-ci-light   # python3 and git only
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the base...HEAD diff needs the merge base
+
+      - name: Is this a Flutter repo?
+        id: flutter
+        run: |
+          if [ -f pubspec.yaml ]; then echo "yes=true" >> "$GITHUB_OUTPUT"; else echo "yes=false" >> "$GITHUB_OUTPUT"; echo "No pubspec.yaml: http-headers does not apply."; fi
+
+      - name: Fetch the http-headers script from purpusgit/.github main
+        if: ${{ steps.flutter.outputs.yes == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          repository: purpusgit/.github
+          ref: main
+          path: .http-headers-src
+          sparse-checkout: scripts/http_headers.py
+          sparse-checkout-cone-mode: false
+
+      - name: http-headers — no header set to a value that is not provably ISO-8859-1
+        if: ${{ steps.flutter.outputs.yes == 'true' }}
+        env:
+          BASE: ${{ github.base_ref || 'cwb' }}
+          HTTP_HEADERS_EXEMPT: ${{ vars.HTTP_HEADERS_EXEMPT }}
+        run: |
+          set -euo pipefail
+          git fetch -q origin "$BASE"
+          BASE_REF="origin/$BASE" python3 -I .http-headers-src/scripts/http_headers.py

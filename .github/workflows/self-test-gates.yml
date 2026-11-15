@@ -199,3 +199,5 @@ jobs:
         run: python3 scripts/test_ux_one_template.py
       - name: Run seeded-and-seen self-test (UI PR body needs a TESTED section; fake API, no network)
         run: python3 scripts/test_seeded_and_seen.py
+      - name: Run http-headers self-test (no header with a value not provably Latin-1; client_core guard pins; temp git repos)
+        run: python3 scripts/test_http_headers.py
