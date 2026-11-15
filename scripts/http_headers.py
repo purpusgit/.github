@@ -42,7 +42,8 @@ HEADER_OK = re.compile(r"//\s*header-ok:\s*\S")
 CONST_CLASSES = r"(?:Headers|HttpHeaders|HeaderValues|HeaderConstants|ContentType)"
 CONST_NAME = re.compile(r"^(?:[A-Za-z_]\w*\.)*(?:_?k[A-Z]\w*|[A-Z][A-Z0-9_]{2,})$|^" + CONST_CLASSES + r"\.\w+(?:\.\w+)*$")
 # Calls whose result is provably ASCII: a UUID, a MIME type from the mime package, the decimal text of a length. Edit here.
-SAFE_CALLS = [r"(?:const\s+)?Uuid\(\)\.v[145]\(\)", r"lookupMimeType\(.*\)", r"[\w.]*[lL]ength\.toString\(\)"]
+SAFE_CALLS = [r"(?:const\s+)?Uuid\(\)\.v[145]\(\)", r"lookupMimeType\(.*\)", r"[\w.]*[lL]ength\.toString\(\)",
+              r"FlavorConfig\(\)\.flavor\.name"]  # an enum case name is a Dart identifier
 # Rule B: (file, header, guard). Edit here if the interceptor moves.
 PINS = {"file": "lib/http/org_headers.dart", "guard": "isHeaderSafe", "header": "x-org-short-name",
         "interceptors": ["lib/http/_http_utils_web.dart", "lib/http/_http_utils_mobile.dart"], "applier": "applyOrgHeaders("}

@@ -94,7 +94,7 @@ class RuleA(unittest.TestCase):
         self.assertEqual(hits(t), ["headers[]="])
 
     def test_known_ascii_calls_are_fine(self):
-        for v in ("const Uuid().v4()", "Uuid().v4()", "lookupMimeType(file.path) ?? 'application/octet-stream'", "bytes.length.toString()"):
+        for v in ("const Uuid().v4()", "Uuid().v4()", "lookupMimeType(file.path) ?? 'application/octet-stream'", "bytes.length.toString()", "FlavorConfig().flavor.name"):
             self.assertEqual(hits("h.headers['k'] = %s;" % v), [], v)
         self.assertEqual(hits("h.headers['k'] = key ?? _newKey();"), ["headers[]="])
 
