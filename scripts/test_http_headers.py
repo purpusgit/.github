@@ -51,19 +51,59 @@ class RuleA(unittest.TestCase):
         self.assertEqual(hits("r.headers.putIfAbsent('A', () => 'lit');"), [])
 
     def test_add_all(self):
-        self.assertEqual(hits("h.headers.addAll({'a': 'x', 'b': name, 'c': 'lit'});"), ["headers.addAll{}"])
+        self.assertEqual(hits("h.headers.addAll({'a': 'x', 'b': name, 'c': 'lit'});"), ["headers.addAll"])
         self.assertEqual(hits("h.headers.addAll({'a': 'x'});"), [])
-        self.assertEqual(hits("h.headers.addAll(other);"), ["headers.addAll(x)"])
+        self.assertEqual(hits("h.headers.addAll(other);"), ["headers.addAll"])
         self.assertEqual(hits("h.headers.addAll(const {'a': 'x'});"), [])
 
     def test_headers_named_argument(self):
-        self.assertEqual(hits("dio.get(u, options: Options(headers: {'a': 'x', 'b': user.email}));"), ["headers:{}"])
+        self.assertEqual(hits("dio.get(u, options: Options(headers: {'a': 'x', 'b': user.email}));"), ["headers:"])
         self.assertEqual(hits("http.get(u, headers: {'Accept': 'application/json'});"), [])
         self.assertEqual(hits("http.get(u, headers: const {'a': 'b'});"), [])
         self.assertEqual(hits("http.get(u, headers: <String, String>{'a': 'b'});"), [])
-        self.assertEqual(hits("http.get(u, headers: h);"), ["headers:x"])
-        self.assertEqual(hits("http.get(u, headers: {...base, 'a': 'b'});"), ["headers:{}"])
-        self.assertEqual(hits("fetch(u, FetchOptions(headers: {'x-name': org.shortName}));"), ["headers:{}"])
+        self.assertEqual(hits("http.get(u, headers: h);"), ["headers:"])  # a name with no `headers` in it could be anything
+        self.assertEqual(hits("http.get(u, headers: {...base, 'a': 'b'});"), ["headers:"])
+        self.assertEqual(hits("fetch(u, FetchOptions(headers: {'x-name': org.shortName}));"), ["headers:"])
+
+    def test_a_map_handed_on_is_not_a_map_built_here(self):
+        for src in ("http.get(u, headers: headers);", "http.get(u, headers: request.headers);", "http.get(u, headers: jsonHeaders);",
+                    "http.get(u, headers: _headers(json: true));", "http.get(u, headers: flavorCodeHeaders());",
+                    "http.get(u, headers: (args['headers'] as Map<String, String>?) ?? {});", "http.get(u, headers: null);",
+                    "http.get(u, headers: {...jsonHeaders, 'a': 'b'});", "h.headers.addAll(...?headers);"):
+            self.assertEqual(hits(src), [], src)
+
+    def test_a_file_level_literal_map_may_be_passed_or_spread(self):
+        t = "const _noStore = {'Cache-Control': 'no-store'};\nfinal Map<String, String> _json = const {'Content-Type': 'application/json'};\n" \
+            "void f(){ http.get(u, headers: _noStore); http.get(u, headers: {..._json, ..._noStore}); }\n"
+        self.assertEqual(hits(t), [])
+        t2 = "final _bad = {'x': name};\nvoid f(){ http.get(u, headers: _bad); }\n"
+        self.assertEqual(hits(t2), ["headers:"])
+
+    def test_collection_if_judges_the_value_not_the_condition(self):
+        self.assertEqual(hits("http.get(u, headers: {if (fresh) 'no-cache': 'yes', 'a': 'b'});"), [])
+        self.assertEqual(hits("http.get(u, headers: {if (fresh) 'no-cache': name});"), ["headers:"])
+
+    def test_a_conditional_map_judges_its_branches(self):
+        self.assertEqual(hits("http.get(u, headers: fresh ? const {'no-cache': 'yes'} : null);"), [])
+        self.assertEqual(hits("http.get(u, headers: id.isEmpty ? null : {kOrgHeader: id});"), ["headers:"])
+
+    def test_a_cascade_ends_the_value(self):
+        t = "void f(r){ r..headers['Content-Type'] = 'application/json'..contentLength = n; }"
+        self.assertEqual(hits(t), [])
+        t = "void f(r){ r..headers['Content-Type'] = ct..contentLength = n; }"
+        self.assertEqual(hits(t), ["headers[]="])
+
+    def test_known_ascii_calls_are_fine(self):
+        for v in ("const Uuid().v4()", "Uuid().v4()", "lookupMimeType(file.path) ?? 'application/octet-stream'", "bytes.length.toString()"):
+            self.assertEqual(hits("h.headers['k'] = %s;" % v), [], v)
+        self.assertEqual(hits("h.headers['k'] = key ?? _newKey();"), ["headers[]="])
+
+    def test_a_header_map_built_here_is_judged_where_it_is_built(self):
+        self.assertEqual(hits("final headers = {'x-name': org.name};\n"), ["headers-map="])
+        self.assertEqual(hits("final headers = {'x-name': 'lit'};\n"), [])
+        self.assertEqual(hits("Map<String, String> actAsHeaders(String a) => {'x-act-as': a};\n"), ["headers-fn"])
+        self.assertEqual(hits("Map<String, String> authHeaders() => {'Accept': 'application/json'};\n"), [])
+        self.assertEqual(hits("Map<String, String> orgHeaders(o) {\n  return o == null ? const {} : {'x-o': o.name};\n}\n"), ["headers-fn"])
 
     def test_reads_comparisons_comments_and_strings_are_not_writes(self):
         for src in ("if (r.headers['x'] == null) {}", "if (r.headers['y'] != y) {}", "final v = r.headers['z'];",

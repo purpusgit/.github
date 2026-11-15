@@ -35,6 +35,8 @@ DEFAULT_EXEMPT = "pkg_orbit_client_core:lib/http/"
 HEADER_OK = re.compile(r"//\s*header-ok:\s*\S")
 CONST_CLASSES = r"(?:Headers|HttpHeaders|HeaderValues|HeaderConstants|ContentType)"
 CONST_NAME = re.compile(r"^(?:[A-Za-z_]\w*\.)*(?:_?k[A-Z]\w*|[A-Z][A-Z0-9_]{2,})$|^" + CONST_CLASSES + r"\.\w+(?:\.\w+)*$")
+# Calls whose result is provably ASCII: a UUID, a MIME type from the mime package, the decimal text of a length. Edit here.
+SAFE_CALLS = [r"(?:const\s+)?Uuid\(\)\.v[145]\(\)", r"lookupMimeType\(.*\)", r"[\w.]*[lL]ength\.toString\(\)"]
 # Rule B: (file, header, guard). Edit here if the interceptor moves.
 PINS = {"file": "lib/http/org_headers.dart", "guard": "isHeaderSafe", "header": "x-org-short-name",
         "interceptors": ["lib/http/_http_utils_web.dart", "lib/http/_http_utils_mobile.dart"], "applier": "applyOrgHeaders("}
@@ -111,7 +113,7 @@ def split_top(m, a, b, sep=","):
 
 
 def stmt_end(m, a):
-    """Index of the `;` that ends the expression starting at a (depth 0), or end of text."""
+    """Index of the `;` (or a depth-0 cascade `..`) that ends the expression starting at a, or the end of text."""
     depth = 0
     for k in range(a, len(m)):
         if m[k] in "([{":
@@ -120,7 +122,7 @@ def stmt_end(m, a):
             if depth == 0:
                 return k
             depth -= 1
-        elif m[k] == ";" and depth == 0:
+        elif depth == 0 and (m[k] == ";" or (m.startswith("..", k) and not m.startswith("...", k) and not m.startswith("...", k - 1))):
             return k
     return len(m)
 
@@ -177,7 +179,9 @@ def value_ok(e):
         return True
     if string_literal_safe(e):
         return True
-    return bool(CONST_NAME.match(e))
+    if CONST_NAME.match(e):
+        return True
+    return any(re.fullmatch(c, e) for c in SAFE_CALLS)
 
 
 def ok_note(lines, idx):
@@ -188,24 +192,99 @@ def ok_note(lines, idx):
     return idx > 0 and lines[idx - 1].lstrip().startswith("//") and bool(HEADER_OK.search(lines[idx - 1]))
 
 
-def map_entries(m, code, a, b):
-    """(value_start, value_end) of each entry of a map literal body m[a:b]; a spread entry is returned as non-literal."""
-    out = []
-    for s, e in split_top(m, a, b):
-        seg = m[s:e]
-        mm = re.match(r"\s*(?:\.\.\.\s*|(?:'[^']*'|\"[^\"]*\"|[\w.]+)\s*:\s*)", seg)
-        if seg.strip().startswith("..."):
-            out.append((s, e))
-        elif mm:
-            out.append((s + mm.end(), e))
+def local_maps(code, skel):
+    """Names of file-level const/final maps whose values are all literal (_noStore, _json ...): passing one is safe."""
+    names = set()
+    for mm in re.finditer(r"\b(?:const|final)\s+(?:[\w<>, ?]+?\s+)?(_?\w+)\s*=\s*(?:const\s+)?(?:<[^{=]*>\s*)?\{", skel):
+        ob = mm.end() - 1
+        cb = match_close(skel, ob)
+        if cb > 0 and not any(True for _ in judge_entries(code, skel, ob + 1, cb, set())):
+            names.add(mm.group(1))
+    return names
+
+
+def strip_collection(seg):
+    """`if (c) 'k': v` / `else 'k': v` -> `'k': v` (the condition is not a value)."""
+    seg = seg.strip()
+    for _ in range(3):
+        m = re.match(r"(?:else\s+)?(?:if|for)\s*\(", seg)
+        if m:
+            c = match_close(seg, m.end() - 1)
+            seg = seg[c + 1:].strip() if c > 0 else seg
+        elif seg.startswith("else "):
+            seg = seg[5:].strip()
         else:
-            out.append((s, e))
-    return out
+            break
+    return seg
+
+
+def passes_through(e, maps):
+    """A map handed on, not built here: a name or call with `headers` in it, a local literal map, null or {}."""
+    e = re.sub(r"\s+", " ", e.strip())
+    e = re.sub(r"\s+as\s+[\w<>?, ]+", "", e)
+    e = e.replace("!", "").replace("?", "").strip()
+    e = re.sub(r"\?\?\s*(?:const\s+)?(?:<[^{]*>)?\{\s*\}$", "", e).strip()
+    while e.startswith("(") and e.endswith(")") and match_close(e, 0) == len(e) - 1:
+        e = e[1:-1].strip()
+    if e in ("", "null", "{}", "const {}") or e in maps:
+        return True
+    return bool(re.fullmatch(r"[\w.\[\]']*[hH]eaders[\w.\[\]']*(?:\(.*\))?", e))
+
+
+def judge_entries(code, skel, a, b, maps):
+    """(offset, text) of each value in the map-literal body skel[a:b] that is not provably safe."""
+    for s_, e_ in split_top(skel, a, b):
+        seg_c, seg_k = code[s_:e_], skel[s_:e_]
+        lead = len(seg_c) - len(seg_c.lstrip())
+        seg = strip_collection(seg_k)
+        cut = len(seg_k.strip()) - len(seg)
+        base = s_ + lead + cut
+        seg_code = code[base:base + len(seg)]
+        if seg.startswith("..."):
+            if not passes_through(seg_code[3:], maps):
+                yield base, seg_code
+            continue
+        mm = re.match(r"(?:'[^']*'|\"[^\"]*\"|[\w.]+)\s*:\s*", seg)
+        v = seg_code[mm.end():] if mm else seg_code
+        if not value_ok(v):
+            yield base + (mm.end() if mm else 0), v
+
+
+def judge_map_expr(code, skel, a, b, maps):
+    """(offset, text) of the non-literal parts of an expression that should be a header map."""
+    ex = skel[a:b]
+    lead = len(ex) - len(ex.lstrip())
+    a += lead
+    ex = ex.strip()
+    if not ex:
+        return
+    if ex.startswith("const "):
+        return
+    q = top_level(ex, "??")
+    if q >= 0:
+        yield from judge_map_expr(code, skel, a, a + q, maps)
+        yield from judge_map_expr(code, skel, a + q + 2, a + len(ex), maps)
+        return
+    q = top_level(ex, "?")
+    if q >= 0:
+        c = top_level(ex[q + 1:], ":")
+        if c >= 0:
+            yield from judge_map_expr(code, skel, a + q + 1, a + q + 1 + c, maps)
+            yield from judge_map_expr(code, skel, a + q + 2 + c, a + len(ex), maps)
+            return
+    ob = re.match(r"(?:<[^{}()]*>\s*)?\{", ex)
+    if ob:
+        o = a + ob.end() - 1
+        c = match_close(skel, o)
+        yield from judge_entries(code, skel, o + 1, c, maps)
+        return
+    if not passes_through(code[a:a + len(ex)], maps):
+        yield a, code[a:a + len(ex)]
 
 
 def header_writes(code, skel):
-    """[(offset, kind, value_text)] of every place a request header gets a value in this file."""
-    found = []
+    """[(offset, kind, value_text)] of every place a request header gets a value that is not provably safe in this file."""
+    found, maps = [], local_maps(code, skel)
     # headers[k] = v   /   headers[k] ??= v
     for mm in re.finditer(r"(?<![\w.])(?:[\w.]+\.)?\w*[hH]eaders\s*\[", skel):
         o = mm.end() - 1
@@ -215,7 +294,9 @@ def header_writes(code, skel):
         am = re.match(r"\s*(\?\?=|=)(?!=)", skel[c + 1:])
         if am:
             a = c + 1 + am.end()
-            found.append((mm.start(), "headers[]=", code[a:stmt_end(skel, a)]))
+            v = code[a:stmt_end(skel, a)]
+            if not value_ok(v):
+                found.append((mm.start(), "headers[]=", v))
     # headers.set / add / putIfAbsent / addAll / update
     for mm in re.finditer(r"(?<![\w.])(?:[\w.]+\.)?\w*[hH]eaders\s*\.\s*(set|add|putIfAbsent|addAll|update)\s*\(", skel):
         o = mm.end() - 1
@@ -225,22 +306,18 @@ def header_writes(code, skel):
         parts = split_top(skel, o + 1, c)
         kind = mm.group(1)
         if kind in ("set", "add") and len(parts) >= 2:
-            found.append((mm.start(), "headers." + kind, code[parts[1][0]:parts[1][1]]))
+            v = code[parts[1][0]:parts[1][1]]
+            if not value_ok(v):
+                found.append((mm.start(), "headers." + kind, v))
         elif kind in ("putIfAbsent", "update") and len(parts) >= 2:
             body = code[parts[1][0]:parts[1][1]]
             ar = re.match(r"\s*\(\s*\)\s*=>\s*", body)
-            found.append((mm.start(), "headers." + kind, body[ar.end():] if ar else body))
+            v = body[ar.end():] if ar else body
+            if not value_ok(v):
+                found.append((mm.start(), "headers." + kind, v))
         elif kind == "addAll" and parts:
-            s, e = parts[0]
-            arg = skel[s:e].strip()
-            lead = re.match(r"\s*(?:const\s+)?(?:<[^{]*>\s*)?\{", skel[s:e])
-            if lead:
-                ob = s + lead.end() - 1
-                cb = match_close(skel, ob)
-                for vs, ve in map_entries(skel, code, ob + 1, cb):
-                    found.append((vs, "headers.addAll{}", code[vs:ve]))
-            else:
-                found.append((mm.start(), "headers.addAll(x)", code[s:e]))
+            for off, v in judge_map_expr(code, skel, parts[0][0], parts[0][1], maps):
+                found.append((off, "headers.addAll", v))
     # headers: <map or expr>  (named argument)
     for mm in re.finditer(r"(?<![\w.])headers\s*:\s*", skel):
         s = mm.end()
@@ -257,14 +334,31 @@ def header_writes(code, skel):
             elif skel[k] == "," and depth == 0:
                 break
             e = k + 1
-        lead = re.match(r"(?:const\s+)?(?:<[^{]*>\s*)?\{", skel[s:e])
-        if lead:
-            ob = s + lead.end() - 1
-            cb = match_close(skel, ob)
-            for vs, ve in map_entries(skel, code, ob + 1, cb):
-                found.append((vs, "headers:{}", code[vs:ve]))
-        else:
-            found.append((mm.start(), "headers:x", code[s:e]))
+        for off, v in judge_map_expr(code, skel, s, e, maps):
+            found.append((off, "headers:", v))
+    # a header map BUILT here: `final h = {..}` / `fooHeaders = {..}` and `Map<..> fooHeaders(..) => {..}` / `{ return {..}; }`
+    for mm in re.finditer(r"\b(\w*[hH]eaders\w*)\s*=\s*(?!=)", skel):
+        a = mm.end()
+        if re.match(r"(?:const\s+)?(?:<[^{}()]*>\s*)?\{", skel[a:]):
+            for off, v in judge_map_expr(code, skel, a, stmt_end(skel, a), maps):
+                found.append((off, "headers-map=", v))
+    for mm in re.finditer(r"(?:^|\n)[ \t]*(?:static\s+)?(?:Map<[^;{(=]*>|\w+)\??\s+(\w*[hH]eaders\w*)\s*\(", skel):
+        cp = match_close(skel, mm.end() - 1)
+        if cp < 0:
+            continue
+        rest = skel[cp + 1:]
+        lead = len(rest) - len(rest.lstrip())
+        if rest.lstrip().startswith("=>"):
+            a = cp + 1 + lead + 2
+            for off, v in judge_map_expr(code, skel, a, stmt_end(skel, a), maps):
+                found.append((off, "headers-fn", v))
+        elif rest.lstrip().startswith("{"):
+            ob = cp + 1 + lead
+            body_end = match_close(skel, ob)
+            for rm in re.finditer(r"\breturn\b", skel[ob:body_end]):
+                a = ob + rm.end()
+                for off, v in judge_map_expr(code, skel, a, stmt_end(skel, a), maps):
+                    found.append((off, "headers-fn", v))
     return found
 
 
@@ -279,10 +373,7 @@ def scan_text(path, text, added=None, repos=(), exempt=DEFAULT_EXEMPT):
     lines = text.splitlines()
     out = []
     for off, kind, value in header_writes(code, skel):
-        if value_ok(value):
-            continue
-        line = bisect.bisect_left(nl, off) + 1
-        vline = bisect.bisect_left(nl, off + max(0, len(code[off:]) - len(code[off:].lstrip()))) + 1
+        line = bisect.bisect_left(nl, off + (len(code[off:]) - len(code[off:].lstrip()))) + 1
         if added is not None and line not in added:
             continue
         if ok_note(lines, line - 1):
