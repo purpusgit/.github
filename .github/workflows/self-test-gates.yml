@@ -197,3 +197,5 @@ jobs:
         run: python3 scripts/test_declaration_gate.py
       - name: Run ux-one-template self-test (one app frame; allowlist can only shrink; temp git repos, no network)
         run: python3 scripts/test_ux_one_template.py
+      - name: Run seeded-and-seen self-test (UI PR body needs a TESTED section; fake API, no network)
+        run: python3 scripts/test_seeded_and_seen.py

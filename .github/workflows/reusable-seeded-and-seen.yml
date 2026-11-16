@@ -1,0 +1,55 @@
+name: Reusable — seeded-and-seen (a UI PR says how it was tested, with pictures)
+
+# Founder rule SEEDED-AND-SEEN-1 (JAPA-01, specs#411). A pull request that is not a draft and changes a screen or widget
+# (lib/screens/**, lib/widgets/**, or lib/**/*_screen.dart, *_page.dart, *_widget.dart, also the dot form) must carry a
+# `## TESTED` section in its body: named test accounts (no password beside them), `Build:` (sandbox or dev), `Seeded:` ids, and a
+# `States:` list with an image for each state. Exempt: the label `tested-n/a` plus a `tested-n/a: <reason>` line.
+# LIMIT: every session posts as the same account, so "a reviewer approved the exemption" cannot be machine-checked. The gate
+# checks the label and the reason are present and says so in the step summary; a human must judge the reason.
+# Logic and tests: scripts/seeded_and_seen.py, scripts/test_seeded_and_seen.py (a step of self-test-gates.yml).
+#
+#   seeded-and-seen:
+#     if: ${{ github.event_name == 'pull_request' }}
+#     uses: purpusgit/.github/.github/workflows/reusable-seeded-and-seen.yml@main
+#     with: { test_account_pattern: 'JAPA_TEST_[A-Z0-9_]+' }   # per repo; the default is this one
+#
+# The caller's `pull_request` trigger needs the types opened, edited, synchronize, reopened, labeled, unlabeled and
+# ready_for_review, so a body edit or a label re-runs it. It FAILS the check on any missing part and on anything it cannot read
+# (a missing body, an unreadable event, an API error): it never passes on an unreadable input. It checks out NO PR code: the
+# body, labels and draft flag come from the event payload, the changed files from the API, and the script from this repo's main.
+
+on:
+  workflow_call:
+    inputs:
+      test_account_pattern:
+        description: >-
+          Regular expression for a named test account in the TESTED section. Empty uses the repo variable
+          SEEDED_TEST_ACCOUNT_PATTERN, then JAPA_TEST_[A-Z0-9_]+.
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  seeded-and-seen:
+    runs-on: orbit-ci-light   # python3 and the API only
+    timeout-minutes: 10
+    steps:
+      - name: Fetch the seeded-and-seen script from purpusgit/.github main
+        uses: actions/checkout@v4
+        with:
+          repository: purpusgit/.github
+          ref: main
+          path: .seeded-and-seen-src
+          sparse-checkout: scripts/seeded_and_seen.py
+          sparse-checkout-cone-mode: false
+
+      - name: seeded-and-seen — a UI PR names its test accounts, build, seeded ids and a picture per state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SEEDED_MODE: warn   # founder 16 Nov: warn-only, no end date; enforce only on his word
+          TEST_ACCOUNT_PATTERN: ${{ inputs.test_account_pattern || vars.SEEDED_TEST_ACCOUNT_PATTERN || 'JAPA_TEST_[A-Z0-9_]+' }}
+        run: python3 -I .seeded-and-seen-src/scripts/seeded_and_seen.py
