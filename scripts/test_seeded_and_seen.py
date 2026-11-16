@@ -258,7 +258,9 @@ class Io(unittest.TestCase):
                 self.assertEqual(S.main(), 0)
                 self.assertIn("cannot be machine-checked", open(sm).read())
                 os.environ["GITHUB_EVENT_PATH"] = os.path.join(d, "missing.json")
-                self.assertEqual(S.main(), 2)
+                self.assertEqual(S.main(), 0)  # warn mode (the default) never fails the job
+                os.environ["SEEDED_MODE"] = "enforce"
+                self.assertEqual(S.main(), 2)  # enforce still fails closed on an unreadable event
             finally:
                 os.environ.clear()
                 os.environ.update(old)
@@ -299,6 +301,39 @@ class Workflows(unittest.TestCase):
         self.assertIn("vars.SEEDED_TEST_ACCOUNT_PATTERN", env(self.steps("ux-required.yml"))["TEST_ACCOUNT_PATTERN"])
         self.assertIn("inputs.test_account_pattern", env(self.steps("reusable-seeded-and-seen.yml"))["TEST_ACCOUNT_PATTERN"])
         self.assertEqual(self.wf("reusable-seeded-and-seen.yml")[True]["workflow_call"]["inputs"]["test_account_pattern"]["default"], "")
+
+
+class WarnOnly(unittest.TestCase):
+    """Founder, 16 Nov: a UI PR with no TESTED section warns and passes unless SEEDED_MODE=enforce."""
+    def _run(self, mode):
+        import io, contextlib
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            json.dump({"pull_request": {"number": 1, "draft": False, "body": "no tested section", "labels": [],
+                                        "head": {"sha": "h"}, "base": {"repo": {"full_name": "o/r"}}}}, fh)
+        env = {"GITHUB_EVENT_PATH": fh.name, "SEEDED_MODE": mode}
+        old_env, old_run = dict(os.environ), S.run
+        os.environ.pop("GITHUB_STEP_SUMMARY", None); os.environ.update(env)
+        S.run = lambda event, pattern, get: (1, ["no `## TESTED` section in the PR body"])
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                code = S.main()
+        finally:
+            S.run = old_run; os.environ.clear(); os.environ.update(old_env); os.unlink(fh.name)
+        return code, out.getvalue()
+
+    def test_warn_mode_passes_with_a_warning(self):
+        code, out = self._run("warn")
+        self.assertEqual(code, 0); self.assertIn("::warning::", out); self.assertNotIn("::error::", out)
+
+    def test_enforce_mode_fails(self):
+        code, out = self._run("enforce")
+        self.assertEqual(code, 1); self.assertIn("::error::", out)
+
+    def test_both_callers_pin_warn(self):
+        for wf in ("reusable-seeded-and-seen.yml", "ux-required.yml"):
+            with open(os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", wf), encoding="utf-8") as f:
+                self.assertIn("SEEDED_MODE: warn", f.read(), wf)
 
 
 if __name__ == "__main__":

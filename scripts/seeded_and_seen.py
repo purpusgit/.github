@@ -276,22 +276,33 @@ def run(event, pattern, get):
 
 
 def main():
+    # Founder, 16 Nov: warn-only until he says otherwise. SEEDED_MODE=enforce is the only way to fail the job.
+    enforce = os.environ.get("SEEDED_MODE", "warn").strip().lower() == "enforce"
+    lvl = "::error::" if enforce else "::warning::"
+    code = _main(lvl)
+    if code and not enforce:
+        print("seeded-and-seen is WARN-ONLY (founder, 16 Nov): the findings above do not fail this job.")
+        return 0
+    return code
+
+
+def _main(lvl):
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     try:
         with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as fh:
             event = json.load(fh)
     except (KeyError, OSError, json.JSONDecodeError) as e:
-        print("::error::seeded-and-seen could not read the event payload (%s). This is a gate failure, not a pass." % e)
+        print(lvl + "seeded-and-seen could not read the event payload (%s). This is a gate failure, not a pass." % e)
         return 2
     token = os.environ.get("GH_TOKEN", "")
     pattern = os.environ.get("TEST_ACCOUNT_PATTERN") or DEFAULT_PATTERN
     try:
         code, lines = run(event, pattern, lambda p: http_get(p, token))
     except GateError as e:
-        print("::error::seeded-and-seen could not run: %s. This is a gate failure, not a pass." % e)
+        print(lvl + "seeded-and-seen could not run: %s. This is a gate failure, not a pass." % e)
         return 2
     for ln in lines:
-        print(("::error::" if code else "") + ln)
+        print((lvl if code else "") + ln)
     if code:
         print("\nFix: add a `## TESTED` section to the PR body with `Accounts:` (named test accounts), `Build:` (sandbox or dev), "
               "`Seeded:` (ids) and a `States:` list where each state carries an image. Exempt: label `tested-n/a` plus a "

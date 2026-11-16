@@ -109,5 +109,6 @@ jobs:
       - name: seeded-and-seen — a UI PR names its test accounts, build, seeded ids and a picture per state
         env:
           GH_TOKEN: ${{ github.token }}
+          SEEDED_MODE: warn   # founder 16 Nov: warn-only, no end date; enforce only on his word
           TEST_ACCOUNT_PATTERN: ${{ vars.SEEDED_TEST_ACCOUNT_PATTERN || 'JAPA_TEST_[A-Z0-9_]+' }}
         run: python3 -I .seeded-and-seen-src/scripts/seeded_and_seen.py
