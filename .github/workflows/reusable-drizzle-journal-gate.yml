@@ -11,7 +11,8 @@ on:
 
 jobs:
   drizzle-journal-gate:
-    runs-on: ${{ inputs.runner }}
+    # Light job (no Flutter/Docker/DB): a caller's orbit-ci or orbit-ci-heavy means light (PR-Q-1, founder go 17 Nov).
+    runs-on: ${{ (inputs.runner == 'orbit-ci' || inputs.runner == 'orbit-ci-heavy') && 'orbit-ci-light' || inputs.runner }}
     name: Migration journal completeness check
     steps:
       - uses: actions/checkout@v5.1.0

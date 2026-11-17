@@ -264,7 +264,7 @@ jobs:
     name: Consolidated gates (A2)
     # Text checks only (checkout, setup-python, grep/python3): no Flutter, Docker or Node. Callers still pass
     # `runner: orbit-ci`, which queued these seconds-long gates behind 20-60 min Flutter jobs, so orbit-ci maps to light.
-    runs-on: ${{ inputs.runner == 'orbit-ci' && 'orbit-ci-light' || inputs.runner }}
+    runs-on: ${{ (inputs.runner == 'orbit-ci' || inputs.runner == 'orbit-ci-heavy') && 'orbit-ci-light' || inputs.runner }}
     steps:
       # fetch-depth: 0 because the colours and barrel predicates both diff against a
       # base ref. It is a superset of what the other gates need.
