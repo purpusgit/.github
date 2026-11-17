@@ -28,7 +28,8 @@ permissions:
 jobs:
   barrel-safety:
     name: Barrel & factory safety (Rule 66)
-    runs-on: ${{ inputs.runner }}
+    # Light job (no Flutter/Docker/DB): a caller's orbit-ci or orbit-ci-heavy means light (PR-Q-1, founder go 17 Nov).
+    runs-on: ${{ (inputs.runner == 'orbit-ci' || inputs.runner == 'orbit-ci-heavy') && 'orbit-ci-light' || inputs.runner }}
     steps:
       - uses: actions/checkout@v4
         with:

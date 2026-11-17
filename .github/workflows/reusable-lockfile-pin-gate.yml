@@ -64,7 +64,8 @@ jobs:
   # can go red because GitHub is having a bad day is a context that holds a merge queue
   # during an incident — so the two must be requirable independently, and now are.
   lockfile-pin-gate:
-    runs-on: ${{ inputs.runner }}
+    # Light job (no Flutter/Docker/DB): a caller's orbit-ci or orbit-ci-heavy means light (PR-Q-1, founder go 17 Nov).
+    runs-on: ${{ (inputs.runner == 'orbit-ci' || inputs.runner == 'orbit-ci-heavy') && 'orbit-ci-light' || inputs.runner }}
     name: Lockfile and internal pin check
     outputs:
       # The SHA-pinned dependencies, handed to the ancestry job. A job output rather than
@@ -295,7 +296,8 @@ jobs:
   # fail — the same ordering the single-job version had, kept deliberately: there is no
   # point asking GitHub about pins that the manifest and lockfile already disagree about.
   ancestry-check:
-    runs-on: ${{ inputs.runner }}
+    # Light job (no Flutter/Docker/DB): a caller's orbit-ci or orbit-ci-heavy means light (PR-Q-1, founder go 17 Nov).
+    runs-on: ${{ (inputs.runner == 'orbit-ci' || inputs.runner == 'orbit-ci-heavy') && 'orbit-ci-light' || inputs.runner }}
     name: Pinned SHA ancestry check
     needs: lockfile-pin-gate
     if: ${{ inputs.check_ancestry }}

@@ -56,7 +56,8 @@ on:
 jobs:
   code-lint:
     if: ${{ vars.MVP_GATES_PAUSED != 'true' }}  # item 3 pause (specs ci-git/tasks/ci-trim-and-qa-runners.md): skipped, so required contexts still report
-    runs-on: ${{ inputs.runner }}
+    # Light job (no Flutter/Docker/DB): a caller's orbit-ci or orbit-ci-heavy means light (PR-Q-1, founder go 17 Nov).
+    runs-on: ${{ (inputs.runner == 'orbit-ci' || inputs.runner == 'orbit-ci-heavy') && 'orbit-ci-light' || inputs.runner }}
     name: Taxonomy code scan (*.sql.ts)
     steps:
       - name: Checkout caller repo
@@ -80,7 +81,8 @@ jobs:
 
   data-lint:
     if: ${{ inputs.run_data && vars.MVP_GATES_PAUSED != 'true' }}  # item 3 pause
-    runs-on: ${{ inputs.runner }}
+    # Light job (no Flutter/Docker/DB): a caller's orbit-ci or orbit-ci-heavy means light (PR-Q-1, founder go 17 Nov).
+    runs-on: ${{ (inputs.runner == 'orbit-ci' || inputs.runner == 'orbit-ci-heavy') && 'orbit-ci-light' || inputs.runner }}
     name: Taxonomy data validation (FK:<Type> refs)
     steps:
       - name: Fetch taxo_lint.py from purpusgit/.github
