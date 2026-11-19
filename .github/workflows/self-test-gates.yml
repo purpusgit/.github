@@ -197,3 +197,5 @@ jobs:
         run: python3 scripts/test_wireframe_link.py
       - name: Run declaration gate self-test (temp git repos, no network)
         run: python3 scripts/test_declaration_gate.py
+      - name: Run gutter gate self-test (temp git repos, no network)
+        run: python3 scripts/test_gutter_gate.py
