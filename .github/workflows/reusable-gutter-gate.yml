@@ -1,0 +1,50 @@
+# PHONE-EDGE-1 gutter gate (tracker B15; founder 19 Nov 00:38 IST via UX-00, specs#518 6988736057).
+# Fails when an added or changed `PageContentWidth(` call states no gutter: it needs an explicit non-null
+# top-level `padding:` (e.g. EdgeInsets.zero), or `padding: null` / no padding plus a `// gutter: wrapper` marker.
+# Author: IAC-01 (orbit-deploy#289); placed here by IAC-00.
+#
+# Call it from each Flutter repo's CI (a job-level `if:` keeps it reporting on non-PR events):
+#   gutter-gate:
+#     uses: purpusgit/.github/.github/workflows/reusable-gutter-gate.yml@main
+name: reusable-gutter-gate
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: runs-on label for the gate job
+        type: string
+        default: orbit-ci-light
+permissions:
+  contents: read
+jobs:
+  gutter-gate:
+    if: github.event_name == 'pull_request'
+    runs-on: ${{ inputs.runner }}
+    name: Gutter gate
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Refuse a PR that owns the gate's checkout path
+        run: |
+          set -euo pipefail
+          if [ -L .gutter-gate-src ] || [ -e .gutter-gate-src ]; then
+            echo "::error title=gutter gate::this PR commits .gutter-gate-src, the path the gate's own files are checked out to"
+            exit 1
+          fi
+      - name: Fetch the gate script from purpusgit/.github main
+        uses: actions/checkout@v5.1.0
+        with:
+          repository: purpusgit/.github
+          ref: main
+          path: .gutter-gate-src
+          sparse-checkout: scripts/gutter_gate.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: PHONE-EDGE-1 gutter gate
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 -I "${GITHUB_WORKSPACE}/.gutter-gate-src/scripts/gutter_gate.py" "$BASE_SHA" "$HEAD_SHA"
