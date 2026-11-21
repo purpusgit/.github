@@ -39,7 +39,8 @@ on:
 jobs:
   sql-typestring-gate:
     if: ${{ vars.MVP_GATES_PAUSED != 'true' }}  # item 3 pause (specs ci-git/tasks/ci-trim-and-qa-runners.md): skipped, so required contexts still report
-    runs-on: ${{ inputs.runner }}
+    # Light job (no Flutter/Docker/DB): a caller's orbit-ci or orbit-ci-heavy means light (PR-Q-1, founder go 17 Nov).
+    runs-on: ${{ (inputs.runner == 'orbit-ci' || inputs.runner == 'orbit-ci-heavy') && 'orbit-ci-light' || inputs.runner }}
     name: SQL taxo.master type-string check (Rule 58/59)
     steps:
       - uses: actions/checkout@v5.1.0

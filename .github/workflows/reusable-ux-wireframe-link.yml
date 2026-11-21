@@ -35,7 +35,8 @@ permissions:
 jobs:
   ux-wireframe-link:
     if: ${{ github.event_name == 'pull_request' }}
-    runs-on: ${{ inputs.runner }}
+    # Light job (no Flutter/Docker/DB): a caller's orbit-ci or orbit-ci-heavy means light (PR-Q-1, founder go 17 Nov).
+    runs-on: ${{ (inputs.runner == 'orbit-ci' || inputs.runner == 'orbit-ci-heavy') && 'orbit-ci-light' || inputs.runner }}
     timeout-minutes: 5
     steps:
       - name: Fetch the script from purpusgit/.github main

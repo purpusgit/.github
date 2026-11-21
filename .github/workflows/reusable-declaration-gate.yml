@@ -53,7 +53,8 @@ jobs:
   declaration-gate:
     # Pull requests only: the check needs a base to diff against.
     if: github.event_name == 'pull_request'
-    runs-on: ${{ inputs.runner }}
+    # Light job (no Flutter/Docker/DB): a caller's orbit-ci or orbit-ci-heavy means light (PR-Q-1, founder go 17 Nov).
+    runs-on: ${{ (inputs.runner == 'orbit-ci' || inputs.runner == 'orbit-ci-heavy') && 'orbit-ci-light' || inputs.runner }}
     name: Declaration gate
     timeout-minutes: 10
     # Report mode always passes: a checkout or PyPI hiccup must not turn a report-only run red. Block mode stays fail-closed.
