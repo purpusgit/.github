@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   ux-wireframe-link:
-    runs-on: orbit-ci-light   # python3 only
+    runs-on: ubuntu-latest   # python3 only. IAC-B01 22 Nov: public repo, see self-test-gates.yml
     timeout-minutes: 5
     steps:
       - name: Fetch the script from purpusgit/.github main
