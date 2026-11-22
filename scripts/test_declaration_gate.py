@@ -70,8 +70,11 @@ def data(tables=(), schema_paths=(("migrations/*.sql", "sql"),), default_schema=
 
 
 def entry(table, fields, **over):
+    """A complete entry. Every column carries an analytics mark (DC13), `keep` by default: none of the names the DC1 to DC10
+    cases use is SENSITIVE, so `keep` passes DC11 and DC12 and those cases still see only their own rule."""
     e = {"table": table, "scope_class": "org", "placement": "personal_or_content", "placement_key": "org_idfr",
-         "meaning": "A test table.", "fields": {f: f"The {f}" for f in fields}, "phone_fields": [], "secret_like": {}}
+         "meaning": "A test table.", "fields": {f: f"The {f}" for f in fields}, "phone_fields": [], "secret_like": {},
+         "analytics": {f: "keep" for f in fields}}
     e.update(over)
     return e
 
@@ -86,8 +89,14 @@ def run(base, head, mode="report", owners=None, repo=None):
     return G.judge(d, "main", mode, own, calling_repo=repo)
 
 
-def rules(rep, level=None):
-    return sorted((f["rule"], f["table"]) for f in rep.findings if level in (None, f["level"]))
+ANALYTICS_RULES = {"DC11", "DC12", "DC13", "DC14"}
+
+
+def rules(rep, level=None, analytics=True):
+    """(rule, table) of each finding; analytics=False leaves out DC11 to DC14 (a case about another rule on social's p4 adapter,
+    which carries no marks, so every DC11 to DC14 finding there is a warning)."""
+    return sorted((f["rule"], f["table"]) for f in rep.findings if level in (None, f["level"])
+                  and (analytics or f["rule"] not in ANALYTICS_RULES))
 
 
 def codes(rep):
@@ -195,7 +204,7 @@ class ReplayedPRs(unittest.TestCase):
         e = entry("belongity_chat.thread_member", ["thread_id", "user_idfr", "org_identifier", "cleared_at"], placement_key="org_identifier")
         base = {"declarations/data.yaml": data([e], default_schema="belongity_chat"), "migrations/001.sql": CHAT_001}
         self.assertEqual(rules(run(base, {"migrations/038_thread_member_cleared_at.sql": CHAT_038})), [])
-        e["fields"].pop("cleared_at")
+        e["fields"].pop("cleared_at"); e["analytics"].pop("cleared_at")
         base["declarations/data.yaml"] = data([e], default_schema="belongity_chat")
         self.assertEqual(rules(run(base, {"migrations/038_thread_member_cleared_at.sql": CHAT_038})), [("DC6", "belongity_chat.thread_member")])
 
@@ -361,8 +370,212 @@ def check_DC10(tc):
     tc.assertEqual(rules(run(mdl, {"src/read.js": "const rows = await db.collection('t').find({});\n"})), [])  # a read of a known name
 
 
+# ── part 2b: the analytics mark, DC11 to DC14 (specs offline-first/analytics-mark-gate.md section 8 "Tests") ──────────
+# master.spiritual_guru of the spec's section 7.1, with its `# ...` placeholders expanded into a full entry and its DDL.
+GURU_COLS = ["id", "identifier", "is_active", "created_at", "updated_at", "is_deleted", "name", "profile_picture", "bio", "dob",
+             "gender", "spiritual_institute_idfr", "influencer_idfr", "user_idfr", "approval_status", "live_user_idfr", "ashram"]
+GURU_SQL = "CREATE TABLE master.spiritual_guru (\n" + ",\n".join(f"  {c} VARCHAR(64)" for c in GURU_COLS) + "\n);\n"
+GURU_MARKS = {"id": "keep", "identifier": "pseudonymise", "is_active": "keep", "created_at": "keep", "updated_at": "keep",
+              "is_deleted": "keep", "name": "drop", "profile_picture": "drop", "bio": "drop", "dob": "band", "gender": "keep",
+              "spiritual_institute_idfr": "keep", "influencer_idfr": "keep", "user_idfr": "pseudonymise", "approval_status": "keep",
+              "live_user_idfr": "pseudonymise", "ashram": "keep"}
+GURU_BASE = {"declarations/data.yaml": data(default_schema="master")}
+
+
+def guru(**over):
+    e = entry("master.spiritual_guru", GURU_COLS, placement_key="central", analytics=dict(GURU_MARKS),
+              personal=["identifier", "name", "dob", "user_idfr", "live_user_idfr"], sensitive=["dob"])
+    e.update(over)
+    return e
+
+
+def guru_run(e, base=None, mode="report", extra=None):
+    head = {"migrations/001.sql": GURU_SQL, "declarations/data.yaml": data([e], default_schema="master")}
+    return run(base or GURU_BASE, dict(head, **(extra or {})), mode)
+
+
+def marks_only(rep, rule=None):
+    """(rule, table-or-column, level) of the DC11 to DC14 findings, plus DC8's added warnings."""
+    return sorted((f["rule"], f["table"], f["level"]) for f in rep.findings
+                  if (f["rule"] in ANALYTICS_RULES or f["rule"] == "DC8") and rule in (None, f["rule"]))
+
+
+def one_col(col, mark, **over):
+    """svc.p, a new table with id, org_idfr and one more column, every column marked keep except `col`."""
+    sql = f"CREATE TABLE svc.p (\n  id INT,\n  org_idfr INT,\n  {col} VARCHAR(64)\n);\n"
+    marks = {"id": "keep", "org_idfr": "keep", col: mark}
+    e = entry("svc.p", ["id", "org_idfr", col], analytics=marks, **over)
+    return run({"declarations/data.yaml": data()}, {"migrations/001.sql": sql, **with_entry(e)})
+
+
+def check_DC11(tc):
+    # 7.1 with no analytics: DC11 on every personal column (the backstop and personal:), an error from the first run
+    e = guru(); e.pop("analytics")
+    rep = guru_run(e)
+    dc11 = [(t, lv) for r, t, lv in marks_only(rep, "DC11")]
+    tc.assertEqual(dc11, [(f"master.spiritual_guru.{c}", "error") for c in ("dob", "identifier", "live_user_idfr", "name", "user_idfr")])
+    msg = [f["msg"] for f in rep.findings if f["table"] == "master.spiritual_guru.name" and f["rule"] == "DC11"][0]
+    tc.assertEqual(msg, 'personal column has no analytics mark (#1858 rules 1 to 4). Add "name: <mark>" under analytics: '
+                        "(keep, pseudonymise, band, city or drop).")
+    # the backstop alone (no personal: or sensitive:): name, dob, user_idfr and live_user_idfr, not identifier (spec 7.1)
+    e = guru(personal=[], sensitive=[]); e.pop("analytics")
+    tc.assertEqual([t for _, t, _ in marks_only(guru_run(e), "DC11")],
+                   [f"master.spiritual_guru.{c}" for c in ("dob", "live_user_idfr", "name", "user_idfr")])
+    # and DC13 once per unmarked column (a warning: the base has no grandfather list yet)
+    tc.assertEqual(len(marks_only(rep, "DC13")), len(GURU_COLS))
+    tc.assertEqual({lv for _, _, lv in marks_only(rep, "DC13")}, {"warning"})
+    # 7.1 as written passes
+    tc.assertEqual(rules(guru_run(guru())), [])
+    # 7.2: `id` is in no backstop, so only personal: makes DC11 see it
+    user = entry("purpus_user.user", ["id", "identifier", "is_deleted", "password"], placement_key="central",
+                 analytics={"identifier": "pseudonymise", "is_deleted": "keep", "password": "drop"})
+    base = {"declarations/data.yaml": data(default_schema="purpus_user")}
+    head = lambda e: {"declarations/data.yaml": data([e], default_schema="purpus_user")}  # noqa: E731 - a backfill: entry only
+    tc.assertEqual(marks_only(run(base, head(dict(user, personal=["id", "identifier"]))), "DC11"),
+                   [("DC11", "purpus_user.user.id", "error")])
+    tc.assertEqual(marks_only(run(base, head(user)), "DC11"), [])
+    # an untouched table with an unchanged entry is never judged, however unmarked
+    old = entry("svc.t", ["id", "org_idfr", "name"]); old.pop("analytics")
+    rep = run({"declarations/data.yaml": data([old]), "migrations/001.sql": CREATE_T},
+              {"migrations/002.sql": "CREATE TABLE svc.u (id INT);\n",
+               "declarations/data.yaml": data([old, entry("svc.u", ["id"], placement_key="central")])})
+    tc.assertEqual(rules(rep), [])
+
+
+def check_DC12(tc):
+    def dc12(rep):
+        return [(f["table"], f["msg"]) for f in rep.findings if f["rule"] == "DC12"]
+    # must fail
+    rep = guru_run(guru(analytics=dict(GURU_MARKS, dob="city")))
+    tc.assertEqual(dc12(rep), [("master.spiritual_guru.dob", '"city" is only for a precise-location column; this column is not '
+                                "one. Mark it drop, or list it under location_columns:.")])
+    rep = guru_run(guru(analytics=dict(GURU_MARKS, dob="keep")))
+    tc.assertEqual(dc12(rep), [("master.spiritual_guru.dob", 'SENSITIVE column marked "keep"; only "drop" passes (#1858 rule 2, '
+                                'ENCRYPT section 3), except "band" on a date-of-birth column and "city" on a precise-location column (rule 4).')])
+    tc.assertEqual(dc12(one_col("phone_number", "band")), [("svc.p.phone_number", '"band" is only for a date-of-birth column; '
+                                                            "this column is not one. Mark it drop, or list it under dob_columns:.")])
+    tc.assertEqual([t for t, _ in dc12(one_col("bank_account", "city"))], ["svc.p.bank_account"])
+    tc.assertEqual(dc12(one_col("phone_number", "keep")), [("svc.p.phone_number", 'name looks SENSITIVE (matched "phone"). List it '
+                   "under sensitive: and mark it drop (or band on a date of birth, city on a precise location), or list it under "
+                   "not_sensitive: with a reason.")])
+    tc.assertEqual([t for t, _ in dc12(one_col("phone_number", "pseudonymise"))], ["svc.p.phone_number"])
+    tc.assertEqual(marks_only(one_col("phone_number", "keep"), "DC12"), [("DC12", "svc.p.phone_number", "error")])
+    # must pass: the two exceptions (PLATFORM-00, specs#681 7016969149) and drop
+    for col, mark in (("dob", "band"), ("birthdate", "band"), ("latitude", "city"), ("dob", "drop"), ("phone_number", "drop"),
+                      ("home_location", "city")):
+        tc.assertEqual(dc12(one_col(col, mark)), [], f"{col}: {mark}")
+    tc.assertEqual(dc12(one_col("born_on", "band", dob_columns=["born_on"])), [])  # a date of birth the backstop cannot see
+    # SENSITIVE + ciphertext: a column carried as ciphertext (ENCRYPT) still hits the backstop; keeping it needs not_sensitive:
+    # with a reason, decided in review (DC8 names it), and a sensitive: listing always wins
+    ct = {"secret_like": {"phone_ct": {"decision": "keep", "reason": "ENCRYPT ciphertext; the lakehouse never decrypts"}}}
+    tc.assertEqual([t for t, _ in dc12(one_col("phone_ct", "keep", **ct))], ["svc.p.phone_ct"])
+    rep = one_col("phone_ct", "keep", not_sensitive={"phone_ct": "ENCRYPT ciphertext, never decrypted (#1858 rule 2)"}, **ct)
+    tc.assertEqual(marks_only(rep), [("DC8", "svc.p.phone_ct", "warning")])
+    tc.assertIn("ENCRYPT ciphertext", rep.findings[0]["msg"])
+    rep = one_col("phone_ct", "keep", sensitive=["phone_ct"], not_sensitive={"phone_ct": "ciphertext"}, **ct)
+    tc.assertEqual(marks_only(rep, "DC12"), [("DC12", "svc.p.phone_ct", "error")])
+    tc.assertEqual(marks_only(one_col("phone_ct", "drop", **ct)), [])
+
+
+def check_DC13(tc):
+    # an unmarked column of a new table: a warning while the base has no grandfather list, an error once it has one
+    e = guru(analytics={k: v for k, v in GURU_MARKS.items() if k != "ashram"})
+    tc.assertEqual(marks_only(guru_run(e), "DC13"), [("DC13", "master.spiritual_guru.ashram", "warning")])
+    listed = dict(GURU_BASE, **{G.GRANDFATHER: "version: 1\ntables: []\n"})
+    rep = guru_run(e, base=listed)
+    tc.assertEqual(marks_only(rep, "DC13"), [("DC13", "master.spiritual_guru.ashram", "error")])
+    tc.assertEqual(rep.findings[0]["msg"], "no analytics mark. Every column of a new or changed table needs one.")
+    # an unknown mark, a key naming a column not in fields, not_sensitive misuse: errors from the first run
+    rep = one_col("note_count", "hash")
+    tc.assertEqual(marks_only(rep), [("DC13", "svc.p.note_count", "error")])
+    tc.assertEqual(rep.findings[0]["msg"], '"hash" is not one of keep, pseudonymise, band, city, drop.')
+    rep = one_col("template_name", "keep", personal=["ghost"])
+    tc.assertEqual([(f["rule"], f["table"], f["msg"]) for f in rep.findings],
+                   [("DC13", "svc.p", 'personal: names "ghost", which is not in fields.')])
+    tc.assertEqual(marks_only(one_col("note_count", "keep", not_sensitive={"note_count": "  "})),
+                   [("DC12", "svc.p.note_count", "error"), ("DC13", "svc.p.note_count", "error")])  # no reason: not honoured
+    tc.assertEqual(marks_only(one_col("template_name", "keep", not_sensitive={"template_name": "a label"})),
+                   [("DC13", "svc.p.template_name", "error")])  # the sensitive backstop does not hit it
+    # a backstop-hitting column the table has and fields leaves out
+    e = guru(fields={c: c for c in GURU_COLS if c != "dob"}, analytics={k: v for k, v in GURU_MARKS.items() if k != "dob"},
+             personal=["identifier"], sensitive=[])
+    rep = guru_run(e, base=listed)
+    tc.assertEqual(marks_only(rep), [("DC13", "master.spiritual_guru.dob", "error")])
+    tc.assertIn('name looks personal or SENSITIVE (matched "dob") and is not in fields. Add it to fields with a mark.',
+                [f["msg"] for f in rep.findings])
+    # must pass: drop on every column, template_name: keep, note_count under not_sensitive with a reason (DC8 names it)
+    tc.assertEqual(rules(guru_run(guru(analytics={c: "drop" for c in GURU_COLS}))), [])
+    tc.assertEqual(rules(one_col("template_name", "keep")), [])
+    rep = one_col("note_count", "keep", not_sensitive={"note_count": "A count, holds no text"})
+    tc.assertEqual(marks_only(rep), [("DC8", "svc.p.note_count", "warning")])
+    tc.assertEqual(rep.findings[0]["msg"], 'not_sensitive used (reason: "A count? holds no text"); named for review.')  # clean()
+    # a backfill PR that only writes marks into an old table's entry is in scope (spec section 5)
+    old = entry("svc.t", ["id", "org_idfr", "name"]); old.pop("analytics")
+    base = {"declarations/data.yaml": data([old]), "migrations/001.sql": CREATE_T}
+    rep = run(base, with_entry(dict(old, analytics={"id": "keep", "org_idfr": "keep"})))
+    tc.assertEqual(marks_only(rep), [("DC11", "svc.t.name", "error"), ("DC13", "svc.t.name", "warning")])
+
+
+def gf(*tables):
+    return "version: 1\ntables:\n" + "".join(f"  - {t}\n" for t in tables) if tables else "version: 1\ntables: []\n"
+
+
+def check_DC14(tc):
+    unmarked = entry("svc.t", ["id", "org_idfr", "name"]); unmarked.pop("analytics")
+    other = entry("svc.o", ["id"], placement_key="central"); other.pop("analytics")
+    base = {"declarations/data.yaml": data([unmarked, other]), "migrations/001.sql": CREATE_T, G.GRANDFATHER: gf("svc.t")}
+    alter = {"migrations/002.sql": "ALTER TABLE svc.t ADD KEY idx_name (name);\n"}
+    # the list gains a table
+    rep = run(base, {G.GRANDFATHER: gf("svc.o", "svc.t")})
+    tc.assertEqual(marks_only(rep), [("DC14", "svc.o", "error")])
+    tc.assertEqual(rep.findings[0]["msg"], f"added to {G.GRANDFATHER}; the list may only shrink.")
+    # a touched table left on the list (DC11 still judges it)
+    rep = run(base, alter)
+    tc.assertEqual(marks_only(rep), [("DC11", "svc.t.name", "error"), ("DC14", "svc.t", "error")])
+    tc.assertIn("touched, so it must be fully marked and removed from", [f["msg"] for f in rep.findings if f["rule"] == "DC14"][0])
+    # fully marked and removed in the same PR: clean; removed but not marked: DC13 is an error (the base has the list)
+    marked = {"declarations/data.yaml": data([entry("svc.t", ["id", "org_idfr", "name"]), other])}
+    tc.assertEqual(rules(run(base, dict(alter, **marked, **{G.GRANDFATHER: gf()}))), [])
+    rep = run(base, dict(alter, **{G.GRANDFATHER: gf()}))
+    tc.assertIn(("DC13", "svc.t.name", "error"), marks_only(rep))
+    # an untouched, unchanged, listed table: clean
+    tc.assertEqual(rules(run(base, {"README.md": "x\n"})), [])
+    # a PR that deletes the base's list
+    rep = run(base, {G.GRANDFATHER: None})
+    tc.assertEqual(marks_only(rep), [("DC14", G.GRANDFATHER, "error")])
+    # a PR that creates the list naming a table the base data.yaml does not declare (a warning: no list on the base yet)
+    nobase = {"declarations/data.yaml": data([unmarked]), "migrations/001.sql": CREATE_T}
+    rep = run(nobase, {G.GRANDFATHER: gf("svc.t", "svc.ghost")})
+    tc.assertEqual(marks_only(rep), [("DC14", "svc.ghost", "warning"), ("DC14", "svc.ghost", "warning")])
+    tc.assertEqual(sorted(f["msg"] for f in rep.findings), sorted([
+        "new list names a table the base data.yaml does not declare.", f"on {G.GRANDFATHER} but not declared in data.yaml."]))
+    tc.assertEqual(rules(run(nobase, {G.GRANDFATHER: gf("svc.t")})), [])  # the per-repo grandfather PR itself
+    # names are normalised like norm_table (lower case, default_schema applied)
+    tc.assertEqual(rules(run(base, {G.GRANDFATHER: gf("T")})), [])
+
+
+MUST_HIT_PERSONAL = ["phone_number", "owner_email", "first_name", "dob", "guru_user_idfr", "lat", "user_id", "user_idfr",
+                     "home_address", "username", "device_uuid", "birth_place"]
+MUST_NOT_HIT = ["phonetic", "hostname", "hashtags", "named_at", "creator_idfr", "created_by", "phoneNumber", "fullname", "latency",
+                "user_identifier"]
+
+
+def check_backstop(tc):
+    for n in MUST_HIT_PERSONAL:
+        tc.assertTrue(G.personal_hit(n), f"{n} must hit the personal backstop")
+    for n in MUST_NOT_HIT:
+        tc.assertFalse(G.personal_hit(n), f"{n} must not hit the personal backstop")
+        tc.assertFalse(G.sensitive_hit(n), f"{n} must not hit the sensitive backstop")
+    for n in ("phone_number", "owner_email", "dob", "lat", "bank_account", "pan_number", "emergency_contact", "health_notes",
+              "voice_url", "upi_id", "phone_ct"):
+        tc.assertTrue(G.sensitive_hit(n), f"{n} must hit the sensitive backstop")
+    for n in ("first_name", "guru_user_idfr", "username", "template_name", "location"):
+        tc.assertFalse(G.sensitive_hit(n), f"{n} is personal, not SENSITIVE")
+
+
 RULE_CHECKS = {"DC1": check_DC1, "DC2": check_DC2, "DC3": check_DC3, "DC4": check_DC4, "DC5": check_DC5, "DC6": check_DC6,
-               "DC7": check_DC7, "DC8": check_DC8, "DC9": check_DC9, "DC10": check_DC10}
+               "DC7": check_DC7, "DC8": check_DC8, "DC9": check_DC9, "DC10": check_DC10,
+               "DC11": check_DC11, "DC12": check_DC12, "DC13": check_DC13, "DC14": check_DC14}
 
 
 class Rules(unittest.TestCase):
@@ -372,6 +585,7 @@ class Rules(unittest.TestCase):
 for _rule, _fn in RULE_CHECKS.items():
     setattr(Rules, f"test_{_rule}", lambda self, _fn=_fn: _fn(self))
 Rules.test_DC5_matcher = lambda self: check_DC5_matcher(self)
+Rules.test_analytics_backstop = lambda self: check_backstop(self)
 
 
 
@@ -670,7 +884,8 @@ class OtherStacks(unittest.TestCase):
               "            meaning: 'A post.',\n            fields: {\n                _id: 'The id.',\n                identifier: 'The identifier.',\n            },\n        },\n    ],\n};\n")
         base = dict(SOCIAL_FILES, **{"declarations/p4-collections.js": p4, "orbit-social/models/schema/posts_collection.schema.js": POSTS_BASE_SCHEMA})
         rep = run(base, {"orbit-social/models/schema/posts_collection.schema.js": POSTS_HEAD_SCHEMA})
-        self.assertEqual(rules(rep), [("DC2", "service_mongo_social.posts")] * 2)  # placement and placement_key are missing
+        self.assertEqual(rules(rep, analytics=False), [("DC2", "service_mongo_social.posts")] * 2)  # placement and placement_key are missing
+        self.assertTrue({f["level"] for f in rep.findings if f["rule"] in ANALYTICS_RULES} <= {"warning"})  # p4: DC11 to DC14 warn only
 
 
 class ReviewFixes(unittest.TestCase):
@@ -688,8 +903,8 @@ class ReviewFixes(unittest.TestCase):
               "      fields: { owner_idfr: 'The owner', org_identifier: 'The org', identifier: 'The id' },\n    },\n  ],\n};\n")
         base = dict(SOCIAL_FILES, **{"declarations/p4-collections.js": p4, "orbit-social/models/schema/posts_collection.schema.js": POSTS_BASE_SCHEMA})
         rep = run(base, {"orbit-social/models/schema/posts_collection.schema.js": POSTS_HEAD_SCHEMA})
-        self.assertEqual(rules(rep), [("DC4", "service_mongo_social.posts")])
-        self.assertIn("names no phone_fields", rep.findings[0]["msg"])
+        self.assertEqual(rules(rep, analytics=False), [("DC4", "service_mongo_social.posts")])
+        self.assertIn("names no phone_fields", [f for f in rep.findings if f["rule"] == "DC4"][0]["msg"])
 
     def test_a_yaml_that_expands_itself_is_refused(self):
         bomb = "a: &a [x, x, x, x, x, x, x, x, x]\nb: &b [*a, *a, *a, *a, *a, *a, *a, *a, *a]\ntables: *b\n"
@@ -1313,6 +1528,87 @@ class SecretMatcherMutations(unittest.TestCase):
                 check_DC5_matcher(self)
 
 
+class AnalyticsMark(unittest.TestCase):
+    """DC11 to DC14 beyond the per-rule checks: modes, the summary, the grandfather generator and the backstop's own mutations."""
+
+    def test_block_mode_fails_on_dc11_and_report_mode_never_does(self):
+        e = guru(); e.pop("analytics")
+        head = {"migrations/001.sql": GURU_SQL, "declarations/data.yaml": data([e], default_schema="master")}
+        rc, out, summary = main_in(GURU_BASE, head, "--mode", "block")
+        self.assertEqual(rc, 1)
+        self.assertIn("::error file=migrations/001.sql,line=1,title=declaration gate::DC11 master.spiritual_guru.name", out)
+        self.assertIn("### Analytics marks (DC11 to DC14", summary)
+        self.assertIn("0 of 17 column(s) marked", summary)
+        self.assertIn("is not on the base yet", summary)
+        rc, out, _ = main_in(GURU_BASE, head, "--mode", "report")
+        self.assertEqual(rc, 0)
+        self.assertIn("(report mode: not blocking)", out)
+
+    def test_block_mode_passes_on_dc13_warnings_alone_before_the_list_lands(self):
+        e = guru(analytics={k: v for k, v in GURU_MARKS.items() if k != "ashram"})
+        head = {"migrations/001.sql": GURU_SQL, "declarations/data.yaml": data([e], default_schema="master")}
+        self.assertEqual(main_in(GURU_BASE, head, "--mode", "block")[0], 0)
+        listed = dict(GURU_BASE, **{G.GRANDFATHER: gf()})
+        self.assertEqual(main_in(listed, head, "--mode", "block")[0], 1)
+
+    def test_a_pr_that_creates_data_yaml_puts_every_entry_in_scope(self):
+        e = entry("svc.t", ["id", "org_idfr", "name"]); e.pop("analytics")
+        rep = run({"README.md": "x\n"}, {"migrations/001.sql": CREATE_T, "declarations/data.yaml": data([e])})
+        self.assertIn(("DC11", "svc.t.name", "error"), marks_only(rep))
+
+    def test_exclude_tables_and_dropped_tables_are_not_judged(self):
+        e = entry("svc.t", ["id", "org_idfr", "name"]); e.pop("analytics")
+        rep = run({"declarations/data.yaml": data(exclude_tables=["t"])},
+                  {"migrations/001.sql": CREATE_T, "declarations/data.yaml": data([e], exclude_tables=["t"])})
+        self.assertEqual(marks_only(rep, "DC11"), [])
+        base = {"declarations/data.yaml": data([e]), "migrations/001.sql": CREATE_T}
+        self.assertEqual(marks_only(run(base, {"migrations/002.sql": "DROP TABLE svc.t;\n"})), [])
+
+    def test_the_generator_lists_every_entry_with_an_unmarked_column(self):
+        cfg = {"default_schema": "svc", "exclude_tables": ["scratch_%"], "tables": [
+            entry("svc.full", ["id"]), dict(entry("half", ["id", "name"]), analytics={"id": "keep"}),
+            dict(entry("svc.none", ["id"]), analytics=None), dict(entry("svc.scratch_1", ["id"]), analytics=None)]}
+        self.assertEqual(G.grandfather_tables(cfg), ["svc.half", "svc.none"])
+        text = G.render_grandfather(G.grandfather_tables(cfg))
+        self.assertEqual(G.load_grandfather(text, "svc"), ({"svc.half", "svc.none"}, None))
+        self.assertEqual(G.load_grandfather(G.render_grandfather([]), "svc"), (set(), None))
+        self.assertEqual(G.load_grandfather("tables: [1, 2]\n", "svc")[0], set())
+        self.assertIsNotNone(G.load_grandfather("tables: [1, 2]\n", "svc")[1])
+
+    def test_the_generator_cli_reads_a_ref_not_the_disk(self):
+        e = entry("svc.t", ["id", "org_idfr", "name"]); e.pop("analytics")
+        d = make_repo({"declarations/data.yaml": data([e, entry("svc.u", ["id"])])}, {})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = G.main(["--repo", d, "--grandfather-from", "main"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(G.load_grandfather(out.getvalue(), "svc"), ({"svc.t"}, None))
+        self.assertIn("SHRINK-ONLY", out.getvalue())
+
+    def test_a_list_file_that_does_not_parse_is_dc14(self):
+        base = {"declarations/data.yaml": data(), G.GRANDFATHER: gf()}
+        rep = run(base, {G.GRANDFATHER: "tables: {a: 1}\n"})
+        self.assertEqual(marks_only(rep), [("DC14", G.GRANDFATHER, "error")])
+
+    def test_removing_a_column_from_sensitive_is_named_for_review(self):
+        e = guru()
+        base = {"declarations/data.yaml": data([e], default_schema="master"), "migrations/001.sql": GURU_SQL}
+        rep = run(base, {"declarations/data.yaml": data([dict(e, sensitive=[])], default_schema="master")})
+        self.assertEqual(marks_only(rep), [("DC8", "master.spiritual_guru.dob", "warning")])
+        self.assertIn("removed from sensitive:", rep.findings[0]["msg"])
+
+    def test_a_backstop_that_hits_nothing_fails_dc11_and_one_that_hits_everything_fails_the_must_not_cases(self):
+        with mock.patch.object(G, "personal_hit", lambda n: None):
+            with self.assertRaises(AssertionError):
+                check_backstop(self)
+            with self.assertRaises(AssertionError):
+                check_DC11(self)
+        with mock.patch.object(G, "sensitive_hit", lambda n: "x"):
+            with self.assertRaises(AssertionError):
+                check_backstop(self)
+        with mock.patch.object(G, "sensitive_hit", lambda n: None):
+            with self.assertRaises(AssertionError):
+                check_DC12(self)
 class BinaryAndNonUtf8Files(unittest.TestCase):
     """21 Nov: the gate crashed (UnicodeDecodeError, exit 2) on master promotions that carry binary files."""
     FONT = b"\x00\x01\x00\x00\x00\x10\xff\xfe\x80\x81" * 50   # a TrueType header: NUL and invalid UTF-8

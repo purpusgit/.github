@@ -6,8 +6,9 @@ that table's entry in declarations/data.yaml, complete. The gate reads the PR's 
 It never reads a database and never runs repo code (a data.yaml or p4-collections.js is parsed as text).
 
     python3 scripts/declaration_gate.py --repo . --base-ref origin/main --mode report|block [--owners FILE]
+    python3 scripts/declaration_gate.py --repo . --grandfather-from origin/sandbox > declarations/analytics-grandfathered.yaml
 
-Rules DC1 to DC10 are the spec's section 4. `report` always exits 0 (it writes the summary); `block` exits 1 on any
+Rules DC1 to DC10 are the spec's section 4; DC11 to DC14 (the analytics mark) are specs offline-first/analytics-mark-gate.md. `report` always exits 0 (it writes the summary); `block` exits 1 on any
 error. A crash exits 0 in report mode (with a warning) and 2 in block mode (fail closed).
 
 Read the spec's section 3 for what counts as "touches table T" in each stack. Where the spec leaves a choice, the
@@ -29,7 +30,10 @@ except ImportError:  # main() says so: report mode still passes, block mode fail
     yaml = None
 
 LEVEL = {"DC1": "error", "DC2": "error", "DC3": "error", "DC4": "error", "DC5": "error", "DC6": "error",
-         "DC7": "error", "DC8": "warning", "DC9": "warning", "DC10": "error"}
+         "DC7": "error", "DC8": "warning", "DC9": "warning", "DC10": "error",
+         # the analytics mark (specs offline-first/analytics-mark-gate.md): errors, except where judge_marks and
+         # judge_grandfather pass a warning (no grandfather list on the base yet, a column with no CREATE, social's adapter)
+         "DC11": "error", "DC12": "error", "DC13": "error", "DC14": "error"}
 DISABLED = set()  # tests only: switch one rule off to prove its own test notices (never set in CI)
 
 SCOPE_CLASSES = ("org", "person", "reference", "excluded")
@@ -54,6 +58,100 @@ def is_secret_like(name):
     if any(pair in SECRET_PAIRS for pair in zip(parts, parts[1:])):
         return True
     return len(parts) > 1 and parts[-1] in ("ct", "iv", "tag") or name.lower().startswith("key_")
+
+
+# ── DC11 to DC14: the analytics mark (specs offline-first/analytics-mark-gate.md; specs#1858 is the binding rule set) ──
+GRANDFATHER = "declarations/analytics-grandfathered.yaml"
+MARKS = ("keep", "pseudonymise", "band", "city", "drop")
+# a change to any of these puts the entry's table in scope for DC11 to DC13 (spec section 5 and section 8 step 2)
+# choice: dob_columns and location_columns are added to the five keys section 8 names, since they change DC12's verdict
+MARK_KEYS = ("fields", "analytics", "personal", "sensitive", "not_sensitive", "dob_columns", "location_columns")
+# The name backstop (spec section 4): whole parts of the name split on "_", the way DC5 reads names
+PERSONAL_PARTS = {"phone", "mobile", "email", "username", "uuid", "name", "dob", "birth", "birthdate", "latitude", "longitude",
+                  "lat", "lng", "location", "address"}
+SENSITIVE_PARTS = {"phone", "mobile", "email", "contact", "address", "postal", "dob", "birth", "birthdate", "latitude",
+                   "longitude", "lat", "lng", "pan", "tax", "aadhaar", "passport", "bank", "ifsc", "payout", "upi", "emergency",
+                   "note", "notes", "health", "dietary", "voice", "matrimony"}
+DOB_PARTS = {"dob", "birth", "birthdate"}  # the only columns `band` may go on, with dob_columns:
+LOCATION_PARTS = {"latitude", "longitude", "lat", "lng", "location"}  # the only columns `city` may go on, with location_columns:
+
+
+def personal_hit(name):
+    """The name part (or user-id rule) that makes a column personal by name, or None. #1858 rule 1's raw user id is only
+    `user_id`, `user_idfr` and names ending `_user_id` or `_user_idfr`; anything else id-like is listed under personal:."""
+    n = str(name).lower()
+    for uid in ("user_id", "user_idfr"):
+        if n == uid or n.endswith("_" + uid):
+            return uid
+    return next((p for p in n.split("_") if p in PERSONAL_PARTS), None)
+
+
+def sensitive_hit(name):
+    """The name part that makes a column look SENSITIVE (ENCRYPT section 3, #1858 rule 2), or None."""
+    return next((p for p in str(name).lower().split("_") if p in SENSITIVE_PARTS), None)
+
+
+def col_names(value):
+    """Lowercase column names from a list, a mapping's keys or a single string; anything else is empty."""
+    if isinstance(value, dict):
+        value = list(value)
+    elif isinstance(value, str):
+        value = [value]
+    return {str(v).strip().lower() for v in value} if isinstance(value, list) else set()
+
+
+def entry_fields(entry):
+    raw = entry.get("fields") or {}
+    return sorted({str(k).lower() for k in (raw if isinstance(raw, (dict, list)) else [])})
+
+
+def entry_marks(entry):
+    raw = entry.get("analytics")
+    return {str(k).strip().lower(): str(v).strip().lower() for k, v in raw.items()} if isinstance(raw, dict) else {}
+
+
+def unmarked_fields(entry):
+    marks = entry_marks(entry)
+    return [c for c in entry_fields(entry) if c not in marks]
+
+
+def grandfather_tables(cfg):
+    """The first grandfather list of a repo (spec section 6): every declared table with a column that has no mark,
+    leaving out exclude_tables names (DC5's exclusions, which the gate never judges)."""
+    dflt = str((cfg or {}).get("default_schema") or "").lower()
+    exclude = DEFAULT_EXCLUDE_TABLES + [str(p).lower() for p in ((cfg or {}).get("exclude_tables") or [])]
+    out = set()
+    for e in (cfg or {}).get("tables") or []:
+        if isinstance(e, dict) and e.get("table") and unmarked_fields(e):
+            t = norm_table(e["table"], dflt)
+            if not any(fnmatch.fnmatchcase(x, pat.replace("%", "*")) for x in (t, t.split(".")[-1]) for pat in exclude):
+                out.add(t)
+    return sorted(out)
+
+
+def render_grandfather(tables, date="19 Nov 2026"):
+    head = ["# declarations/analytics-grandfathered.yaml (specs offline-first/analytics-mark-gate.md section 6)",
+            f"# Tables declared when the analytics mark began ({date}) that carry no complete marks yet. Generated by",
+            "# scripts/declaration_gate.py --grandfather-from <base ref> in purpusgit/.github, never typed by hand.",
+            "# SHRINK-ONLY: a PR may remove a table, never add one. A table in scope must be fully marked and leave this list (DC14).",
+            "version: 1"]
+    return "\n".join(head + (["tables:"] + [f"  - {t}" for t in tables] if tables else ["tables: []"])) + "\n"
+
+
+def load_grandfather(text, dflt):
+    """(set of normalised table names, or None when the file is absent; a problem string, or None)."""
+    if text is None:
+        return None, None
+    try:
+        d = load_yaml(text)
+    except yaml.YAMLError:
+        return set(), "is not valid YAML"
+    tables = d.get("tables") if isinstance(d, dict) else "bad"
+    if tables is None:
+        tables = []
+    if not isinstance(tables, list) or not all(isinstance(x, str) and x.strip() for x in tables):
+        return set(), "must be a mapping with `version: 1` and `tables:` as a list of schema.table names"
+    return {norm_table(x, dflt) for x in tables}, None
 
 
 # ── small helpers ────────────────────────────────────────────────────────────────────────────────────────
@@ -1032,6 +1130,7 @@ class Report:
         self.touched, self.added, self.secret_new, self.excluded, self.foreign, self.inventory, self.notes = {}, {}, [], [], [], [], []
         self.removable, self.mongo, self.unmasked = [], False, []
         self.inventory_other, self.inventory_unknown = {}, []  # defined here but owned by another repo (owner -> tables); no owner in owners.yaml  # dropped tables whose entry can go; a Mongo inventory caveat; tables only the unmasked scan found
+        self.marks, self.grandfather = {}, ""  # DC11 to DC14: table -> (marked, fields, on the list); the list's state in words
 
     def add(self, rule, table, msg, file=None, line=None, level=None):
         if rule in DISABLED:
@@ -1056,6 +1155,126 @@ def decision(secret_like, col):
         reason = v.get("reason") or (v.get("keep") if isinstance(v.get("keep"), str) else "")
         return "exclude" if d == "exclude" else "keep" if d == "keep" and str(reason).strip() else None
     return None
+
+
+def judge_marks(rep, t, entry, base_entry, schema_cols, has_create, listed, strict, cap, where):
+    """DC11, DC12, DC13 and DC8's added warnings for one table in scope (spec section 4). `listed`: the table is on the
+    grandfather list (DC13 is DC14's job then). `strict`: the merge base has the list, so DC13's marks-complete test is an
+    error; before that it is a warning (spec section 6). `cap`: social's p4 adapter, where every finding is a warning."""
+    def lv(level):
+        return "warning" if cap else level
+    complete = lv("error" if strict else "warning")
+    fields = entry_fields(entry)
+    fset = set(fields)
+    marks = entry_marks(entry)
+    personal, sensitive = col_names(entry.get("personal")), col_names(entry.get("sensitive"))
+    ns_raw = entry.get("not_sensitive")
+    not_sensitive = ({str(k).strip().lower(): str(v if v is not None else "").strip() for k, v in ns_raw.items()}
+                     if isinstance(ns_raw, dict) else {c: "" for c in col_names(ns_raw)})
+    dob_cols, loc_cols = col_names(entry.get("dob_columns")), col_names(entry.get("location_columns"))
+    rep.marks[t] = (len([c for c in fields if c in marks]), len(fields), listed)
+
+    if not listed:  # DC13
+        if entry.get("analytics") is not None and not isinstance(entry.get("analytics"), dict):
+            rep.add("DC13", t, "analytics: must be a mapping of column: mark.", *where, level=lv("error"))
+        for c in fields:
+            if c not in marks:
+                rep.add("DC13", f"{t}.{c}", "no analytics mark. Every column of a new or changed table needs one.", *where,
+                        level=complete)
+        for c, m in sorted(marks.items()):
+            if m not in MARKS:
+                rep.add("DC13", f"{t}.{c}", f'"{clean(m, 40)}" is not one of keep, pseudonymise, band, city, drop.', *where,
+                        level=lv("error"))
+        for key, names in (("analytics", set(marks)), ("personal", personal), ("sensitive", sensitive),
+                           ("not_sensitive", set(not_sensitive))):
+            for c in sorted(names - fset):
+                rep.add("DC13", t, f'{key}: names "{clean(c, 60)}", which is not in fields.', *where, level=lv("error"))
+        for c, reason in sorted(not_sensitive.items()):
+            if c not in fset:
+                continue  # reported just above
+            if not reason:
+                rep.add("DC13", f"{t}.{c}", "not_sensitive: needs a non-empty reason, decided in review.", *where, level=lv("error"))
+            elif not sensitive_hit(c):
+                rep.add("DC13", f"{t}.{c}", "not_sensitive: names a column the SENSITIVE name backstop does not hit; remove it.",
+                        *where, level=lv("error"))
+        for c in sorted(schema_cols):
+            part = personal_hit(c) or sensitive_hit(c)
+            if c not in fset and part:
+                rep.add("DC13", f"{t}.{c}", f'name looks personal or SENSITIVE (matched "{part}") and is not in fields. '
+                        "Add it to fields with a mark.", *where, level=complete if has_create else "warning")
+
+    for c in fields:
+        # DC11: a personal column with no mark (personal: listed under personal: or sensitive:, or a backstop hit)
+        if c not in marks:
+            if c in personal or c in sensitive or personal_hit(c):
+                rep.add("DC11", f"{t}.{c}", f'personal column has no analytics mark (#1858 rules 1 to 4). Add "{c}: <mark>" '
+                        "under analytics: (keep, pseudonymise, band, city or drop).", *where, level=lv("error"))
+            continue
+        # DC12: SENSITIVE must be drop; band only on a date of birth, city only on a precise location
+        m = marks[c]
+        if m not in MARKS or m == "drop":
+            continue
+        parts = set(c.split("_"))
+        is_dob, is_loc = c in dob_cols or bool(parts & DOB_PARTS), c in loc_cols or bool(parts & LOCATION_PARTS)
+        honoured = c not in sensitive and bool(not_sensitive.get(c)) and bool(sensitive_hit(c))
+        is_sensitive = c in sensitive or (bool(sensitive_hit(c)) and not honoured)
+        if m == "band" and not is_dob:
+            rep.add("DC12", f"{t}.{c}", '"band" is only for a date-of-birth column; this column is not one. Mark it drop, '
+                    "or list it under dob_columns:.", *where, level=lv("error"))
+        elif m == "city" and not is_loc:
+            rep.add("DC12", f"{t}.{c}", '"city" is only for a precise-location column; this column is not one. Mark it drop, '
+                    "or list it under location_columns:.", *where, level=lv("error"))
+        elif is_sensitive and m in ("keep", "pseudonymise"):
+            if c in sensitive:
+                rep.add("DC12", f"{t}.{c}", f'SENSITIVE column marked "{m}"; only "drop" passes (#1858 rule 2, ENCRYPT section 3), '
+                        'except "band" on a date-of-birth column and "city" on a precise-location column (rule 4).', *where,
+                        level=lv("error"))
+            else:
+                rep.add("DC12", f"{t}.{c}", f'name looks SENSITIVE (matched "{sensitive_hit(c)}"). List it under sensitive: and '
+                        "mark it drop (or band on a date of birth, city on a precise location), or list it under "
+                        "not_sensitive: with a reason.", *where, level=lv("error"))
+
+    # DC8's added warnings (named for review, never an error)
+    for c, reason in sorted(not_sensitive.items()):
+        if c in fset and reason and sensitive_hit(c) and c not in sensitive:
+            rep.add("DC8", f"{t}.{c}", f'not_sensitive used (reason: "{clean(reason, 120)}"); named for review.', *where)
+    if base_entry:
+        for key, now in (("personal", personal), ("sensitive", sensitive)):
+            for c in sorted(col_names(base_entry.get(key)) - now):
+                rep.add("DC8", f"{t}.{clean(c, 60)}", f"removed from {key}: compared with the base; named for review.", *where)
+
+
+def judge_grandfather(rep, head_text, base_text, dflt, entries, base_entries, in_scope, cap):
+    """DC14 (spec sections 4 and 6). Returns (the list judged for DC13, whether the merge base has the list)."""
+    base_list, base_problem = load_grandfather(base_text(GRANDFATHER), dflt)
+    head_list, head_problem = load_grandfather(head_text(GRANDFATHER), dflt)
+    strict = base_list is not None
+    lvl = "warning" if cap or not strict else "error"
+    if base_problem:
+        rep.notes.append(f"the base copy of {GRANDFATHER} {base_problem}; it is read as an empty list")
+    if head_problem:
+        rep.add("DC14", GRANDFATHER, head_problem, GRANDFATHER, level=lvl)
+    if strict and head_list is None:
+        rep.add("DC14", GRANDFATHER, "deleted; a list the base has cannot be deleted.", GRANDFATHER, level=lvl)
+    listed = head_list if head_list is not None else (base_list or set())
+    if strict:
+        for t in sorted((head_list or set()) - base_list):
+            rep.add("DC14", t, f"added to {GRANDFATHER}; the list may only shrink.", GRANDFATHER, level=lvl)
+    else:
+        for t in sorted(x for x in (head_list or set()) if x not in base_entries):
+            rep.add("DC14", t, "new list names a table the base data.yaml does not declare.", GRANDFATHER, level=lvl)
+    for t in sorted(x for x in (head_list or set()) if x not in entries):
+        rep.add("DC14", t, f"on {GRANDFATHER} but not declared in data.yaml.", GRANDFATHER, level=lvl)
+    for t in sorted(x for x in in_scope if x in (head_list or set())):
+        rep.add("DC14", t, f"touched, so it must be fully marked and removed from {GRANDFATHER} in this PR.", GRANDFATHER, level=lvl)
+    if strict:
+        rep.grandfather = f"{GRANDFATHER} is on the base ({len(base_list)} table(s)): DC11 to DC14 are errors."
+    else:
+        rep.grandfather = (f"{GRANDFATHER} is not on the base yet: DC11 and DC12 are errors on tables in scope; DC13's "
+                           "marks-complete test and DC14 are warnings until it lands (spec section 6).")
+    if cap:
+        rep.grandfather += " Social's p4-collections.js adapter carries no marks, so every DC11 to DC14 finding here is a warning."
+    return listed, strict
 
 
 def build_knowledge(all_events):
@@ -1247,7 +1466,7 @@ def judge_trees(repo, mode, owners_path, mb, head_text, base_text, calling_repo=
             t = touched.setdefault(ev.table, {"ops": set(), "file": p, "line": ev.line})
             t["ops"].add(ev.op)
         # "auto" is the judged-by-everything mode of a PR that creates data.yaml: most files hold no schema, so no warning
-        if not hit and new.schema_files[p] != "auto" and p not in (DATA, P4):
+        if not hit and new.schema_files[p] != "auto" and p not in (DATA, P4, GRANDFATHER):
             rep.add("DC9", "-", "schema path changed, no table found in the changed lines", p, min(lines))
 
     # ── the rules, table by table ────────────────────────────────────────────────────────────────────────
@@ -1354,6 +1573,23 @@ def judge_trees(repo, mode, owners_path, mb, head_text, base_text, calling_repo=
             if c.lower() not in fields:
                 rep.add("DC6", t, f"new column `{clean(c)}` is not in the entry's fields", info["file"], ln)
 
+    # ── DC11 to DC14: the analytics mark ────────────────────────────────────────────────────────────────
+    # In scope: a touched table that has an entry (DC1's test), plus every entry the PR adds or changes (spec section 5).
+    # exclude_tables names and foreign changes are never judged; a dropped table needs no marks.
+    def entry_changed(t):
+        b = base_entries.get(t)
+        return b is None or any(json.dumps(entries[t].get(k), sort_keys=True, default=str) !=
+                                json.dumps(b.get(k), sort_keys=True, default=str) for k in MARK_KEYS)
+    in_scope = {t for t, ops in rep.touched.items() if t in entries and ops != ["drop"]}
+    in_scope |= {t for t in entries if entry_changed(t) and not excluded_table(t)}
+    cap = head_text(DATA) is None and head is not None  # social's p4-collections.js adapter: warnings only (spec section 8)
+    listed, strict = judge_grandfather(rep, head_text, base_text, dflt, entries, base_entries, in_scope, cap)
+    for t in sorted(in_scope):
+        has_create = t in new.created
+        schema_cols = {c.lower() for c in new.cols.get(t, {})} - MONGO_IMPLICIT
+        judge_marks(rep, t, entries[t], base_entries.get(t), schema_cols, has_create, t in listed, strict, cap,
+                    (touched[t]["file"], touched[t]["line"]) if t in touched else (DATA, None))
+
     # ── DC10: DDL or a collection call outside schema_paths and exclude_paths ───────────────────────────
     known_names = set(entries) | new.created
     for p, lines in sorted(added.items()):
@@ -1407,6 +1643,10 @@ def esc(s):
     return clean(s, 200).replace("|", "/").replace("`", "'")
 
 
+def esc_long(s):
+    return clean(s, 400).replace("|", "/").replace("`", "'")
+
+
 def render(rep, base_ref):
     err, warn = rep.errors, [f for f in rep.findings if f["level"] == "warning"]
     head = "report only: this run never fails" if rep.mode == "report" else ("FAILED" if err else "passed")
@@ -1442,6 +1682,10 @@ def render(rep, base_ref):
                 (f", new columns: {', '.join('`' + esc(c) + '`' for c in f['cols'])}" if f["cols"] else "") for f in rep.foreign]
     if rep.excluded:
         out += ["", "### Excluded names (exclude_tables)", ""] + [f"- `{esc(t)}`" for t in rep.excluded]
+    if rep.marks or rep.grandfather:
+        out += ["", "### Analytics marks (DC11 to DC14, specs offline-first/analytics-mark-gate.md)", "", esc_long(rep.grandfather), ""]
+        out += [f"- `{esc(t)}`: {m} of {n} column(s) marked" + (", on the grandfather list" if on else "")
+                for t, (m, n, on) in sorted(rep.marks.items())] or ["- no table in scope"]
     out += ["", f"### Inventory (report only, never fails): {len(rep.inventory)} table(s) with no entry", ""]
     if rep.mongo:
         out += ["_Collections registered by other means than mongoose.model(...) are not counted._", ""]
@@ -1472,7 +1716,9 @@ def annotate(rep):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--repo", default=".")
-    ap.add_argument("--base-ref", required=True)
+    ap.add_argument("--base-ref")
+    ap.add_argument("--grandfather-from", metavar="REF",
+                    help=f"print the first {GRANDFATHER} for the data.yaml at REF (spec section 6) and exit; judges nothing")
     ap.add_argument("--mode", default="report")
     ap.add_argument("--owners", default=None)
     ap.add_argument("--calling-repo", default=os.environ.get("GITHUB_REPOSITORY"))
@@ -1485,6 +1731,22 @@ def main(argv=None):
         print(f"::{'error' if a.mode == 'block' else 'warning'} title=declaration gate::PyYAML is not installed on this runner; "
               f"{'blocking (fail closed)' if a.mode == 'block' else 'report mode, not blocking'}")
         return 2 if a.mode == "block" else 0
+    if a.grandfather_from:
+        b = Blobs(a.repo, a.grandfather_from)
+        try:
+            cfg = load_cfg(b.get)
+        except GateError as e:
+            print(f"error: {clean(e, 300)}", file=sys.stderr)
+            return 2
+        finally:
+            b.close()
+        if cfg is None or b.get(DATA) is None:
+            print(f"error: no {DATA} at {clean(a.grandfather_from)}", file=sys.stderr)
+            return 2
+        sys.stdout.write(render_grandfather(grandfather_tables(cfg)))
+        return 0
+    if not a.base_ref:
+        ap.error("--base-ref is required")
     try:
         rep = judge(a.repo, a.base_ref, a.mode, a.owners, a.calling_repo)
     except GateError as e:

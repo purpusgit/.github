@@ -30,6 +30,21 @@ name: Reusable — Declaration gate (a new or changed table needs its entry)
 # foreign_changes item does), the table needs an entry like any other. Repo names are compared with `service_` removed:
 # service_orbit_orgs = orbit_orgs (owners.yaml names repos without it). A foreign_changes item can carry its own `secret_like:`
 # for secret-like columns it adds, answered the same way as in an entry.
+#
+# The analytics mark, rules DC11 to DC14 (specs offline-first/analytics-mark-gate.md; specs#1858 is the binding rule set). They
+# run in this same job, so the context name `declaration-gate / Declaration gate` does not change. Each column of an entry
+# carries one mark, and the optional class lists tell the gate which columns are personal or SENSITIVE:
+#
+#   analytics:  { id: keep, user_idfr: pseudonymise, name: drop, dob: band }   # keep | pseudonymise | band | city | drop
+#   personal:   [user_idfr, name]       # DC11: a personal column with no mark fails (a name backstop also finds them)
+#   sensitive:  [dob]                   # DC12: SENSITIVE must be drop, except band on a date of birth, city on a precise location
+#   dob_columns: [dob]                  # optional: where band may go; location_columns: where city may go
+#   not_sensitive: { note_count: "A count, holds no text" }   # a backstop false hit, with a reason; named for review (DC8)
+#
+# DC13: a new or changed table needs a mark on every column. DC14: declarations/analytics-grandfathered.yaml, a shrink-only list
+# of tables declared before the mark began, judged on the merge base. Until a repo's list is on its base, DC13's marks-complete
+# test and DC14 are warnings there; DC11 and DC12 are errors on tables in scope from the first run. `mode` is the only switch.
+# Generate a repo's first list with: python3 scripts/declaration_gate.py --repo . --grandfather-from origin/<base>
 
 on:
   workflow_call:
