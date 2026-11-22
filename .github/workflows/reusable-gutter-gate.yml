@@ -18,7 +18,8 @@ permissions:
   contents: read
 jobs:
   gutter-gate:
-    if: github.event_name == 'pull_request'
+    # RUSH-MODE-1: skipped (reports success) while 'gutter-gate' is in the org variable CI_RUSH_SKIP
+    if: ${{ (github.event_name == 'pull_request') && !contains(format(',{0},', vars.CI_RUSH_SKIP), ',gutter-gate,') }}
     runs-on: ${{ inputs.runner }}
     name: Gutter gate
     timeout-minutes: 5

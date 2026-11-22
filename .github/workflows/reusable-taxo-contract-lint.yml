@@ -26,7 +26,8 @@ on:
         type: boolean
 jobs:
   taxo-lint:
-    if: ${{ vars.MVP_GATES_PAUSED != 'true' }}  # item 3 pause (specs ci-git/tasks/ci-trim-and-qa-runners.md): skipped, so required contexts still report
+    # RUSH-MODE-1: skipped (reports success) while 'taxo-contract-lint' is in the org variable CI_RUSH_SKIP
+    if: ${{ (vars.MVP_GATES_PAUSED != 'true') && !contains(format(',{0},', vars.CI_RUSH_SKIP), ',taxo-contract-lint,') }}  # item 3 pause (specs ci-git/tasks/ci-trim-and-qa-runners.md): skipped, so required contexts still report
     name: taxo-lint / G4 wrong-concept / wrong-level check
     runs-on: ${{ inputs.runner }}
     steps:

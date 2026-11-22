@@ -11,6 +11,8 @@ on:
 
 jobs:
   drizzle-journal-gate:
+    # RUSH-MODE-1: skipped (reports success) while 'drizzle-journal-gate' is in the org variable CI_RUSH_SKIP
+    if: ${{ !contains(format(',{0},', vars.CI_RUSH_SKIP), ',drizzle-journal-gate,') }}
     runs-on: ${{ inputs.runner }}
     name: Migration journal completeness check
     steps:

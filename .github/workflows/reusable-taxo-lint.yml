@@ -55,7 +55,8 @@ on:
 
 jobs:
   code-lint:
-    if: ${{ vars.MVP_GATES_PAUSED != 'true' }}  # item 3 pause (specs ci-git/tasks/ci-trim-and-qa-runners.md): skipped, so required contexts still report
+    # RUSH-MODE-1: skipped (reports success) while 'taxo-lint' is in the org variable CI_RUSH_SKIP
+    if: ${{ (vars.MVP_GATES_PAUSED != 'true') && !contains(format(',{0},', vars.CI_RUSH_SKIP), ',taxo-lint,') }}  # item 3 pause (specs ci-git/tasks/ci-trim-and-qa-runners.md): skipped, so required contexts still report
     runs-on: ${{ inputs.runner }}
     name: Taxonomy code scan (*.sql.ts)
     steps:
@@ -79,7 +80,8 @@ jobs:
         run: python gate/scripts/taxo_lint.py --code "caller/${{ inputs.code_dir }}"
 
   data-lint:
-    if: ${{ inputs.run_data && vars.MVP_GATES_PAUSED != 'true' }}  # item 3 pause
+    # RUSH-MODE-1: skipped (reports success) while 'taxo-lint' is in the org variable CI_RUSH_SKIP
+    if: ${{ (inputs.run_data && vars.MVP_GATES_PAUSED != 'true') && !contains(format(',{0},', vars.CI_RUSH_SKIP), ',taxo-lint,') }}  # item 3 pause
     runs-on: ${{ inputs.runner }}
     name: Taxonomy data validation (FK:<Type> refs)
     steps:

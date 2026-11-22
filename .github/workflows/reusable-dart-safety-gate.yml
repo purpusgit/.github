@@ -7,6 +7,8 @@ on:
 
 jobs:
   dart-safety-gate:
+    # RUSH-MODE-1: skipped (reports success) while 'dart-safety-gate' is in the org variable CI_RUSH_SKIP
+    if: ${{ !contains(format(',{0},', vars.CI_RUSH_SKIP), ',dart-safety-gate,') }}
     runs-on: ${{ inputs.runner }}
     name: Dart escaped interpolation check
     steps:

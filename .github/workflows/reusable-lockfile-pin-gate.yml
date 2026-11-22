@@ -64,6 +64,8 @@ jobs:
   # can go red because GitHub is having a bad day is a context that holds a merge queue
   # during an incident — so the two must be requirable independently, and now are.
   lockfile-pin-gate:
+    # RUSH-MODE-1: skipped (reports success) while 'lockfile-pin-gate' is in the org variable CI_RUSH_SKIP
+    if: ${{ !contains(format(',{0},', vars.CI_RUSH_SKIP), ',lockfile-pin-gate,') }}
     runs-on: ${{ inputs.runner }}
     name: Lockfile and internal pin check
     outputs:

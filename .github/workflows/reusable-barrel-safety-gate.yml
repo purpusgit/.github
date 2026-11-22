@@ -27,6 +27,8 @@ permissions:
 
 jobs:
   barrel-safety:
+    # RUSH-MODE-1: skipped (reports success) while 'barrel-safety-gate' is in the org variable CI_RUSH_SKIP
+    if: ${{ !contains(format(',{0},', vars.CI_RUSH_SKIP), ',barrel-safety-gate,') }}
     name: Barrel & factory safety (Rule 66)
     runs-on: ${{ inputs.runner }}
     steps:

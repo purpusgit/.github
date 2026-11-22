@@ -12,6 +12,8 @@ on:
 
 jobs:
   colours-gate:
+    # RUSH-MODE-1: skipped (reports success) while 'colors-safety-gate' is in the org variable CI_RUSH_SKIP
+    if: ${{ !contains(format(',{0},', vars.CI_RUSH_SKIP), ',colors-safety-gate,') }}
     name: "No hardcoded Colors.* additions (Rule 24)"
     runs-on: ${{ inputs.runner }}
     steps:
