@@ -163,6 +163,16 @@ on:
         required: false
         type: boolean
         default: false
+      run_gutter:
+        description: >-
+          PHONE-EDGE-1 gutter gate (tracker B15), folded from reusable-gutter-gate.yml for billing: an added or
+          changed `PageContentWidth(` call must state its gutter (an explicit top-level `padding:`, or
+          `padding: null` / no padding plus a `// gutter: wrapper` marker). Pull requests only, like the
+          single-purpose job. Logic and tests: scripts/gutter_gate.py, scripts/test_gutter_gate.py. Honours
+          the RUSH-MODE-1 key `gutter-gate`. DEFAULTS FALSE.
+        required: false
+        type: boolean
+        default: false
       run_web_safe:
         description: >-
           WEB-SAFE (founder 2026-11-09): a NEW use of a mobile-only API in lib/ (MethodChannel,
@@ -1136,6 +1146,38 @@ jobs:
           git fetch -q origin "${{ inputs.base_ref || 'cwb' }}"
           python3 .central-src/scripts/central_ui_gate.py
 
+      # ── PHONE-EDGE-1 gutter gate (folded from reusable-gutter-gate.yml) ────────
+      # Same shape as G-CENTRAL: the script comes from this repo's main, never from the PR.
+      # Pull requests only (the diff is base..head of the PR), and skipped while 'gutter-gate' is in CI_RUSH_SKIP.
+      - name: Fetch the gutter gate script
+        id: gutter_src
+        if: ${{ inputs.run_gutter && github.event_name == 'pull_request' && !contains(format(',{0},', vars.CI_RUSH_SKIP), ',gutter-gate,') }}
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: purpusgit/.github
+          ref: main
+          path: .gutter-gate-src
+          sparse-checkout: scripts/gutter_gate.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: PHONE-EDGE-1 gutter gate — a changed PageContentWidth( call states its gutter
+        id: gutter
+        if: ${{ inputs.run_gutter && github.event_name == 'pull_request' && !contains(format(',{0},', vars.CI_RUSH_SKIP), ',gutter-gate,') }}
+        continue-on-error: true
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # The PR's own tree must not hold the path the gate's files are checked out to (as the single-purpose job refuses).
+          if git ls-files --error-unmatch .gutter-gate-src >/dev/null 2>&1 || git ls-files -- '.gutter-gate-src/*' | grep -q .; then
+            echo "::error title=gutter gate::this PR commits .gutter-gate-src, the path the gate's own files are checked out to"
+            exit 1
+          fi
+          python3 -I "${GITHUB_WORKSPACE}/.gutter-gate-src/scripts/gutter_gate.py" "$BASE_SHA" "$HEAD_SHA"
+
       # ── WEB-SAFE (founder 2026-11-09) ─────────────────────────────────────────
       # Same shape as G-CENTRAL: the script comes from this repo's main, never from the PR.
       - name: Fetch the WEB-SAFE script
@@ -1438,6 +1480,8 @@ jobs:
             Secret scan (diff-scoped)~${{ steps.secret_scan.outcome }}~a line added by this PR matches a credential shape (private-key header, AKIA, sk_live/sk_test, ghp_/github_pat_, xox*, JWT, or a quoted api_key/secret/token/password assignment) - OR the scanner could not compute the PR diff and refused to pass on an uncomputable diff
             G-CENTRAL script fetch~${{ steps.central_src.outcome }}~the G-CENTRAL script could not be checked out from purpusgit/.github main, so the central-UI rules were never checked
             G-CENTRAL central UI~${{ steps.central.outcome }}~a new web_visual manifest row does not name its client_core CENTRAL_UI.md row (or lacks its central_exceptions.yaml entry), or the PR adds a copy of a central widget, route or wrapped package - OR an input could not be read and the gate refused to pass
+            Gutter gate script fetch~${{ steps.gutter_src.outcome }}~the gutter gate script could not be checked out from purpusgit/.github main, so PageContentWidth( calls were never checked
+            PHONE-EDGE-1 gutter gate~${{ steps.gutter.outcome }}~an added or changed PageContentWidth( call states no gutter: give it an explicit top-level padding: (e.g. EdgeInsets.zero), or padding: null / no padding plus a // gutter: wrapper marker - OR the PR commits .gutter-gate-src
             Translation keys (self)~${{ steps.tk_self_check.outcome }}~a translation key added or changed in this PR is missing from one or more locales in this repo's OWN assets/translations
             Wireframe declared (advisory, not required)~${{ steps.wireframe.outcome }}~this PR changes Dart under lib/ and no wireframe box is ticked in the PR body — a founder-issued directive, recorded here as a loud signal only; ticking it is NOT enforced by this job
         run: |
