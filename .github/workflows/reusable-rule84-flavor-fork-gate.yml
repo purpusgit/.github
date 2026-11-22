@@ -22,6 +22,8 @@ permissions:
 
 jobs:
   rule84:
+    # RUSH-MODE-1: skipped (reports success) while 'rule84-flavor-fork-gate' is in the org variable CI_RUSH_SKIP
+    if: ${{ !contains(format(',{0},', vars.CI_RUSH_SKIP), ',rule84-flavor-fork-gate,') }}
     name: Config & fork gate (Rule 84)
     runs-on: ${{ inputs.runner }}
     steps:

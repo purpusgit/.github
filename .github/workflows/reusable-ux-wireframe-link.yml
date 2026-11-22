@@ -34,7 +34,8 @@ permissions:
 
 jobs:
   ux-wireframe-link:
-    if: ${{ github.event_name == 'pull_request' }}
+    # RUSH-MODE-1: skipped (reports success) while 'ux-wireframe-link' is in the org variable CI_RUSH_SKIP
+    if: ${{ (github.event_name == 'pull_request') && !contains(format(',{0},', vars.CI_RUSH_SKIP), ',ux-wireframe-link,') }}
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 5
     steps:

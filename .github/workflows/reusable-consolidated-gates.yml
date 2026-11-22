@@ -261,6 +261,8 @@ jobs:
   # a1-sizing-axis-gate.yml, where all three of GitHub's naming shapes are written out
   # and all three were guessed wrong from the YAML on the same day).
   consolidated-gates:
+    # RUSH-MODE-1: skipped (reports success) while 'consolidated-gates' is in the org variable CI_RUSH_SKIP
+    if: ${{ !contains(format(',{0},', vars.CI_RUSH_SKIP), ',consolidated-gates,') }}
     name: Consolidated gates (A2)
     # Text checks only (checkout, setup-python, grep/python3): no Flutter, Docker or Node. Callers still pass
     # `runner: orbit-ci`, which queued these seconds-long gates behind 20-60 min Flutter jobs, so orbit-ci maps to light.

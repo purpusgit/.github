@@ -132,6 +132,8 @@ permissions:
 
 jobs:
   analyze:
+    # RUSH-MODE-1: skipped (reports success) while 'flutter-analyze' is in the org variable CI_RUSH_SKIP
+    if: ${{ !contains(format(',{0},', vars.CI_RUSH_SKIP), ',flutter-analyze,') }}
     # Job id `analyze` and job name `flutter analyze` are load-bearing: GitHub
     # reports this to consumers as the context `analyze / flutter analyze`.
     # Renaming either breaks every repo's branch-protection required check.

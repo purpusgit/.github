@@ -19,6 +19,8 @@ permissions:
 
 jobs:
   tsc:
+    # RUSH-MODE-1: skipped (reports success) while 'tsc-check' is in the org variable CI_RUSH_SKIP
+    if: ${{ !contains(format(',{0},', vars.CI_RUSH_SKIP), ',tsc-check,') }}
     name: tsc --noEmit
     runs-on: ${{ inputs.runner }}
     steps:
