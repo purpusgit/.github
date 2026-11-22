@@ -828,7 +828,10 @@ class GateError(Exception):
 
 
 def git(repo, *args, soft=False):
-    r = subprocess.run(["git", "-c", "core.quotepath=off", "-C", repo, *args], capture_output=True, text=True)
+    # utf-8 with "replace", not the locale's strict decoder: a promotion diff can carry a binary or non-UTF-8 file, and one
+    # undecodable byte must not crash the gate (21 Nov: UnicodeDecodeError on analytics#672 and inapp_chat#280).
+    r = subprocess.run(["git", "-c", "core.quotepath=off", "-C", repo, *args], capture_output=True, encoding="utf-8",
+                       errors="replace")
     if r.returncode:
         if soft:
             return None
@@ -867,6 +870,21 @@ class Blobs:
         self.proc.stdout.close()
 
 
+BINARY_EXTENSIONS = frozenset((
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".tif", ".tiff", ".pdf", ".ttf", ".otf", ".woff", ".woff2", ".eot",
+    ".zip", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".jar", ".war", ".class", ".so", ".dylib", ".dll", ".exe", ".bin", ".o", ".a",
+    ".mp3", ".mp4", ".m4a", ".wav", ".ogg", ".mov", ".webm", ".jks", ".keystore", ".p12", ".der", ".sqlite", ".db", ".pyc"))
+
+
+def is_binary(repo, path, rev="HEAD"):
+    """A binary extension, or a NUL byte in the first 8 KB of the committed blob (git's own test). Such a file has no schema
+    lines to judge. A path absent at `rev` (deleted by the PR) is not binary by this test."""
+    if os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS:
+        return True
+    r = subprocess.run(["git", "-C", repo, "cat-file", "-p", f"{rev}:{path}"], capture_output=True)
+    return r.returncode == 0 and b"\0" in r.stdout[:8192]
+
+
 def added_lines(repo, mb):
     """{path: set of added line numbers} for the PR. File names come from `--name-only -z` (NUL-separated, never quoted); the
     hunks are read one file at a time, so no patch header is parsed (git C-quotes `"` and `\\` in them and tab-pads names with
@@ -878,6 +896,8 @@ def added_lines(repo, mb):
         if not path:
             continue
         files[path] = lines = set()
+        if is_binary(repo, path):  # listed (it changed), but there are no lines in it to judge
+            continue
         for ln in git(repo, "diff", "--unified=0", *flags, mb, "HEAD", "--", ":(literal)" + path).splitlines():
             m = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", ln)
             if m:
@@ -997,7 +1017,7 @@ def owner_of(owners, table):
 def load_owners(path):
     if not path or not os.path.isfile(path):
         return None
-    with open(path, encoding="utf-8") as fh:
+    with open(path, encoding="utf-8", errors="replace") as fh:
         d = load_yaml(fh.read()) or {}
     d = d.get("owners", d.get("tables", d)) if isinstance(d, dict) else d
     if isinstance(d, list):

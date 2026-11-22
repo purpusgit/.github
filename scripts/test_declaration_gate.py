@@ -50,6 +50,10 @@ def make_repo(base, head):
                     os.remove(fp)
                 os.symlink(text[1], fp)
                 continue
+            if isinstance(text, bytes):
+                with open(fp, "wb") as fh:
+                    fh.write(text)
+                continue
             with open(fp, "w") as fh:
                 fh.write(text)
     write(base); sh(d, "git", "add", "-A"); sh(d, "git", "commit", "-q", "--allow-empty", "-m", "base")
@@ -1307,6 +1311,43 @@ class SecretMatcherMutations(unittest.TestCase):
         with mock.patch.object(G, "is_secret_like", lambda n: True):
             with self.assertRaises(AssertionError):
                 check_DC5_matcher(self)
+
+
+class BinaryAndNonUtf8Files(unittest.TestCase):
+    """21 Nov: the gate crashed (UnicodeDecodeError, exit 2) on master promotions that carry binary files."""
+    FONT = b"\x00\x01\x00\x00\x00\x10\xff\xfe\x80\x81" * 50   # a TrueType header: NUL and invalid UTF-8
+    LATIN1 = b"caf\xe9 cr\xe8me\n"                                  # text, but not UTF-8
+    NUL_NO_EXT = b"magic\x00\xff\xfe payload\n"                     # binary by content, no binary extension
+
+    def test_binary_and_non_utf8_files_do_not_crash_and_a_clean_pr_stays_clean(self):
+        base = {"declarations/data.yaml": data([T_ENTRY]), "migrations/001.sql": CREATE_T}
+        head = {"assets/fonts/NotoSerif-Regular.ttf": self.FONT, "notes/latin1.txt": self.LATIN1, "blob.dat": self.NUL_NO_EXT}
+        rep = run(base, head, mode="block")
+        self.assertEqual(codes(rep), [])
+
+    def test_binary_files_are_listed_with_no_lines_and_text_files_keep_theirs(self):
+        d = make_repo({"migrations/001.sql": CREATE_T},
+                      {"assets/a.ttf": self.FONT, "blob.dat": self.NUL_NO_EXT, "notes/latin1.txt": self.LATIN1,
+                       "migrations/002.sql": "SELECT 1;\n"})
+        mb = G.git(d, "merge-base", "main", "HEAD").strip()
+        got = G.added_lines(d, mb)
+        self.assertEqual(got["assets/a.ttf"], set())
+        self.assertEqual(got["blob.dat"], set())
+        self.assertEqual(got["notes/latin1.txt"], {1})
+        self.assertEqual(got["migrations/002.sql"], {1})
+
+    def test_a_schema_change_next_to_a_binary_file_is_still_judged(self):
+        base = {"declarations/data.yaml": data([]), "migrations/001.sql": "SELECT 1;\n"}
+        head = {"assets/fonts/x.ttf": self.FONT, "migrations/002.sql": CREATE_T}
+        rep = run(base, head)
+        self.assertIn("DC1", codes(rep))
+
+    def test_is_binary(self):
+        d = make_repo({}, {"a.ttf": "not really a font\n", "b.dat": self.NUL_NO_EXT, "c.sql": CREATE_T})
+        self.assertTrue(G.is_binary(d, "a.ttf"))        # by extension
+        self.assertTrue(G.is_binary(d, "b.dat"))        # by content
+        self.assertFalse(G.is_binary(d, "c.sql"))
+        self.assertFalse(G.is_binary(d, "gone.sql"))    # absent at HEAD
 
 
 if __name__ == "__main__":
