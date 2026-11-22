@@ -225,7 +225,7 @@ class Workflows(unittest.TestCase):
     def test_the_standalone_is_warn_by_literal_on_the_light_runner_and_the_right_events(self):
         wf, job = self.job("ux-wireframe-link.yml")
         self.assertEqual(job["steps"][1]["env"]["CALM_MODE"], "warn")
-        self.assertEqual(job["runs-on"], "orbit-ci-light")
+        self.assertEqual(job["runs-on"], "ubuntu-latest")  # public repo: hosted runner (IAC-B01 22 Nov, .github#150)
         self.assertEqual(wf[True]["pull_request"]["types"], ["opened", "edited", "synchronize", "reopened"])
         self.assertNotIn("inputs", wf[True].get("workflow_dispatch", {}))
 

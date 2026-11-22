@@ -71,7 +71,7 @@ concurrency:
 
 jobs:
   gate-selftest:
-    runs-on: orbit-ci
+    runs-on: ubuntu-latest  # IAC-B01 22 Nov: this repo is PUBLIC; no self-hosted runner group serves public repos (and must not: fork PRs would run on our boxes), so this check sat queued forever. Public repos get hosted minutes free.
     # ⚠️ This job `name:` IS the required status-check context. Renaming it
     # breaks branch protection on `main`. If it must ever change, rename the
     # required context FIRST, observe the new name reporting on a real PR head,
