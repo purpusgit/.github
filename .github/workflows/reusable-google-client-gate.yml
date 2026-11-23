@@ -1,0 +1,40 @@
+# GOOGLE-CLIENT-1 live gate (coding-rules gcp/google-cloud-admin.md; html-guides Part114).
+# Fails when any Google OAuth client ID in the app config (flavor_config.dart, google-services.json,
+# GoogleService-Info.plist, web/index.html) no longer exists in Google. Japa 1.17.0 shipped a deleted
+# login client and every Google sign-in failed on the phone.
+#
+# Call it from a Flutter repo (PRs that touch those files, nightly, and before a store release):
+#   google-client-gate:
+#     uses: purpusgit/.github/.github/workflows/reusable-google-client-gate.yml@main
+name: reusable-google-client-gate
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: runs-on label (needs outbound HTTPS to accounts.google.com)
+        type: string
+        default: orbit-ci-light
+permissions:
+  contents: read
+jobs:
+  google-client-gate:
+    # RUSH-MODE-1 hook, like every shared gate; IAC's auto rule never lists this gate (it guards live sign-in).
+    if: ${{ !contains(format(',{0},', vars.CI_RUSH_SKIP), ',google-client-gate,') }}
+    runs-on: ${{ inputs.runner }}
+    name: Google client live gate
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5.1.0
+        with:
+          persist-credentials: false
+      - name: Fetch the gate script from purpusgit/.github main
+        uses: actions/checkout@v5.1.0
+        with:
+          repository: purpusgit/.github
+          ref: main
+          path: .google-client-gate-src
+          sparse-checkout: scripts/google_client_live_gate.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Every Google client ID the app ships is live in Google
+        run: python3 -I "${GITHUB_WORKSPACE}/.google-client-gate-src/scripts/google_client_live_gate.py" --root "${GITHUB_WORKSPACE}" | tee -a "$GITHUB_STEP_SUMMARY"; exit "${PIPESTATUS[0]}"

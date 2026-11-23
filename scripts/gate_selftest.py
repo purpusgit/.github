@@ -429,6 +429,7 @@ BEHAVIOUR = {
     # predicate worth extracting; the report/block switch is exercised in the script's own tests.
     # PHONE-EDGE-1 gutter gate (tracker B15): diff-based, so no self-contained `run:` predicate to extract; the
     # workflow only checks out two trees and calls the script. Fixtures: scripts/test_gutter_gate.py (separate step).
+    "reusable-google-client-gate.yml": {"kind": None, "reason": "GOOGLE-CLIENT-1 live gate: logic in scripts/google_client_live_gate.py, tested by its --demo (separate step); the workflow only checks out and calls it"},
     "reusable-gutter-gate.yml": {"kind": None, "reason": "gutter gate: logic in scripts/gutter_gate.py, tested by scripts/test_gutter_gate.py (separate step); the workflow only checks out and calls it"},
     "reusable-declaration-gate.yml": {"kind": None, "reason": "declaration gate: logic in scripts/declaration_gate.py, tested by scripts/test_declaration_gate.py (separate step); the workflow only checks out and calls it"},
     # ux-wireframe-link (CALM-1 spec 3.3): reads the PR's files, the base manifest and the specs ledger from the API, so there is no `run:`
