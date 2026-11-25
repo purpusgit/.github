@@ -67,6 +67,7 @@ runs:
             if [ -n "$args" ]; then
               echo "LOCAL-ATTEST-1: spot-check of $(echo $args | wc -w) suite files instead of the full suite"
               export TZ=Asia/Kolkata LANG=C.UTF-8
+              : > "${RUNNER_TEMP:-/tmp}/local-attest-spot"   # tells a later "record the tested tree" step not to record
             fi
           fi
         fi
