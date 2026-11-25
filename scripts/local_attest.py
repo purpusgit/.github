@@ -29,6 +29,16 @@ BOT_LOGINS = {"orbit-sessions-bot[bot]"}
 COMMAND = ["flutter", "test", "--reporter", "json"]
 # The fixed environment both sides run under (D1.5). PATH/HOME/PUB_CACHE are passed through but not hashed.
 FIXED_ENV = {"TZ": "Asia/Kolkata", "LANG": "C.UTF-8", "WEB_VISUAL_SHOTS": "1"}
+
+
+def test_tz(root="."):
+    """The time zone the repo's CI test job pins (`TZ:` in a workflow), else the runners' own (IST). Japa pins UTC."""
+    import glob
+    for f in sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.y*ml"))):
+        m = re.search(r"^\s+TZ:\s*['\"]?([A-Za-z_/+-]+)", open(f, encoding="utf-8", errors="replace").read(), re.M)
+        if m:
+            return m.group(1)
+    return "Asia/Kolkata"
 STATE_DIR = os.path.expanduser("~/.orbit-attest")
 
 
@@ -43,8 +53,12 @@ def sha256_file(p):
     return hashlib.sha256(open(p, "rb").read()).hexdigest()
 
 
-def env_sha():
-    return hashlib.sha256(json.dumps(FIXED_ENV, sort_keys=True).encode()).hexdigest()
+def fixed_env(root="."):
+    return dict(FIXED_ENV, TZ=test_tz(root))
+
+
+def env_sha(root="."):
+    return hashlib.sha256(json.dumps(fixed_env(root), sort_keys=True).encode()).hexdigest()
 
 
 def sdk(root):
@@ -94,7 +108,7 @@ def fields(root, tree):
         "code_sha256": code_sha(root, tree),
         "sdk": sdk(root),
         "lock_sha256": sha256_file(os.path.join(root, "pubspec.lock")),
-        "env_sha256": env_sha(),
+        "env_sha256": env_sha(root),
         "suite_sha256": suite_sha(vm_suites(root)),
         "command": " ".join(COMMAND),
     }
@@ -126,7 +140,7 @@ def session(base):
         os.makedirs(STATE_DIR, exist_ok=True)
         hist = os.path.join(STATE_DIR, tree + ".log")
         env = {k: os.environ[k] for k in ("PATH", "HOME", "PUB_CACHE", "FLUTTER_ROOT") if k in os.environ}
-        env.update(FIXED_ENV)
+        env.update(fixed_env(work))
         t0 = time.time()
         rep = os.path.join(work, "build", "local_attest_report.json")
         os.makedirs(os.path.dirname(rep), exist_ok=True)
