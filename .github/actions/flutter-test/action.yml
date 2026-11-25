@@ -28,7 +28,6 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-        CI_TRUST_LOCAL: ${{ vars.CI_TRUST_LOCAL }}
       run: |
         set -euo pipefail
 
