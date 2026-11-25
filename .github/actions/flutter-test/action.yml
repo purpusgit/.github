@@ -57,7 +57,8 @@ runs:
         fg="${GITHUB_ACTION_PATH:-/nonexistent}/../../../scripts/feature_gate_scan.py"
         if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && [ -f "$fg" ]; then
           git fetch -q --no-tags --deepen=1 origin "${GITHUB_SHA:-HEAD}" 2>/dev/null || true
-          python3 "$fg" diff . 'HEAD^1..HEAD' --gh 2>/dev/null || true
+          fga="$(dirname "$fg")/../registry/feature-gate-approved.txt"
+          python3 "$fg" diff . 'HEAD^1..HEAD' --gh $( [ -f "$fga" ] && echo --approved "$fga" ) 2>/dev/null || true
         fi
 
         echo "Test files found:"

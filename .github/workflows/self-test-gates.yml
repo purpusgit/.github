@@ -199,5 +199,7 @@ jobs:
         run: python3 scripts/test_declaration_gate.py
       - name: Run gutter gate self-test (temp git repos, no network)
         run: python3 scripts/test_gutter_gate.py
+      - name: Run FEATURE-GATE-1 scanner self-test (temp git repos, no network)
+        run: python3 scripts/test_feature_gate_scan.py
       - name: Run Google client live gate self-test (no network)
         run: python3 scripts/google_client_live_gate.py --demo

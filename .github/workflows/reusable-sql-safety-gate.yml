@@ -81,6 +81,45 @@ jobs:
             esac
           done
           exit $fail
+      # FEATURE-GATE-1 (founder, 26 Nov 02:08 IST: "fail the PRs that hide or switch off features"; specs
+      # ci-git/spec-attest-gate-and-morning-suite.md Part C). It rides this job because every TypeScript service
+      # already calls it, so no service repo changes. It scans only the lines this PR ADDS under src/**, .env* and
+      # compose files. Report-only (warnings) until IAC-00 sets the org variable FEATURE_GATE_MODE=block; then a hit
+      # that is not in registry/feature-gate-approved.txt (written by IAC-00 from the founder's review page) is red.
+      # The script and the approvals come from this repo's main, never from the PR.
+      - name: FEATURE-GATE-1 source
+        if: ${{ github.event_name == 'pull_request' && !contains(format(',{0},', vars.CI_RUSH_SKIP), ',feature-gate,') }}
+        continue-on-error: true
+        uses: actions/checkout@v5.1.0
+        with:
+          repository: purpusgit/.github
+          ref: main
+          path: .feature-gate-src
+          sparse-checkout: |
+            scripts/feature_gate_scan.py
+            registry/feature-gate-approved.txt
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: FEATURE-GATE-1, no switched-off or hidden feature added
+        if: ${{ github.event_name == 'pull_request' && !contains(format(',{0},', vars.CI_RUSH_SKIP), ',feature-gate,') }}
+        continue-on-error: ${{ vars.FEATURE_GATE_MODE != 'block' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          REPO: ${{ github.event.repository.name }}
+          MODE: ${{ vars.FEATURE_GATE_MODE }}
+        run: |
+          set -uo pipefail
+          src="${GITHUB_WORKSPACE}/.feature-gate-src"
+          [ -f "$src/scripts/feature_gate_scan.py" ] || { echo "::notice::FEATURE-GATE-1 script not fetched; skipped"; exit 0; }
+          git fetch -q --no-tags --depth=1 origin "$BASE_SHA" || { echo "::notice::FEATURE-GATE-1 could not fetch the base; skipped"; exit 0; }
+          block=""; [ "$MODE" = "block" ] && block="--block"
+          python3 -I "$src/scripts/feature_gate_scan.py" diff . "${BASE_SHA}..HEAD" --repo "$REPO" --gh \
+            --approved "$src/registry/feature-gate-approved.txt" $block
+          rc=$?
+          [ "$rc" = 3 ] && [ -z "$block" ] && { echo "FEATURE-GATE-1: hits above are report-only today."; exit 0; }
+          exit $rc
+
       - name: Check for stray semicolons in SQL template literals
         run: |
           python3 -I - <<'PYEOF'
