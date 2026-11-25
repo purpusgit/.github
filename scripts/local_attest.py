@@ -29,7 +29,8 @@ HINT_MARKER = "<!-- local-test-attest-hint -->"
 BOT_LOGINS = {"orbit-sessions-bot[bot]"}
 COMMAND = ["flutter", "test", "--reporter", "json"]
 # The fixed environment both sides run under (D1.5). PATH/HOME/PUB_CACHE are passed through but not hashed.
-FIXED_ENV = {"TZ": "Asia/Kolkata", "LANG": "C.UTF-8", "WEB_VISUAL_SHOTS": "1"}
+FIXED_ENV = {}   # built per repo by fixed_env(): only what the repo's own CI test job pins (JAPA-D01, 26 Nov: an env CI
+                 # does not use made 71 Japa tests fail locally that pass in CI, so no PR could attest)
 
 
 def test_tz(root="."):
@@ -54,8 +55,22 @@ def sha256_file(p):
     return hashlib.sha256(open(p, "rb").read()).hexdigest()
 
 
+def _workflow_text(root="."):
+    import glob
+    return "\n".join(open(f, encoding="utf-8", errors="replace").read() for f in sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.y*ml"))))
+
+
 def fixed_env(root="."):
-    return dict(FIXED_ENV, TZ=test_tz(root))
+    """The environment the repo's CI test job pins, and nothing more: TZ always (the runners' IST if unpinned);
+    WEB_VISUAL_SHOTS and LANG only when a workflow sets them."""
+    t = _workflow_text(root)
+    env = dict(FIXED_ENV, TZ=test_tz(root))
+    if re.search(r"^\s+WEB_VISUAL_SHOTS:\s*['\"]?1", t, re.M):
+        env["WEB_VISUAL_SHOTS"] = "1"
+    m = re.search(r"^\s+LANG:\s*['\"]?([A-Za-z_.0-9-]+)", t, re.M)
+    if m:
+        env["LANG"] = m.group(1)
+    return env
 
 
 def env_sha(root="."):
