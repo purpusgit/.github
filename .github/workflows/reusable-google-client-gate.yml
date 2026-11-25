@@ -33,8 +33,11 @@ jobs:
           repository: purpusgit/.github
           ref: main
           path: .google-client-gate-src
-          sparse-checkout: scripts/google_client_live_gate.py
+          sparse-checkout: |
+            scripts/google_client_live_gate.py
+            registry/google-client-registry.txt
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - name: Every Google client ID the app ships is live in Google
-        run: python3 -I "${GITHUB_WORKSPACE}/.google-client-gate-src/scripts/google_client_live_gate.py" --root "${GITHUB_WORKSPACE}" | tee -a "$GITHUB_STEP_SUMMARY"; exit "${PIPESTATUS[0]}"
+        # GOOGLE-CLIENT-2: an ID must also be in the Doppler registry (mirrored file; missing file = registry check skipped).
+        run: GOOGLE_CLIENT_REGISTRY="$(cat "${GITHUB_WORKSPACE}/.google-client-gate-src/registry/google-client-registry.txt" 2>/dev/null || true)" python3 -I "${GITHUB_WORKSPACE}/.google-client-gate-src/scripts/google_client_live_gate.py" --root "${GITHUB_WORKSPACE}" | tee -a "$GITHUB_STEP_SUMMARY"; exit "${PIPESTATUS[0]}"
