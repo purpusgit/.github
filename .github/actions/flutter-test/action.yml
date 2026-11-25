@@ -66,7 +66,7 @@ runs:
             args="$(python3 "$GITHUB_ACTION_PATH/../../../scripts/local_attest.py" spot-list "${GITHUB_RUN_ID:-0}" || true)"
             if [ -n "$args" ]; then
               echo "LOCAL-ATTEST-1: spot-check of $(echo $args | wc -w) suite files instead of the full suite"
-              export TZ=Asia/Kolkata LANG=C.UTF-8
+              export TZ="${TZ:-Asia/Kolkata}" LANG=C.UTF-8   # keep a TZ the caller job pins (Japa: UTC)
               : > "${RUNNER_TEMP:-/tmp}/local-attest-spot"   # tells a later "record the tested tree" step not to record
             fi
           fi
