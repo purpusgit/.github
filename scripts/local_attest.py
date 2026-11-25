@@ -129,11 +129,13 @@ def session(base):
     r = subprocess.run(["git", "merge-tree", "--write-tree", "HEAD", "FETCH_HEAD"], cwd=root, capture_output=True, text=True)
     if r.returncode != 0:
         sys.exit("local_attest: HEAD does not merge cleanly with origin/%s. Rebase first; there is nothing to attest." % base)
-    tree = r.stdout.split()[0]
+    # The PR HEAD's tree is what is attested (IAC-00, 26 Nov, outside audit): a merge-tree hash was voided by every merge
+    # to the base (about one an hour), so no attestation survived to CI. The base still has to merge cleanly; the
+    # post-merge push run stays the integration check.
+    tree = sh(["git", "rev-parse", "HEAD^{tree}"], cwd=root)
     base_sha = sh(["git", "rev-parse", "FETCH_HEAD"], cwd=root)
-    commit = sh(["git", "commit-tree", tree, "-p", head, "-p", base_sha, "-m", "local-attest merge"], cwd=root)
     work = tempfile.mkdtemp(prefix="local-attest-")
-    sh(["git", "worktree", "add", "-q", "--detach", work, commit], cwd=root)
+    sh(["git", "worktree", "add", "-q", "--detach", work, head], cwd=root)
     try:
         sh(["flutter", "pub", "get"], cwd=work)
         f = fields(work, tree)
@@ -229,6 +231,16 @@ def out(skip, why):
         open(s, "a").write(("**Local attestation accepted:** " if skip else "Local attestation: not used: ") + why + "\n")
 
 
+def head_worktree(head_sha):
+    """A worktree of the PR head commit (CI checks out the merge commit); fetched if the shallow clone lacks it."""
+    cwd = os.getcwd()
+    if subprocess.run(["git", "cat-file", "-e", head_sha + "^{commit}"], cwd=cwd, capture_output=True).returncode != 0:
+        sh(["git", "fetch", "-q", "--depth=1", "origin", head_sha], cwd=cwd)
+    work = tempfile.mkdtemp(prefix="local-attest-ci-")
+    sh(["git", "worktree", "add", "-q", "--detach", work, head_sha], cwd=cwd)
+    return work
+
+
 def ci_check():
     if (os.environ.get("CI_TRUST_LOCAL") or "").lower() == "off":
         return out(False, "CI_TRUST_LOCAL is off")
@@ -241,8 +253,9 @@ def ci_check():
     # Primary path, no token needed: the box helper also writes the attestation to the public purpusgit/.github repo,
     # branch local-attest, att/<repo>/<merge tree>.json (only the bot can write there). Most package workflows grant
     # the job token `contents: read` only, which cannot read PR comments or statuses.
-    root = os.getcwd()
-    tree = sh(["git", "rev-parse", "HEAD^{tree}"])
+    # Compare against the PR head's tree (what the session attests), read in a worktree of the head commit.
+    root = head_worktree(pr["head"]["sha"])
+    tree = sh(["git", "rev-parse", "HEAD^{tree}"], cwd=root)
     name = repo.split("/")[-1]
     have_code = code_sha(root, tree)
     try:
@@ -280,8 +293,7 @@ def ci_check():
         a = json.loads(m.group(1))
     except Exception:
         return out(False, "the attestation comment has no readable JSON")
-    root = os.getcwd()
-    have = fields(root, sh(["git", "rev-parse", "HEAD^{tree}"]))
+    have = fields(root, tree)
     for k in ("version", "code_sha256", "sdk", "lock_sha256", "env_sha256", "suite_sha256", "command"):
         if a.get(k) != have[k]:
             return out(False, f"`{k}` differs (attested {str(a.get(k))[:16]}, CI {str(have[k])[:16]})")
