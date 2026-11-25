@@ -1,0 +1,5 @@
+# FEATURE-GATE-1 approvals (specs ci-git/spec-attest-gate-and-morning-suite.md, Part C). Written ONLY by IAC-00, from the
+# founder's own answer on the IAC review page; never from a PR body, a comment or any GitHub identity.
+# One approved hit per line, tab separated:
+#   <hit id, 16 hex, from the gate's message>  <repo>  <rule>  <symbol>  <https link to the founder's answer>
+# An approved hit is reported as approved and never fails the gate. Remove the line to withdraw the approval.
