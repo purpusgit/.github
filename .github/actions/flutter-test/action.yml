@@ -26,6 +26,9 @@ runs:
   steps:
     - name: Test
       shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        CI_TRUST_LOCAL: ${{ vars.CI_TRUST_LOCAL }}
       run: |
         set -euo pipefail
 
@@ -51,6 +54,24 @@ runs:
         echo "Test files found:"
         find test -name '*_test.dart' -type f | sort
 
+        # LOCAL-ATTEST-1 (specs ci-git/spec-local-test-attestation.md; founder 24-25 Nov: "if the checks are done on
+        # Anthropic dockers, we shouldn't duplicate them on our runners"). On a PR whose session posted a matching
+        # attestation (same merge tree, SDK, resolved deps, env, suite list), run only a blocking spot-check: the
+        # width harness plus 10% of suites at random. Anything else, or any error here, runs the full suite below.
+        # pubspec.lock must exist (the caller ran `flutter pub get` first, as every consumer does).
+        args=""
+        if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && [ -f pubspec.lock ]; then
+          att_out="$(mktemp)"
+          GITHUB_OUTPUT="$att_out" python3 "$GITHUB_ACTION_PATH/../../../scripts/local_attest.py" ci-check || true
+          if grep -q '^skip=true' "$att_out" 2>/dev/null; then
+            args="$(python3 "$GITHUB_ACTION_PATH/../../../scripts/local_attest.py" spot-list "${GITHUB_RUN_ID:-0}" || true)"
+            if [ -n "$args" ]; then
+              echo "LOCAL-ATTEST-1: spot-check of $(echo $args | wc -w) suite files instead of the full suite"
+              export TZ=Asia/Kolkata LANG=C.UTF-8
+            fi
+          fi
+        fi
+
         # A hung `flutter test` (a flutter_tester that never reports) sat for over an hour on self-hosted runners and
         # blocked merges. A composite step cannot take `timeout-minutes`, so the call is wrapped: 30 minutes, then
         # TERM, then KILL after another 60 s. Exit 124 (timed out) and 137 (had to be killed) are a hang and are red
@@ -62,7 +83,7 @@ runs:
         # The call runs in its own process group (setsid), and after it returns any process still in that group is
         # KILLed. `timeout` alone does not reach a grandchild everywhere: on GitHub-hosted ubuntu-latest a TERM-ignoring
         # child's grandchild survived the KILL and held the step for 300 s (IAC-B01, 22 Nov 2026, .github#150).
-        setsid timeout --kill-after="${FLUTTER_TEST_KILL_AFTER:-60s}" "$limit" flutter test --no-pub --reporter compact &
+        setsid timeout --kill-after="${FLUTTER_TEST_KILL_AFTER:-60s}" "$limit" flutter test --no-pub --reporter compact $args &
         tpg=$!
         wait "$tpg" || rc=$?
         kill -KILL -- "-$tpg" 2>/dev/null || true
