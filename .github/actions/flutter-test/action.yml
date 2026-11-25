@@ -59,6 +59,31 @@ runs:
         # width harness plus 10% of suites at random. Anything else, or any error here, runs the full suite below.
         # pubspec.lock must exist (the caller ran `flutter pub get` first, as every consumer does).
         args=""
+        # ATTEST-GATE-1 (founder, 26 Nov 01:48 IST: "for CWB, just local running itself is a gate … stop them and they
+        # will fall in line … then no gate in runner"). A PR into any branch other than master or main must carry a
+        # matching local attestation: with one, the runner runs only the blocking spot-check (not the full suite); without one, this step is red
+        # and says how to attest. PRs into master or main, and the two session-less automations (the dependency-roll workflow, branch
+        # chore/roll-deps-*, and the morning suite fixer, branch morning-suite/*, both opened by the bot app) still run
+        # the full suite here. A session that opens a PR through the bot is NOT exempt: the branch name decides. ATTEST_GATE=off in the caller's env turns the gate off (rollback).
+        base_ref="${GITHUB_BASE_REF:-}"
+        pr_author="$(python3 -c 'import json,os; e=json.load(open(os.environ["GITHUB_EVENT_PATH"])); print((e.get("pull_request") or {}).get("user",{}).get("login",""))' 2>/dev/null || true)"
+        if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && [ "${ATTEST_GATE:-on}" != "off" ] \
+           && [ "$base_ref" != "master" ] && [ "$base_ref" != "main" ] \
+           && ! { [[ "$pr_author" == *"[bot]" ]] && [[ "${GITHUB_HEAD_REF:-}" =~ ^(chore/roll-deps-|morning-suite/) ]]; }; then
+          att_out="$(mktemp)"
+          why="$(GITHUB_OUTPUT="$att_out" python3 "$GITHUB_ACTION_PATH/../../../scripts/local_attest.py" ci-check 2>&1 || true)"
+          echo "$why"
+          if grep -q '^skip=true' "$att_out" 2>/dev/null; then
+            # Attested: the runner still runs the blocking spot-check below (outside critic, 26 Nov: an attestation is
+            # self-reported JSON, so a few minutes of real tests on our runner is what keeps it honest).
+            echo "ATTEST-GATE-1: attestation matches this PR head; the runner runs only the spot-check."
+          elif echo "$why" | grep -qE 'could not read|CI_TRUST_LOCAL is off'; then
+            echo "::warning title=ATTEST-GATE-1::the attestation store could not be read or trust is off, so the runner runs the full suite instead of failing"
+          else
+            echo "::error title=Not attested (ATTEST-GATE-1)::A PR into $base_ref needs the session's own test run as proof; CI does not run the full suite for it. After your last push, from the package root: curl -sL https://raw.githubusercontent.com/purpusgit/.github/main/scripts/local_attest.py -o /tmp/local_attest.py && python3 /tmp/local_attest.py session. Then send build/local_attest/attestation.json to the box helper on stdin through the sandbox owner connector: python3 /root/.orbit-bridge/attest_post.py <repo> <pr> < attestation.json (paste the JSON into a heredoc). The helper re-runs this check."
+            exit 1
+          fi
+        fi
         if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && [ -f pubspec.lock ]; then
           att_out="$(mktemp)"
           GITHUB_OUTPUT="$att_out" python3 "$GITHUB_ACTION_PATH/../../../scripts/local_attest.py" ci-check || true
