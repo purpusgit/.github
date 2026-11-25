@@ -20,7 +20,7 @@ Fields: merge tree sha, Flutter framework/engine/Dart revisions, sha256 of the r
 fixed environment, sha256 of the sorted VM suite list, the command. A run with any failure at a tree is never attested,
 even if a later run at the same tree passes (flake rule, D1.7).
 """
-import hashlib, json, os, re, subprocess, sys, tempfile, time, urllib.request
+import hashlib, json, os, re, subprocess, sys, tempfile, time, urllib.error, urllib.request
 
 VERSION = "v1"
 MARKER = "<!-- local-test-attest v1 -->"
@@ -211,6 +211,25 @@ def ci_check():
         return out(False, "not a pull request (pushes and nightly runs always run the full suite)")
     repo, token = os.environ["GITHUB_REPOSITORY"], os.environ.get("GH_TOKEN", "")
     api = f"https://api.github.com/repos/{repo}"
+    # Primary path, no token needed: the box helper also writes the attestation to the public purpusgit/.github repo,
+    # branch local-attest, att/<repo>/<merge tree>.json (only the bot can write there). Most package workflows grant
+    # the job token `contents: read` only, which cannot read PR comments or statuses.
+    root = os.getcwd()
+    tree = sh(["git", "rev-parse", "HEAD^{tree}"])
+    name = repo.split("/")[-1]
+    try:
+        with urllib.request.urlopen(f"https://raw.githubusercontent.com/purpusgit/.github/local-attest/att/{name}/{tree}.json", timeout=20) as r:
+            a = json.load(r)
+        have = fields(root, tree)
+        bad = [k for k in ("version", "merge_tree", "sdk", "lock_sha256", "env_sha256", "suite_sha256", "command") if a.get(k) != have[k]]
+        if not bad and a.get("key") == key_of(have):
+            return out(True, f"{a.get('passed')} passed in the session, same tree/SDK/deps/env/suite (att/{name}/{tree[:12]}.json)")
+        return out(False, f"`{bad[0] if bad else 'key'}` differs from the posted attestation")
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            return out(False, f"could not read the attestation store ({e.code})")
+    except Exception as e:
+        return out(False, f"could not read the attestation store ({type(e).__name__})")
     try:
         comments, page = [], 1
         while True:
