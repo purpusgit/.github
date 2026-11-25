@@ -13,7 +13,7 @@ name: Runner disk alarm
 #     carry the orbit-ci, orbit-ci-light and orbit-ci-heavy labels and have no label of their own, so they are sampled only
 #     when a group job lands on them.
 #   - The check never fails the run for a low disk; the comment is the alarm.
-#   - Hourly, not more often: the queue held 81 jobs on 13 Nov, and three extra jobs on orbit-ci and orbit-ci-heavy every 30 minutes
+#   - Every 6 hours since 25 Nov (was hourly): the queue held 81 jobs on 13 Nov, and three extra jobs on orbit-ci and orbit-ci-heavy every 30 minutes
 #     compete with real work. A disk fills over hours.
 #   - `cancel-in-progress: false`: with true, a heavy check still queued after an hour would be cancelled by the next run, and a
 #     cancelled check notifies nobody (the notify `if` covers low and failure only), so a backed-up group would go silent exactly
@@ -22,7 +22,7 @@ name: Runner disk alarm
 
 on:
   schedule:
-    - cron: '7 * * * *'
+    - cron: '7 */6 * * *'   # every 6 hours (IAC-00, 25 Nov): hourly put 3 jobs an hour in the runner queue; a disk fills over hours
   workflow_dispatch:
     inputs:
       min_free_gb: { description: 'Alarm under this many GB free', required: false, type: string, default: '10' }
