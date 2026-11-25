@@ -156,9 +156,13 @@ def session(base):
         sh(["flutter", "pub", "get"], cwd=work)
         f = fields(work, tree)
         os.makedirs(STATE_DIR, exist_ok=True)
-        hist = os.path.join(STATE_DIR, tree + ".log")
+        fenv = fixed_env(work)
+        # The flaky guard counts runs of this tree under THIS test env only: a run under another env
+        # (e.g. before .github#164 matched the env to CI) is a different experiment, not a flake.
+        ekey = hashlib.sha256(json.dumps(fenv, sort_keys=True).encode()).hexdigest()[:12]
+        hist = os.path.join(STATE_DIR, f"{tree}.{ekey}.log")
         env = {k: os.environ[k] for k in ("PATH", "HOME", "PUB_CACHE", "FLUTTER_ROOT") if k in os.environ}
-        env.update(fixed_env(work))
+        env.update(fenv)
         t0 = time.time()
         rep = os.path.join(work, "build", "local_attest_report.json")
         os.makedirs(os.path.dirname(rep), exist_ok=True)
