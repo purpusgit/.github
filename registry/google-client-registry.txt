@@ -1,0 +1,26 @@
+# GOOGLE-CLIENT-2 registry (sandbox, mirrored from Doppler orbit-service-repos/sbx_shared GOOGLE_CLIENT_REGISTRY by IAC-00).
+# One live Google OAuth client per line: <id> <platform> <where>. Public identifiers (PUBLIC-ID-1). Edit Doppler, not this file.
+35358545540-fep0shllla75ri3vnqrs78b3vesrabcv.apps.googleusercontent.com ios/web Runner,flavor_config.dart,sandbox-whitelist
+35358545540-tqd00oehngbgecefd2qd6upkk49fehtd.apps.googleusercontent.com web flavor_config.dart
+35358545540-vkemrpb47gl1q14dnds1s2l1qmgn8vok.apps.googleusercontent.com android/web flavor_config.dart
+502053789507-06cek4qhrjr4mmllrr99mokelivkl1fb.apps.googleusercontent.com android/ios/web dev_goalcaller,dev_nearyest,firebase_options.dart,flavor_config.dart,japa_qa,nearyest,sandbox-whitelist
+502053789507-0a2f6mcidmqs77the714bv73uvo8anf3.apps.googleusercontent.com web flavor_config.dart,sandbox-whitelist,web-build-belongity.yaml
+502053789507-381e809h4bqa8nahslgoa850u9pbudje.apps.googleusercontent.com web sandbox-whitelist
+502053789507-4aju207svle0moukcn9cpfm9de1ivtif.apps.googleusercontent.com web sandbox-whitelist
+502053789507-4d94oa2l596693cfthc53kkul93uo49r.apps.googleusercontent.com web flavor_config.dart,japa_qa,sandbox-whitelist,web-build-belongity.yaml
+502053789507-4isrnrtnqaven33p04lsptecrp4jn74g.apps.googleusercontent.com web dev,dev_nearyest,flavor_config.dart,flavor_config_google_clients_test.dart,japa,japa_dev,nearyest,prod,sandbox-whitelist,staging
+502053789507-4mtkd3inh7ink3peklqt94p0a7bq1hp0.apps.googleusercontent.com web flavor_config.dart,sandbox-whitelist,web-build-prabhupad.yaml
+502053789507-4tnvf656nvp9f03asn60gifrin1hqjlo.apps.googleusercontent.com web flavor_config.dart,sandbox-whitelist,web-build-admin-circlox.yaml,web-build-circlox.yaml
+502053789507-9776pf0k4pgscf98pra7q8ppuo3c6ur6.apps.googleusercontent.com web flavor_config.dart,sandbox-whitelist,web-build-admin-japa.yaml,web-build-flavours.yaml,web-build-japa.yaml
+502053789507-b8sip89mmt7misqddt8p1krbot3hotgc.apps.googleusercontent.com android dev_nearyest,japa_dev,japa_qa,nearyest,sandbox-whitelist
+502053789507-chfba1n0igo7ssaijv5iefe754brkaac.apps.googleusercontent.com web flavor_config.dart,flavor_config_google_clients_test.dart,sandbox-whitelist
+502053789507-h83n4nkdft1o00f6qrlm2m5gkt5nl62c.apps.googleusercontent.com ios/web dev,firebase_options.dart,flavor_config.dart,japa,prod,sandbox-whitelist
+502053789507-i1g2kl087j96svrkl1bi3faqsrg0n8q5.apps.googleusercontent.com web flavor_config.dart,japa_web_deploy.py,sandbox-whitelist,web-build-japa-prod.yaml
+502053789507-kdpq5dnouhli58tgmk675f5rub5430oc.apps.googleusercontent.com web flavor_config.dart,sandbox-whitelist,web-build-nearyest.yaml
+502053789507-lsm726hf31jbju0s46apsv16c7f6jk60.apps.googleusercontent.com ios/web firebase_options.dart,flavor_config.dart,nearyest
+502053789507-o34hpv86mah9oed7jbp21257gt5oi10i.apps.googleusercontent.com ios/web dev_nearyest,firebase_options.dart,flavor_config.dart
+502053789507-qihb9117mi0u65f2m1qskp218adj5squ.apps.googleusercontent.com web flavor_config.dart,sandbox-whitelist,web-build-goalcaller.yaml
+502053789507-r9fusp4gk7ck30f6i8upcchuhr0e7oom.apps.googleusercontent.com ios/web flavor_config.dart,sandbox-whitelist,staging
+502053789507-smn9nmah6kuigfti3dnsp1qu2c3gds1v.apps.googleusercontent.com android/web dev_nearyest,flavor_config.dart,japa_dev,japa_qa,nearyest,sandbox-whitelist
+502053789507-tgtuf5bn1c7pptfu8j9rk0jj3qre3gvh.apps.googleusercontent.com ios firebase_options.dart,japa_qa
+502053789507-uc5ssdbbljtpgggj94df3ndnps6t0l9v.apps.googleusercontent.com ios/web dev_goalcaller,firebase_options.dart,flavor_config.dart,sandbox-whitelist
