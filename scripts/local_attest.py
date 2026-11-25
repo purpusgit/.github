@@ -75,10 +75,23 @@ def suite_sha(paths):
     return hashlib.sha256("\n".join(paths).encode()).hexdigest()
 
 
+# Generated translations (every locale but English) are left out of the code fingerprint: the L10N auto-translate bot
+# commits them to the PR after the session's run, and they change no Dart (outside CI review, 25 Nov: ~120 min/day).
+I18N_SKIP = re.compile(r"(^|/)assets/translations/(?!en_US\.json$)[^/]+\.json$")
+
+
+def code_sha(root, tree):
+    """sha256 over the tree's file list (path + blob sha), without generated translations."""
+    out = sh(["git", "ls-tree", "-r", tree], cwd=root)
+    keep = [l for l in out.splitlines() if not I18N_SKIP.search(l.split("\t", 1)[-1])]
+    return hashlib.sha256("\n".join(keep).encode()).hexdigest()
+
+
 def fields(root, tree):
     return {
         "version": VERSION,
         "merge_tree": tree,
+        "code_sha256": code_sha(root, tree),
         "sdk": sdk(root),
         "lock_sha256": sha256_file(os.path.join(root, "pubspec.lock")),
         "env_sha256": env_sha(),
@@ -88,7 +101,7 @@ def fields(root, tree):
 
 
 def key_of(f):
-    return hashlib.sha256(json.dumps({k: f[k] for k in ("merge_tree", "sdk", "lock_sha256", "env_sha256", "suite_sha256", "command")}, sort_keys=True).encode()).hexdigest()
+    return hashlib.sha256(json.dumps({k: f[k] for k in ("code_sha256", "sdk", "lock_sha256", "env_sha256", "suite_sha256", "command")}, sort_keys=True).encode()).hexdigest()
 
 
 # ---------------------------------------------------------------- session mode
@@ -217,13 +230,14 @@ def ci_check():
     root = os.getcwd()
     tree = sh(["git", "rev-parse", "HEAD^{tree}"])
     name = repo.split("/")[-1]
+    have_code = code_sha(root, tree)
     try:
-        with urllib.request.urlopen(f"https://raw.githubusercontent.com/purpusgit/.github/local-attest/att/{name}/{tree}.json", timeout=20) as r:
+        with urllib.request.urlopen(f"https://raw.githubusercontent.com/purpusgit/.github/local-attest/att/{name}/{have_code}.json", timeout=20) as r:
             a = json.load(r)
         have = fields(root, tree)
-        bad = [k for k in ("version", "merge_tree", "sdk", "lock_sha256", "env_sha256", "suite_sha256", "command") if a.get(k) != have[k]]
+        bad = [k for k in ("version", "code_sha256", "sdk", "lock_sha256", "env_sha256", "suite_sha256", "command") if a.get(k) != have[k]]
         if not bad and a.get("key") == key_of(have):
-            return out(True, f"{a.get('passed')} passed in the session, same tree/SDK/deps/env/suite (att/{name}/{tree[:12]}.json)")
+            return out(True, f"{a.get('passed')} passed in the session, same tree/SDK/deps/env/suite (att/{name}/{have_code[:12]})")
         return out(False, f"`{bad[0] if bad else 'key'}` differs from the posted attestation")
     except urllib.error.HTTPError as e:
         if e.code != 404:
@@ -254,7 +268,7 @@ def ci_check():
         return out(False, "the attestation comment has no readable JSON")
     root = os.getcwd()
     have = fields(root, sh(["git", "rev-parse", "HEAD^{tree}"]))
-    for k in ("version", "merge_tree", "sdk", "lock_sha256", "env_sha256", "suite_sha256", "command"):
+    for k in ("version", "code_sha256", "sdk", "lock_sha256", "env_sha256", "suite_sha256", "command"):
         if a.get(k) != have[k]:
             return out(False, f"`{k}` differs (attested {str(a.get(k))[:16]}, CI {str(have[k])[:16]})")
     if a.get("key") != key_of(have):
@@ -290,6 +304,7 @@ def spot_list(seed, frac=0.10):
     rnd = random.Random(seed)
     k = max(1, int(len(allf) * frac))
     pick = set(rnd.sample(allf, k))
+    pick.update(p for p in allf if p.startswith("test/UI/web_visual/"))
     pick.add("test/UI/web_visual/web_width_test.dart")
     print(" ".join(sorted(p for p in pick if os.path.exists(p))))
 
