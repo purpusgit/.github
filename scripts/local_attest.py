@@ -20,7 +20,8 @@ Fields: merge tree sha, Flutter framework/engine/Dart revisions, sha256 of the r
 fixed environment, sha256 of the sorted VM suite list, the command. A run with any failure at a tree is never attested,
 even if a later run at the same tree passes (flake rule, D1.7).
 """
-import hashlib, json, os, re, subprocess, sys, tempfile, time, urllib.error, urllib.request
+import hashlib
+import shutil, json, os, re, subprocess, sys, tempfile, time, urllib.error, urllib.request
 
 VERSION = "v1"
 MARKER = "<!-- local-test-attest v1 -->"
@@ -238,6 +239,11 @@ def head_worktree(head_sha):
         sh(["git", "fetch", "-q", "--depth=1", "origin", head_sha], cwd=cwd)
     work = tempfile.mkdtemp(prefix="local-attest-ci-")
     sh(["git", "worktree", "add", "-q", "--detach", work, head_sha], cwd=cwd)
+    # Package repos often do not commit pubspec.lock: use the one this job's `pub get` resolved (the session hashes the
+    # lock its own pub get resolved, so a sibling that moved in between shows up as a lock mismatch, never a crash).
+    for f in ("pubspec.lock",):
+        if not os.path.exists(os.path.join(work, f)) and os.path.exists(os.path.join(cwd, f)):
+            shutil.copy(os.path.join(cwd, f), os.path.join(work, f))
     return work
 
 
