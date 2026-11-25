@@ -14,8 +14,11 @@ Exit 0: all live. Exit 1: a deleted or unknown client. Exit 2: Google could not 
 import argparse, base64, glob, os, re, sys, time, urllib.error, urllib.parse, urllib.request
 
 ID_RE = re.compile(r"\b(\d{9,14}-[a-z0-9]{32})\.apps\.googleusercontent\.com")
-PROBE_REDIRECT = "https://mypurpus.com/orbit-auth-service/api/google/callback"
-FILES = ["lib/flavor_config.dart", "android/**/google-services.json", "ios/**/GoogleService-Info.plist", "web/index.html"]
+PROBE_REDIRECT = "https://mypurpus.com/never-registered-probe"  # spec B: a real domain, a path no client registers
+FILES = ["lib/flavor_config.dart", "lib/firebase_options.dart", "android/**/google-services.json", "ios/**/GoogleService-Info.plist",
+         "ios/**/Info.plist", "web/index.html", ".github/workflows/*.yml", ".github/workflows/*.yaml"]
+# The one deliberate place a dead ID may appear: client_core's deny-list of retired server clients (spec B.1).
+DENY_BLOCK = re.compile(r"kDeletedGoogleServerClientIds[^{]*\{(.*?)\}", re.S)
 DEAD = {"deleted_client": "deleted in Google", "invalid_client": "not found in Google"}
 
 
@@ -27,6 +30,7 @@ def collect(root):
                 text = open(path, encoding="utf-8", errors="replace").read()
             except OSError:
                 continue
+            text = DENY_BLOCK.sub("", text)
             for m in ID_RE.finditer(text):
                 found.setdefault(m.group(1), set()).add(os.path.relpath(path, root))
     return found
@@ -67,12 +71,20 @@ def probe(client_id, fetch=fetch_final_url, tries=3):
     return "unreachable:" + type(last).__name__
 
 
-def run(root, fetch=fetch_final_url, out=print):
+def registry():
+    """GOOGLE-CLIENT-2: the Doppler registry of live client IDs, mirrored to the org variable GOOGLE_CLIENT_REGISTRY
+    (public identifiers). Unset means the registry check is skipped (warn), never a pass on dead IDs."""
+    raw = os.environ.get("GOOGLE_CLIENT_REGISTRY", "")
+    return {m.group(1) for m in ID_RE.finditer(raw)} or None
+
+
+def run(root, fetch=fetch_final_url, out=print, reg=None):
     ids = collect(root)
+    reg = registry() if reg is None else reg
     if not ids:
         out("google-client-live-gate: no Google client IDs found under " + root + " (nothing to check)")
         return 0
-    bad = unreachable = 0
+    bad = unreachable = unregistered = 0
     out("| Client ID | Answer | Found in |\n|---|---|---|")
     for cid in sorted(ids):
         ans = probe(cid, fetch)
@@ -83,11 +95,18 @@ def run(root, fetch=fetch_final_url, out=print):
         elif ans.startswith("unreachable"):
             unreachable += 1
             out(f"| `{cid}` | **{ans}** | {where} |")
+        elif reg and cid not in reg:
+            unregistered += 1
+            out(f"| `{cid}` | **live, but not in the Doppler registry (GOOGLE-CLIENT-2)** | {where} |")
         else:
             out(f"| `{cid}` | live | {where} |")
     if bad:
         out(f"\nFAIL: {bad} client ID(s) no longer exist in Google. Point the app at a live client "
             "(GOOGLE-CLIENT-1, coding-rules gcp/google-cloud-admin.md) or restore it in the console within 30 days.")
+        return 1
+    if unregistered:
+        out(f"\nFAIL: {unregistered} client ID(s) are not in Doppler's GOOGLE_CLIENT_REGISTRY. Read the ID from Doppler by name; "
+            "a new client goes into the registry first (GOOGLE-CLIENT-2, coding-rules gcp/google-cloud-admin.md).")
         return 1
     if unreachable:
         out(f"\nFAIL: Google could not be reached for {unreachable} ID(s); the gate refuses to pass unchecked.")
@@ -123,6 +142,13 @@ def demo():
         def down(cid): raise urllib.error.URLError("down")
         check("unreachable Google fails closed", run(t, lambda c: down(c), out=lambda *_: None) == 2)
         check("unreachable probe answers unreachable", probe(g, down, tries=1).startswith("unreachable"))
+    with tempfile.TemporaryDirectory() as t:
+        os.makedirs(os.path.join(t, "lib"))
+        open(os.path.join(t, "lib/flavor_config.dart"), "w").write(
+            f"const kDeletedGoogleServerClientIds = <String>{{\n  '{d}.apps.googleusercontent.com',\n}};\nconst y = '{a}.apps.googleusercontent.com';")
+        check("a dead ID inside the deny-list is ignored", run(t, fake, out=lambda *_: None, reg=set()) == 0)
+        check("a live ID missing from the registry fails", run(t, fake, out=lambda *_: None, reg={g}) == 1)
+        check("a live ID in the registry passes", run(t, fake, out=lambda *_: None, reg={a}) == 0)
     check("no IDs passes", run(tempfile.mkdtemp(), fake, out=lambda *_: None) == 0)
     check("live answer decodes", decode_auth_error(live_url) == "redirect_uri_mismatch")
     check("no authError means live", decode_auth_error("https://accounts.google.com/v3/signin/identifier?x=1") is None)
