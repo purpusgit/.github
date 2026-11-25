@@ -50,6 +50,15 @@ runs:
           exit 1
         fi
 
+        # FEATURE-GATE-1 (founder, 26 Nov 02:08 IST: fail PRs that hide or switch off features). REPORT-ONLY for now:
+        # each switched-off feature, hidden widget or "coming soon" this PR ADDS shows as a warning. It becomes blocking
+        # once the approvals list (registry/feature-gate-approved.txt, written by IAC-00 from the founder's review page)
+        # is live. Never fails here.
+        if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ]; then
+          git fetch -q --no-tags --deepen=1 origin "${GITHUB_SHA:-HEAD}" 2>/dev/null || true
+          python3 "$GITHUB_ACTION_PATH/../../../scripts/feature_gate_scan.py" diff . 'HEAD^1..HEAD' --gh 2>/dev/null || true
+        fi
+
         echo "Test files found:"
         find test -name '*_test.dart' -type f | sort
 
