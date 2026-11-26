@@ -1,0 +1,22 @@
+{
+ "version": "v1",
+ "merge_tree": "995f738ec10718562339254ec57f0764a0f43db0",
+ "code_sha256": "f7bd64430b6ef776e7be90df16ff8b2d065fdce5172c7b95323503e036e4c8da",
+ "sdk": {
+  "framework": "00b0c91f06209d9e4a41f71b7a512d6eb3b9c694",
+  "engine": "42d3d75a56efe1a2e9902f52dc8006099c45d937",
+  "dart": "3.11.5"
+ },
+ "lock_sha256": "6c615e2af34d174bca3821ce4cbc1b2df891641fcbbd5316be6497c10a163a7e",
+ "env_sha256": "05ad67af1a2055a187a74650f528c0f0cdf75629837b0055705c9ab636e1894d",
+ "suite_sha256": "abcf91da6b3ff7919c2aaaea2b1006774aead907eb5db33f1a2df8a7fb24e710",
+ "command": "flutter test --reporter json",
+ "head_sha": "0f7f1397274e0a4bde4a35097955b5fc2798ac8e",
+ "base_sha": "3295e054c0c0c470414eca1a5287db45247f3019",
+ "passed": 6717,
+ "skipped": 27,
+ "seconds": 824,
+ "files": 373,
+ "wrapper_sha": "76595a4527e924b0c0fecad583f430c1635cb08f2b41657bdcb40f0e0df94924",
+ "key": "9abab9caa3fd22e64c09fc5b79114069a473eda1263a0d7e7a33d54952b8f682"
+}
