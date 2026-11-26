@@ -107,6 +107,22 @@ runs:
             fi
           fi
         fi
+        # MORNING-SUITE-1 (founder, 26 Nov: the full suite runs once a day in the morning, not on every merge). A push to
+        # cwb/sandbox in a repo the morning suite covers runs only the spot-check: the morning suite on the sandbox box runs
+        # the full suite and fixes or reports what broke (specs#2137). master/main pushes, other repos, and
+        # PUSH_FULL_SUITE=on in the caller's env (rollback) still run the full suite.
+        if [ "${GITHUB_EVENT_NAME:-}" = "push" ] && [ "${PUSH_FULL_SUITE:-}" != "on" ] && [ -z "${args:-}" ]; then
+          case "${GITHUB_REF_NAME:-}:${GITHUB_REPOSITORY#*/}" in
+            master:*|main:*) ;;
+            *:pkg_orbit_client_core|*:pkg_orbit_japa|*:main_org_orbit|*:pkg_orbit_inapp_purchases)
+              args="$(python3 "$GITHUB_ACTION_PATH/../../../scripts/local_attest.py" spot-list "${GITHUB_RUN_ID:-0}" || true)"
+              if [ -n "$args" ]; then
+                echo "MORNING-SUITE-1: push to ${GITHUB_REF_NAME} runs a spot-check of $(echo $args | wc -w) suite files; the full suite runs in the 08:00 IST morning suite"
+                export TZ="${TZ:-Asia/Kolkata}"
+                : > "${RUNNER_TEMP:-/tmp}/local-attest-spot"
+              fi ;;
+          esac
+        fi
 
         # A hung `flutter test` (a flutter_tester that never reports) sat for over an hour on self-hosted runners and
         # blocked merges. A composite step cannot take `timeout-minutes`, so the call is wrapped: 30 minutes, then
